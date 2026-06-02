@@ -1,0 +1,16 @@
+# sp1-zorch runtime dependencies.
+#
+# Pulled from the Fractalyze package index alongside upstream PyPI:
+#   pip install -r requirements.in \
+#     --extra-index-url https://fractalyze.github.io/pypi/simple/
+#
+# sp1-zorch is the SP1-specific consumer of zorch's agnostic blocks; zorch
+# itself arrives as a Bazel module (see MODULE.bazel), not a pip dep. zk_dtypes
+# (native finite-field dtypes) arrives transitively via jax and is used directly
+# on the SP1 byte-match path.
+absl-py
+numpy
+jax==0.0.5.dev20260602054734
+jaxlib==0.0.5.dev20260602054734
+jax-cuda12-plugin==0.0.5.dev20260524000415
+zkx-cuda-pjrt==0.0.5.dev20260602054734

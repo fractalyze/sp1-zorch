@@ -1,0 +1,18 @@
+load("@rules_python//python:defs.bzl", "py_library")
+load("@sp1_zorch_pip//:requirements.bzl", "requirement")
+
+# SP1's concrete Poseidon2 instances over zorch's agnostic engine.
+py_library(
+    name = "koalabear16",
+    srcs = [
+        "__init__.py",
+        "koalabear16.py",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        "@zorch//zorch/hash/poseidon2",
+        requirement("jax"),
+        requirement("numpy"),
+        requirement("zk_dtypes"),
+    ],
+)

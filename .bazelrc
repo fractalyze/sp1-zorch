@@ -1,0 +1,8 @@
+# bazel 9 defaults to bzlmod (WORKSPACE is gone), so no enable flags needed.
+build --announce_rc
+test --test_output=errors
+
+# Local, machine-specific overrides (gitignored). For dev against a local zorch
+# working copy instead of the pinned git_override, add to .bazelrc.user:
+#   common --override_module=zorch=/abs/path/to/your/zorch/checkout
+try-import %workspace%/.bazelrc.user

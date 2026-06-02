@@ -1,0 +1,20 @@
+load("@rules_python//python:defs.bzl", "py_test")
+load("@sp1_zorch_pip//:requirements.bzl", "requirement")
+
+# Bootstrap wiring proof — exercises sp1_zorch's params over zorch's engine
+# through the cross-module dependency. The SMCS port lands in the next slice.
+py_test(
+    name = "zorch_wiring_test",
+    size = "small",
+    srcs = ["zorch_wiring_test.py"],
+    env = {"JAX_PLATFORMS": "cpu"},
+    deps = [
+        "//sp1_zorch/poseidon2:koalabear16",
+        "@zorch//zorch/commit:merkle",
+        "@zorch//zorch/hash:compression",
+        "@zorch//zorch/hash:sponge",
+        "@zorch//zorch/hash/poseidon2",
+        requirement("jax"),
+        requirement("zk_dtypes"),
+    ],
+)
