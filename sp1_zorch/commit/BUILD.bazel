@@ -1,8 +1,40 @@
-load("@rules_python//python:defs.bzl", "py_test")
+load("@rules_python//python:defs.bzl", "py_library", "py_test")
 load("@sp1_zorch_pip//:requirements.bzl", "requirement")
 
+# SP1's single-matrix commitment over zorch's agnostic Merkle blocks.
+py_library(
+    name = "smcs",
+    srcs = ["smcs.py"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "@zorch//zorch/commit:merkle",
+        "@zorch//zorch/hash:compression",
+        "@zorch//zorch/hash:sponge",
+        "@zorch//zorch/utils:bits",
+        requirement("jax"),
+        requirement("zk_dtypes"),
+    ],
+)
+
+py_test(
+    name = "smcs_test",
+    size = "small",
+    srcs = ["smcs_test.py"],
+    env = {"JAX_PLATFORMS": "cpu"},
+    deps = [
+        ":smcs",
+        "//sp1_zorch/poseidon2:koalabear16",
+        "@zorch//zorch/commit:merkle",
+        "@zorch//zorch/hash:compression",
+        "@zorch//zorch/hash:sponge",
+        "@zorch//zorch/hash/poseidon2",
+        requirement("jax"),
+        requirement("zk_dtypes"),
+    ],
+)
+
 # Bootstrap wiring proof — exercises sp1_zorch's params over zorch's engine
-# through the cross-module dependency. The SMCS port lands in the next slice.
+# through the cross-module dependency.
 py_test(
     name = "zorch_wiring_test",
     size = "small",
