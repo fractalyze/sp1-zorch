@@ -1,0 +1,29 @@
+load("@rules_python//python:defs.bzl", "py_library", "py_test")
+load("@sp1_zorch_pip//:requirements.bzl", "requirement")
+
+# SP1's zerocheck constraint RLC over zorch's agnostic constraint_eval combinator.
+py_library(
+    name = "zerocheck",
+    srcs = [
+        "__init__.py",
+        "prover.py",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        "@zorch//zorch:constraint_eval",
+        requirement("jax"),
+    ],
+)
+
+py_test(
+    name = "prover_test",
+    size = "small",
+    srcs = ["prover_test.py"],
+    env = {"JAX_PLATFORMS": "cpu"},
+    deps = [
+        ":zerocheck",
+        requirement("absl_py"),
+        requirement("jax"),
+        requirement("zk_dtypes"),
+    ],
+)
