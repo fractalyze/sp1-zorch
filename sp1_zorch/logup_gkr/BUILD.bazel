@@ -1,0 +1,19 @@
+load("@rules_python//python:defs.bzl", "py_binary")
+load("@sp1_zorch_pip//:requirements.bzl", "requirement")
+
+# SP1-shaped LogUp-GKR benchmark over zorch's agnostic dense prover.
+# GPU-only manual tool (bazel run), not a CI test — see the module docstring.
+py_binary(
+    name = "bench_sp1_logup_gkr",
+    srcs = ["bench_sp1_logup_gkr.py"],
+    deps = [
+        "@zorch//zorch/logup_gkr",
+        "@zorch//zorch/logup_gkr/testing",
+        requirement("jax"),
+        requirement("jax_cuda12_plugin"),
+        requirement("numpy"),
+        requirement("zk_dtypes"),
+        requirement("zkbench"),
+        requirement("zkx_cuda_pjrt"),
+    ],
+)
