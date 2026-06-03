@@ -11,8 +11,12 @@ prover by ``(num_interaction_variables, num_row_variables)``. The bridge:
 ``iv = log2(next_pow2(num_interactions))`` (SP1 pads interactions to a power of
 two) and ``rv = row_variables``.
 
-Times the whole dense prove (trace gen + the per-layer sumcheck chain), like
-zorch's ``bench_logup_gkr`` — not a single layer reduction.
+Times the whole dense prove (trace gen + the per-layer sumcheck chain) traced
+into one fused ``@jit`` program via ``prove_gkr_jitted`` — the same fused path
+zorch's ``bench_logup_gkr`` measures, so the launch-bound eager dispatch wall
+collapses to a single compilation. Not eager op-by-op, not a single layer
+reduction. The ``lower`` thunk lets zkbench split the phase grid: compile
+(``compile_time`` / ``compile_memory``) vs runtime (``latency`` / ``memory``).
 
 A ``py_binary`` (manual ``bazel run``), not a ``py_test``: the blocks segfault
 under ``@jit`` on the ZKX CPU backend, so the bench is GPU-only.
@@ -21,6 +25,7 @@ under ``@jit`` on the ZKX CPU backend, so the bench is GPU-only.
 """
 
 import argparse
+import functools
 from collections.abc import Iterable, Sequence
 from typing import Any
 
@@ -30,8 +35,7 @@ from jax import Array
 from zk_dtypes import koalabear_mont as F
 from zkbench import BenchmarkConfig, BenchmarkOp, JaxBenchmark
 
-from zorch.logup_gkr.circuit import GkrLayer
-from zorch.logup_gkr.testing import prove_gkr
+from zorch.logup_gkr.testing import prove_gkr_jitted
 
 
 def _rand_field(seed: int, shape: Sequence[int], dtype: Any) -> Array:
@@ -43,16 +47,19 @@ def _rand_field(seed: int, shape: Sequence[int], dtype: Any) -> Array:
     return jnp.array(ints, dtype=dtype)
 
 
-def _first_layer(seed: int, iv: int, rv: int) -> GkrLayer:
-    """Four distinct seeds so numerators/denominators don't alias; Montgomery
-    field to match zorch's ``bench_logup_gkr``."""
+def _first_layer_mles(
+    seed: int, iv: int, rv: int
+) -> tuple[Array, Array, Array, Array]:
+    """The four random dense first-layer MLEs (n0, n1, d0, d1), ``2**(iv + rv)``
+    wide; four distinct seeds so they don't alias. Montgomery field to match
+    zorch's ``bench_logup_gkr``. Fixed-length so the arity flowing into
+    ``prove_gkr_jitted`` is checkable, not a star-tuple."""
     width = 1 << (iv + rv)
-    return GkrLayer(
-        numerator_0=_rand_field(seed, (width,), F),
-        numerator_1=_rand_field(seed + 1, (width,), F),
-        denominator_0=_rand_field(seed + 2, (width,), F),
-        denominator_1=_rand_field(seed + 3, (width,), F),
-        num_interaction_variables=iv,
+    return (
+        _rand_field(seed, (width,), F),
+        _rand_field(seed + 1, (width,), F),
+        _rand_field(seed + 2, (width,), F),
+        _rand_field(seed + 3, (width,), F),
     )
 
 
@@ -61,13 +68,6 @@ def _num_challenges(iv: int, rv: int) -> int:
     proved layer at most ``lam + (iv + rv) sumcheck rounds + 1`` reduction.
     StubTranscript reads only the prefix it needs, so over-estimating is free."""
     return (iv + 1) + rv * (iv + rv + 2)
-
-
-def _prove(first: GkrLayer, challenges: Array) -> Array:
-    """Return the last-proved layer's round polys — the tail of the sequential
-    carry, so awaiting it awaits the whole prove (the value worth timing)."""
-    _, _, proofs, _ = prove_gkr(first, challenges)
-    return proofs[-1].round_polys
 
 
 class Sp1LogupGkrBenchmark(JaxBenchmark):
@@ -105,12 +105,16 @@ class Sp1LogupGkrBenchmark(JaxBenchmark):
         # SP1 pads interactions to a power of two before counting interaction vars.
         iv = (args.num_interactions - 1).bit_length()
         for rv in args.row_variables:
-            first = _first_layer(args.seed, iv, rv)
+            mles = _first_layer_mles(args.seed, iv, rv)
             challenges = _rand_field(args.seed + 99, (_num_challenges(iv, rv),), F)
+            # iv is static (fixes the pyramid height); the four MLEs + challenges
+            # are the traced inputs, matching prove_gkr_jitted's signature.
+            op_args = (*mles, challenges, iv)
             yield BenchmarkOp(
                 # Op id matches SP1's logup_gkr_zkbench so the dashboard joins them.
                 name=f"logup_gkr_r{rv}_i{args.num_interactions}_total",
-                fn=lambda f=first, c=challenges: _prove(f, c),
+                fn=functools.partial(prove_gkr_jitted, *op_args),
+                lower=functools.partial(prove_gkr_jitted.lower, *op_args),
                 metadata={
                     "field": "koalabear",
                     "interaction_variables": str(iv),
