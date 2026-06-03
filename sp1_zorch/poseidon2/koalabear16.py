@@ -53,9 +53,13 @@ _INTERNAL_RC = [
     452207447, 510054082,
 ]
 
+# Internal-diffusion diagonal in (d_i - 1) form, J-folded: the engine applies
+# sum(state) + internal_diag[i]*state[i], so internal_diag[i] = d_i - 1 with the
+# 1 supplied by J. KoalaBear's honest diagonal is powers of two (d_0 = -1 ->
+# -2); this is field-specific, not shared with BabyBear's [-2,1,2,1/2,...].
 _INTERNAL_DIAG = [
-    2130706431, 1, 2, 1065353217, 3, 4, 1065353216, 2130706430, 2130706429,
-    2122383361, 1864368129, 2130706306, 8323072, 266338304, 133169152, 127,
+    2130706431, 1, 2, 4, 8, 16, 32, 64,
+    128, 256, 512, 1024, 2048, 4096, 8192, 32768,
 ]
 
 

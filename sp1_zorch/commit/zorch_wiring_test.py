@@ -19,12 +19,12 @@ from zorch.hash.compression import Compression, CompressionParams
 from zorch.hash.poseidon2.poseidon2 import Poseidon2
 from zorch.hash.sponge import Sponge, SpongeParams
 
-# Plonky3 golden (p3_commit=4318eba, default_koalabear_poseidon2_16):
-# PaddingFreeSponge<_,16,8,8> leaves + TruncatedPermutation<_,2,8,16> over
-# arange(32) reshaped to 4x8. Matches zorch/commit/merkle_test.py.
+# Honest Plonky3 koalabear16 root (p3_commit=4318eba, default_koalabear_poseidon2_16,
+# R^-1-free): PaddingFreeSponge<_,16,8,8> leaves + TruncatedPermutation<_,2,8,16>
+# over arange(32) reshaped to 4x8.
 _PLONKY3_MERKLE_ROOT_4X8 = jnp.array(
-    [1670701318, 437280557, 23464423, 637192971,
-     1642004034, 359231982, 157670030, 587973557],
+    [1344837989, 712251909, 1580376709, 1300452765,
+     381955806, 605764342, 1581626736, 224956088],
     dtype=F,
 )
 

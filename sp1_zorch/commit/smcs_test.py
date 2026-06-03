@@ -20,14 +20,14 @@ from zorch.hash.sponge import Sponge, SpongeParams
 
 # Plonky3 koalabear16 root over arange(32).reshape(4, 8) — before the separator.
 _PLONKY3_RAW_ROOT_4X8 = jnp.array(
-    [1670701318, 437280557, 23464423, 637192971,
-     1642004034, 359231982, 157670030, 587973557],
+    [1344837989, 712251909, 1580376709, 1300452765,
+     381955806, 605764342, 1581626736, 224956088],
     dtype=F,
 )
 # commit() over the same matrix: compress([root, sponge([log_height=2, width=8])]).
 _SMCS_COMMIT_4X8 = jnp.array(
-    [758018295, 1781457694, 199952559, 105804,
-     757812367, 897983307, 503747739, 1584629093],
+    [1375904297, 495201618, 2071517917, 1645440997,
+     1298104692, 1127517111, 412334041, 871560242],
     dtype=F,
 )
 
