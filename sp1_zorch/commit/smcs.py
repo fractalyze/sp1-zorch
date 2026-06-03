@@ -16,6 +16,8 @@ layout (``prove_openings_at_indices``): all SP1 glue, all here.
 
 from __future__ import annotations
 
+from enum import IntEnum
+
 import jax
 import jax.numpy as jnp
 import zk_dtypes
@@ -36,20 +38,27 @@ def _is_extension_field(dtype) -> bool:
         return False
 
 
+class VerifyCode(IntEnum):
+    """SMCS verifier return codes.
+
+    Values mirror SP1's verify enum so the FFI byte-match returns identical codes;
+    1 (``WRONG_BATCH_SIZE``) is unreachable for a single-matrix scheme (no batch
+    dimension), so it is omitted. ``verify_batch`` returns one of these as a traced
+    ``int32`` rather than raising, so verification runs inside a jit/fused region.
+    """
+
+    OK = 0
+    WRONG_HEIGHT = 2
+    INDEX_OUT_OF_BOUNDS = 3
+    ROOT_MISMATCH = 4
+
+
 class SingleMatrixCommitmentScheme:
     """SP1's single-matrix commitment, built on zorch's agnostic Merkle blocks.
 
     Holds the leaf ``Sponge`` and the 2-to-1 ``Compression`` (both also drive the
     internal ``MerkleTree``); ``digest_elems`` is the compressor chunk size.
     """
-
-    # SP1 verifier return codes. Values track SP1's verify enum; 1 is SP1's
-    # WRONG_BATCH_SIZE, which a single-matrix scheme cannot produce, so it is
-    # omitted here (no batch dimension to be wrong about).
-    VERIFY_OK = 0
-    VERIFY_ERR_WRONG_HEIGHT = 2
-    VERIFY_ERR_INDEX_OUT_OF_BOUNDS = 3
-    VERIFY_ERR_ROOT_MISMATCH = 4
 
     def __init__(self, sponge: Sponge, compressor: Compression):
         # Keep sponge + compressor too: the domain separator calls them directly
@@ -137,7 +146,7 @@ class SingleMatrixCommitmentScheme:
             row: the opened ``(width,)`` row.
             proof: ``log_height`` sibling digests, leaf level first.
 
-        Returns an ``int32`` ``VERIFY_*`` code: ``OK`` iff the rebound root
+        Returns an ``int32`` :class:`VerifyCode`: ``OK`` iff the rebound root
         equals ``commitment``; ``WRONG_HEIGHT`` if ``proof`` has the wrong
         length; ``INDEX_OUT_OF_BOUNDS`` if ``index >= height``; else
         ``ROOT_MISMATCH``.
@@ -145,7 +154,7 @@ class SingleMatrixCommitmentScheme:
         height, width = dims
         log_height = log2_strict_usize(height)
         if len(proof) != log_height:
-            return jnp.array(self.VERIFY_ERR_WRONG_HEIGHT, dtype=jnp.int32)
+            return jnp.array(VerifyCode.WRONG_HEIGHT, dtype=jnp.int32)
 
         # Reconstruct the raw root via zorch's fold (row + sibling path); the
         # consumer keeps only the SP1 separator rebind, not the generic Merkle
@@ -156,8 +165,8 @@ class SingleMatrixCommitmentScheme:
         # Priority order: bounds first, then the reconstructed-root check.
         return jnp.where(
             index >= height,
-            self.VERIFY_ERR_INDEX_OUT_OF_BOUNDS,
-            jnp.where(matches, self.VERIFY_OK, self.VERIFY_ERR_ROOT_MISMATCH),
+            VerifyCode.INDEX_OUT_OF_BOUNDS,
+            jnp.where(matches, VerifyCode.OK, VerifyCode.ROOT_MISMATCH),
         ).astype(jnp.int32)
 
     @staticmethod

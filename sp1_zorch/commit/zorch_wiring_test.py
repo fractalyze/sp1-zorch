@@ -10,6 +10,7 @@ The SP1-specific SMCS that layers on top lands in the next slice.
 """
 
 import jax.numpy as jnp
+from absl.testing import absltest
 from zk_dtypes import koalabear_mont as F
 
 from sp1_zorch.poseidon2.koalabear16 import koalabear16_params
@@ -35,12 +36,12 @@ def _kb16_tree():
     return MerkleTree(sponge, comp)
 
 
-def test_zorch_merkle_commit_reachable_and_correct():
-    tree = _kb16_tree()
-    raw_root, _ = tree.commit(jnp.arange(32, dtype=F).reshape(4, 8))
-    assert jnp.array_equal(raw_root, _PLONKY3_MERKLE_ROOT_4X8)
+class ZorchWiringTest(absltest.TestCase):
+    def test_zorch_merkle_commit_reachable_and_correct(self) -> None:
+        tree = _kb16_tree()
+        raw_root, _ = tree.commit(jnp.arange(32, dtype=F).reshape(4, 8))
+        self.assertTrue(bool(jnp.array_equal(raw_root, _PLONKY3_MERKLE_ROOT_4X8)))
 
 
 if __name__ == "__main__":
-    test_zorch_merkle_commit_reachable_and_correct()
-    print("ok")
+    absltest.main()
