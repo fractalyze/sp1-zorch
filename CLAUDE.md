@@ -1,6 +1,7 @@
 # Project context for Claude Code
 
 - **Overview & quick start:** [`README.md`](README.md)
+- **Conventions:** [`docs/conventions.md`](docs/conventions.md) — comments (why-not-what), external SP1 references (pinned permalinks).
 - **Current work:** [fractalyze/zorch#37](https://github.com/fractalyze/zorch/issues/37) — bootstrap + SMCS on zorch merkle blocks.
 
 ## One non-negotiable
