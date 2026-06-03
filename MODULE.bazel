@@ -24,8 +24,8 @@ bazel_dep(name = "zorch", version = "0.0.0")
 git_override(
     module_name = "zorch",
     remote = "https://github.com/fractalyze/zorch.git",
-    # main @ merged merkle-commit blocks (fractalyze/zorch#29).
-    commit = "97c12e714c00e20aec7a8637d38c9480d1077f3c",
+    # main @ dense LogUp-GKR prover (fractalyze/zorch#60).
+    commit = "b46d5ed797502ef9111c173f52efc4488bb398d6",
 )
 
 python = use_extension("@rules_python//python/extensions:python.bzl", "python")
