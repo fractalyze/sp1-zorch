@@ -12,7 +12,7 @@ import jax.numpy as jnp
 import numpy as np
 from zk_dtypes import koalabear_mont as F
 
-from zorch.hash.poseidon2 import Poseidon2Params
+from zorch.hash.poseidon2.params import Poseidon2Params
 
 _WIDTH, _ER, _IR, _ALPHA = 16, 4, 20, 3
 
