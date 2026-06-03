@@ -15,7 +15,7 @@ from zk_dtypes import koalabear_mont as F
 from sp1_zorch.poseidon2.koalabear16 import koalabear16_params
 from zorch.commit.merkle import MerkleTree
 from zorch.hash.compression import Compression, CompressionParams
-from zorch.hash.poseidon2 import Poseidon2
+from zorch.hash.poseidon2.poseidon2 import Poseidon2
 from zorch.hash.sponge import Sponge, SpongeParams
 
 # Plonky3 golden (p3_commit=4318eba, default_koalabear_poseidon2_16):
