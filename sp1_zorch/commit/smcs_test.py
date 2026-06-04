@@ -18,16 +18,33 @@ from zorch.hash.compression import Compression, CompressionParams
 from zorch.hash.poseidon2.poseidon2 import Poseidon2
 from zorch.hash.sponge import Sponge, SpongeParams
 
-# Plonky3 koalabear16 root over arange(32).reshape(4, 8) — before the separator.
-_PLONKY3_RAW_ROOT_4X8 = jnp.array(
-    [1670701318, 437280557, 23464423, 637192971,
-     1642004034, 359231982, 157670030, 587973557],
+# SP1-form koalabear16 root over arange(32).reshape(4, 8) — before the
+# separator.
+_SP1_RAW_ROOT_4X8 = jnp.array(
+    [
+        709053809,
+        548310247,
+        1460186906,
+        135994348,
+        1863522735,
+        953629012,
+        708601688,
+        648442714,
+    ],
     dtype=F,
 )
 # commit() over the same matrix: compress([root, sponge([log_height=2, width=8])]).
 _SMCS_COMMIT_4X8 = jnp.array(
-    [758018295, 1781457694, 199952559, 105804,
-     757812367, 897983307, 503747739, 1584629093],
+    [
+        1353110693,
+        797241874,
+        1199727970,
+        1276263656,
+        166408803,
+        91315187,
+        1416168646,
+        20384573,
+    ],
     dtype=F,
 )
 
@@ -51,7 +68,7 @@ class SingleMatrixCommitmentSchemeTest(absltest.TestCase):
         committed, _ = smcs.commit(matrix)
 
         raw_root, _ = MerkleTree(sponge, comp).commit(matrix)
-        self.assertTrue(bool(jnp.array_equal(raw_root, _PLONKY3_RAW_ROOT_4X8)))
+        self.assertTrue(bool(jnp.array_equal(raw_root, _SP1_RAW_ROOT_4X8)))
 
         # Independent recomputation of SP1's separator over the golden root.
         params = sponge.hash(jnp.array([2, 8], dtype=F))  # [log_height, width]
@@ -67,8 +84,9 @@ class SingleMatrixCommitmentSchemeTest(absltest.TestCase):
         matrix = jnp.arange(32, dtype=F).reshape(4, 8)  # height 4 -> 3 layers
         committed, digest_layers = smcs.commit(matrix)
         self.assertEqual(committed.shape, (8,))
-        self.assertEqual([layer.shape for layer in digest_layers],
-                         [(4, 8), (2, 8), (1, 8)])
+        self.assertEqual(
+            [layer.shape for layer in digest_layers], [(4, 8), (2, 8), (1, 8)]
+        )
         self.assertTrue(bool(jnp.array_equal(committed, _SMCS_COMMIT_4X8)))
 
     def test_open_batch_returns_rows_and_sibling_path(self) -> None:
@@ -100,8 +118,9 @@ class SingleMatrixCommitmentSchemeTest(absltest.TestCase):
         indices = jnp.array([0, 1, 2, 3])
         rows, proofs = smcs.open_batch(indices, matrix, layers)
         for q, idx in enumerate(range(4)):
-            code = smcs.verify_batch(commitment, (4, 8), idx, rows[q],
-                                     _proof_for(proofs, q))
+            code = smcs.verify_batch(
+                commitment, (4, 8), idx, rows[q], _proof_for(proofs, q)
+            )
             self.assertEqual(int(code), VerifyCode.OK)
 
     def test_verify_rejects_tampered_row(self) -> None:

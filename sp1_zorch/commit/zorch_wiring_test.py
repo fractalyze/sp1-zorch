@@ -3,7 +3,7 @@
 This is the first slice's verification — it builds zorch's Sponge / Compression /
 MerkleTree over zorch's agnostic Poseidon2 engine, parameterized by sp1-zorch's
 OWN koalabear16 instance (named params are a consumer concern, not zorch API),
-and reproduces the Plonky3 koalabear16 Merkle root over a 4x8 matrix. Passing
+and reproduces the SP1-form koalabear16 Merkle root over a 4x8 matrix. Passing
 under `bazel test` proves the cross-module dependency (sp1_zorch -> zorch), the
 pinned toolchain, and that sp1-zorch's params drive zorch's engine correctly.
 The SP1-specific SMCS that layers on top lands in the next slice.
@@ -19,12 +19,20 @@ from zorch.hash.compression import Compression, CompressionParams
 from zorch.hash.poseidon2.poseidon2 import Poseidon2
 from zorch.hash.sponge import Sponge, SpongeParams
 
-# Plonky3 golden (p3_commit=4318eba, default_koalabear_poseidon2_16):
+# SP1-form golden (vendored-kernel parameterization):
 # PaddingFreeSponge<_,16,8,8> leaves + TruncatedPermutation<_,2,8,16> over
 # arange(32) reshaped to 4x8. Matches zorch/commit/merkle_test.py.
-_PLONKY3_MERKLE_ROOT_4X8 = jnp.array(
-    [1670701318, 437280557, 23464423, 637192971,
-     1642004034, 359231982, 157670030, 587973557],
+_SP1_MERKLE_ROOT_4X8 = jnp.array(
+    [
+        709053809,
+        548310247,
+        1460186906,
+        135994348,
+        1863522735,
+        953629012,
+        708601688,
+        648442714,
+    ],
     dtype=F,
 )
 
@@ -40,7 +48,7 @@ class ZorchWiringTest(absltest.TestCase):
     def test_zorch_merkle_commit_reachable_and_correct(self) -> None:
         tree = _kb16_tree()
         raw_root, _ = tree.commit(jnp.arange(32, dtype=F).reshape(4, 8))
-        self.assertTrue(bool(jnp.array_equal(raw_root, _PLONKY3_MERKLE_ROOT_4X8)))
+        self.assertTrue(bool(jnp.array_equal(raw_root, _SP1_MERKLE_ROOT_4X8)))
 
 
 if __name__ == "__main__":
