@@ -19,7 +19,6 @@ py_test(
     name = "prover_test",
     size = "small",
     srcs = ["prover_test.py"],
-    env = {"JAX_PLATFORMS": "cpu"},
     deps = [
         ":zerocheck",
         requirement("absl_py"),

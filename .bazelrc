@@ -2,6 +2,12 @@
 build --announce_rc
 test --test_output=errors
 
+# Tests are backend-agnostic; CPU is the default (not a requirement) so plain
+# `bazel test` is deterministic on any machine. CI overrides it per matrix leg
+# via --test_env (the GPU leg pins JAX_PLATFORMS=cuda). Previously pinned
+# per-target in each py_test's env, which made the backend unselectable from CI.
+test --test_env=JAX_PLATFORMS=cpu
+
 # Local, machine-specific overrides (gitignored). For dev against a local zorch
 # working copy instead of the pinned git_override, add to .bazelrc.user:
 #   common --override_module=zorch=/abs/path/to/your/zorch/checkout
