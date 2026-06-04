@@ -18,7 +18,9 @@ py_library(
 
 py_test(
     name = "smcs_test",
-    size = "small",
+    # medium: merkle_commit composite runs the slow no-CompositeOp fallback
+    # under the pinned jax (>60s); back to small once jax#164 lands in the pin.
+    size = "medium",
     srcs = ["smcs_test.py"],
     env = {"JAX_PLATFORMS": "cpu"},
     deps = [
