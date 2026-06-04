@@ -126,6 +126,33 @@ py_binary(
         "@zorch//zorch/hash/poseidon2",
         requirement("absl_py"),
         requirement("jax"),
+        requirement("jax_cuda12_plugin"),
         requirement("zk_dtypes"),
+        requirement("zkx_cuda_pjrt"),
+    ],
+)
+
+# GPU phase-ablation benchmark over an rsp capture; run manually:
+#   bazel run //sp1_zorch/commit:bench_trace_commit -- \
+#       --shard-dir=/path/to/rsp_dump/shardN --region=prep
+py_binary(
+    name = "bench_trace_commit",
+    srcs = ["bench_trace_commit.py"],
+    deps = [
+        ":region",
+        ":smcs",
+        ":trace_commit",
+        "//sp1_zorch/poseidon2:koalabear16",
+        "//sp1_zorch/shard_prover",
+        "@zorch//zorch/coding:reed_solomon",
+        "@zorch//zorch/hash:compression",
+        "@zorch//zorch/hash:sponge",
+        "@zorch//zorch/hash/poseidon2",
+        requirement("absl_py"),
+        requirement("jax"),
+        requirement("jax_cuda12_plugin"),
+        requirement("zk_dtypes"),
+        requirement("zkbench"),
+        requirement("zkx_cuda_pjrt"),
     ],
 )
