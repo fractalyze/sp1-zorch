@@ -1,0 +1,60 @@
+name: CI
+
+permissions: read-all
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+# Cancel in-progress runs for a PR's branch, but never cancel pushes to main so
+# every merge gets a full run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  # Build the test matrix dynamically: always a CPU leg, plus a GPU leg only when
+  # the HAS_GPU_RUNNER repo variable is "true" (a job-level `if` can't read
+  # `matrix`, so the leg is added here rather than skipped later — without GPU
+  # hardware it's absent, not queued forever). Runners are labeled by capability:
+  # a CPU-only box is `[self-hosted, cpu]`, a GPU box `[self-hosted, cpu, gpu]`
+  # (it serves CPU work too), so the CPU leg never starves when the CPU-only box
+  # is busy.
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set.outputs.matrix }}
+    steps:
+      - id: set
+        # Strict `cuda` (no CPU fallback) on the GPU leg so a green run means it
+        # really ran on GPU; a GPU init failure fails loudly instead of silently
+        # passing on CPU.
+        run: |
+          cpu='{"backend":"cpu","runs_on":["self-hosted","cpu"],"jax_platforms":"cpu"}'
+          gpu='{"backend":"gpu","runs_on":["self-hosted","gpu"],"jax_platforms":"cuda"}'
+          include="${cpu}"
+          if [ "${{ vars.HAS_GPU_RUNNER }}" = "true" ]; then
+            include="${cpu},${gpu}"
+          fi
+          echo "matrix={\"include\":[${include}]}" >> "$GITHUB_OUTPUT"
+
+  build-and-test:
+    needs: setup
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
+    runs-on: ${{ matrix.runs_on }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: bazel-contrib/setup-bazel@0.9.1
+        with:
+          bazelisk-cache: true
+          disk-cache: ${{ github.workflow }}-${{ matrix.backend }}
+          repository-cache: true
+      # --test_env selects the backend per leg, overriding the repo default
+      # (.bazelrc pins JAX_PLATFORMS=cpu). The GPU leg pins cuda — needed for the
+      # SP1 FFI byte-match tests, which require a CUDA GPU.
+      - name: Run bazel test
+        run: bazel test --test_env=JAX_PLATFORMS=${{ matrix.jax_platforms }} -- //...
