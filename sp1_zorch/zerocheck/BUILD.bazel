@@ -1,4 +1,4 @@
-load("@rules_python//python:defs.bzl", "py_library", "py_test")
+load("@rules_python//python:defs.bzl", "py_binary", "py_library", "py_test")
 load("@sp1_zorch_pip//:requirements.bzl", "requirement")
 
 # SP1's zerocheck constraint RLC over zorch's agnostic constraint_eval combinator.
@@ -24,5 +24,20 @@ py_test(
         requirement("absl_py"),
         requirement("jax"),
         requirement("zk_dtypes"),
+    ],
+)
+
+# GPU-only manual tool (bazel run), not a CI test — see the module docstring.
+py_binary(
+    name = "rw_fold_smoke",
+    srcs = ["rw_fold_smoke.py"],
+    deps = [
+        ":zerocheck",
+        requirement("jax"),
+        requirement("jax_cuda12_plugin"),
+        requirement("numpy"),
+        requirement("rw_constraints"),
+        requirement("zk_dtypes"),
+        requirement("zkx_cuda_pjrt"),
     ],
 )

@@ -18,3 +18,8 @@ zkx-cuda-pjrt==0.0.5.dev20260602054734
 # Benchmark harness (shared across fractalyze repos); used only by the
 # //sp1_zorch/...:*bench* py_binary targets, not by the sp1-zorch wheel itself.
 zkbench==0.4.0
+
+# riscv-witness's exported SP1 chip constraints (per-row eval as a JAX-callable,
+# the eval_fn the zerocheck fold consumes). Pure-JAX wheel, bundles the
+# constraint manifest as package data; used only by the zerocheck GPU targets.
+rw-constraints @ https://github.com/fractalyze/pypi/releases/download/riscv-witness-dev-20260524141732/rw_constraints-0.1.0.dev20260524141732-py3-none-any.whl
