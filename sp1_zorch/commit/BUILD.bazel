@@ -35,6 +35,28 @@ py_test(
     ],
 )
 
+# GPU conformance vs the SP1 reference kernel — needs CUDA + the SP1 FFI
+# library via SP1_JAX_FFI_LIB (vendored in whir-zorch, not here); skips
+# without either. The digest-tree byte-match is gated on an honest SP1 FFI
+# rebuild — see the test docstring.
+py_test(
+    name = "smcs_sp1_ffi_test",
+    size = "medium",
+    srcs = ["smcs_sp1_ffi_test.py"],
+    deps = [
+        ":smcs",
+        "//sp1_zorch/poseidon2:koalabear16",
+        "@zorch//zorch/hash:compression",
+        "@zorch//zorch/hash:sponge",
+        "@zorch//zorch/hash/poseidon2",
+        "@zorch//zorch/utils:bits",
+        requirement("absl_py"),
+        requirement("jax"),
+        requirement("numpy"),
+        requirement("zk_dtypes"),
+    ],
+)
+
 # Bootstrap wiring proof — exercises sp1_zorch's params over zorch's engine
 # through the cross-module dependency.
 py_test(
