@@ -26,6 +26,8 @@ from jax import Array
 from zorch.constraint_eval import constraint_eval
 
 
+# Reference: SP1's `chip_powers_of_alpha` constraint-fold coefficients —
+# https://github.com/fractalyze/sp1/blob/640d8b80c/crates/hypercube/src/prover/shard.rs#L520-L524
 def rlc_coeffs(alpha: Array, num_constraints: int) -> Array:
     """SP1's RLC coefficients for `num_constraints` constraints: descending
     powers of `alpha`, ``[alpha**(K-1), ..., alpha, 1]``."""
