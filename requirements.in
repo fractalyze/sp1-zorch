@@ -15,6 +15,10 @@ jaxlib==0.0.5.dev20260602054734
 jax-cuda12-plugin==0.0.5.dev20260524000415
 zkx-cuda-pjrt==0.0.5.dev20260602054734
 
+# SP1 chip definitions (constraints + LogUp interactions) exported from
+# riscv-witness; consumed by the shard fixture loader. Same pin as whir-zorch.
+rw-constraints @ https://github.com/fractalyze/pypi/releases/download/riscv-witness-dev-20260524141732/rw_constraints-0.1.0.dev20260524141732-py3-none-any.whl
+
 # Benchmark harness (shared across fractalyze repos); used only by the
 # //sp1_zorch/...:*bench* py_binary targets, not by the sp1-zorch wheel itself.
 zkbench==0.4.0
