@@ -1,0 +1,49 @@
+load("@rules_python//python:defs.bzl", "py_library", "py_test")
+load("@sp1_zorch_pip//:requirements.bzl", "requirement")
+
+# Shard prover input loading: SP1 GPU-dump fixtures + rw_constraints chips.
+py_library(
+    name = "shard_prover",
+    srcs = [
+        "chip_loader.py",
+        "fixture_loader.py",
+        "types.py",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        requirement("jax"),
+        requirement("numpy"),
+        requirement("rw_constraints"),
+        requirement("zk_dtypes"),
+    ],
+)
+
+py_test(
+    name = "fixture_loader_test",
+    size = "small",
+    srcs = ["fixture_loader_test.py"],
+    deps = [
+        ":shard_prover",
+        requirement("absl_py"),
+        requirement("jax"),
+        requirement("numpy"),
+        requirement("zk_dtypes"),
+    ],
+)
+
+py_test(
+    name = "rsp_dump_test",
+    size = "medium",
+    srcs = ["rsp_dump_test.py"],
+    tags = [
+        # Needs a local rsp GPU-trace capture (~1.5 GB/shard); run explicitly:
+        #   bazel test //sp1_zorch/shard_prover:rsp_dump_test \
+        #       --test_env=SP1_ZORCH_RSP_SHARD=/path/to/rsp_dump/shardN
+        "manual",
+    ],
+    deps = [
+        ":shard_prover",
+        requirement("absl_py"),
+        requirement("zk_dtypes"),
+    ],
+)
