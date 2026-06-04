@@ -1,4 +1,4 @@
-load("@rules_python//python:defs.bzl", "py_library", "py_test")
+load("@rules_python//python:defs.bzl", "py_binary", "py_library", "py_test")
 load("@sp1_zorch_pip//:requirements.bzl", "requirement")
 
 # SP1's single-matrix commitment over zorch's agnostic Merkle blocks.
@@ -44,6 +44,83 @@ py_test(
     deps = [
         "//sp1_zorch/poseidon2:koalabear16",
         "@zorch//zorch/commit:merkle",
+        "@zorch//zorch/hash:compression",
+        "@zorch//zorch/hash:sponge",
+        "@zorch//zorch/hash/poseidon2",
+        requirement("absl_py"),
+        requirement("jax"),
+        requirement("zk_dtypes"),
+    ],
+)
+
+# Jagged region packing for the SP1 trace commit.
+py_library(
+    name = "region",
+    srcs = ["region.py"],
+    visibility = ["//visibility:public"],
+    deps = [
+        requirement("jax"),
+    ],
+)
+
+# Stacked RS-encode + SMCS commit of a packed region (SP1's jagged commit).
+py_library(
+    name = "trace_commit",
+    srcs = ["trace_commit.py"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":region",
+        ":smcs",
+        "@zorch//zorch/coding:reed_solomon",
+        requirement("jax"),
+    ],
+)
+
+py_test(
+    name = "region_test",
+    size = "small",
+    srcs = ["region_test.py"],
+    deps = [
+        ":region",
+        requirement("absl_py"),
+        requirement("jax"),
+        requirement("zk_dtypes"),
+    ],
+)
+
+py_test(
+    name = "trace_commit_test",
+    # medium: poseidon2/merkle composites run the slow no-CompositeOp fallback
+    # under the pinned jax (same reason as smcs_test).
+    size = "medium",
+    srcs = ["trace_commit_test.py"],
+    deps = [
+        ":region",
+        ":smcs",
+        ":trace_commit",
+        "//sp1_zorch/poseidon2:koalabear16",
+        "@zorch//zorch/hash:compression",
+        "@zorch//zorch/hash:sponge",
+        "@zorch//zorch/hash/poseidon2",
+        requirement("absl_py"),
+        requirement("jax"),
+        requirement("zk_dtypes"),
+    ],
+)
+
+py_binary(
+    name = "verify_trace_commit",
+    srcs = ["verify_trace_commit.py"],
+    # Byte-match harness over a local rsp GPU-trace capture (~1.5 GB/shard) —
+    # a runnable, not a unit test:
+    #   bazel run //sp1_zorch/commit:verify_trace_commit -- \
+    #       --shard_dir=/path/to/rsp_dump/shardN --stage=prep
+    deps = [
+        ":region",
+        ":smcs",
+        ":trace_commit",
+        "//sp1_zorch/poseidon2:koalabear16",
+        "//sp1_zorch/shard_prover",
         "@zorch//zorch/hash:compression",
         "@zorch//zorch/hash:sponge",
         "@zorch//zorch/hash/poseidon2",

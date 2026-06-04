@@ -24,8 +24,10 @@ bazel_dep(name = "zorch", version = "0.0.0")
 git_override(
     module_name = "zorch",
     remote = "https://github.com/fractalyze/zorch.git",
-    # main @ constraint_eval composite (fractalyze/zorch#115).
-    commit = "175fbd36d1de485aaf61f860682c20cce0f70e07",
+    # main @ public testkit transcript (fractalyze/zorch#129); also brings
+    # internal_j_scale (#126), the coding bazel targets, and the jagged
+    # opening stack (#121/#128).
+    commit = "7bd976f92fceae4871060c40dcca572c8adca025",
 )
 
 python = use_extension("@rules_python//python/extensions:python.bzl", "python")
