@@ -218,5 +218,17 @@ class SingleMatrixCommitmentSchemeTest(absltest.TestCase):
             smcs.commit(jnp.zeros((4, 4), dtype=EF))
 
 
+class BindStructureTest(absltest.TestCase):
+    def test_count_shape_mismatch_raises(self):
+        _, _, smcs = _smcs()
+        commitment = jnp.arange(8, dtype=jnp.uint32).view(F)
+        with self.assertRaises(ValueError):
+            smcs.bind_structure(
+                commitment,
+                jnp.array([1, 2, 3], dtype=F),
+                jnp.array([1, 2], dtype=F),
+            )
+
+
 if __name__ == "__main__":
     absltest.main()

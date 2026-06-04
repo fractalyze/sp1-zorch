@@ -102,6 +102,29 @@ class SingleMatrixCommitmentScheme:
         params = self._sponge.hash(jnp.array([log_height, width], dtype=dtype))
         return self._compressor.compress(jnp.stack([raw_root, params]))
 
+    def bind_structure(
+        self, commitment: Array, row_counts: Array, column_counts: Array
+    ) -> Array:
+        """Bind jagged row/column structure into an SMCS commitment.
+
+        SP1's jagged commit convention: hash ``[num_tables, row_counts...,
+        column_counts...]`` and compress with the (already shape-bound)
+        commitment, so the verifier's claimed chip layout is pinned by the
+        commitment itself.
+        """
+        # A length mismatch wouldn't error downstream — it would hash a
+        # malformed structure preimage silently, so fail loudly here.
+        if row_counts.shape != column_counts.shape:
+            raise ValueError(
+                f"row_counts shape {row_counts.shape} must match "
+                f"column_counts shape {column_counts.shape}"
+            )
+        num_tables = jnp.array([row_counts.shape[0]], dtype=row_counts.dtype)
+        structure = jnp.concatenate([num_tables, row_counts, column_counts])
+        return self._compressor.compress(
+            jnp.stack([commitment, self._sponge.hash(structure)])
+        )
+
     def open_batch(
         self, indices: Array, matrix: Array, digest_layers: list[Array]
     ) -> tuple[Array, list[Array]]:
