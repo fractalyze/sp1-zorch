@@ -22,7 +22,6 @@ py_test(
     # under the pinned jax (>60s); back to small once jax#164 lands in the pin.
     size = "medium",
     srcs = ["smcs_test.py"],
-    env = {"JAX_PLATFORMS": "cpu"},
     deps = [
         ":smcs",
         "//sp1_zorch/poseidon2:koalabear16",
@@ -42,7 +41,6 @@ py_test(
     name = "zorch_wiring_test",
     size = "small",
     srcs = ["zorch_wiring_test.py"],
-    env = {"JAX_PLATFORMS": "cpu"},
     deps = [
         "//sp1_zorch/poseidon2:koalabear16",
         "@zorch//zorch/commit:merkle",
