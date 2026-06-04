@@ -9,11 +9,11 @@ round polynomials, so it validates the zerocheck summand without knowing it."""
 import jax.numpy as jnp
 import numpy as np
 from absl.testing import absltest
-from zk_dtypes import koalabear as KB
+from zk_dtypes import koalabear_mont as KB
 
 from zorch.poly.eq import expand_eq_to_hypercube
 from zorch.sumcheck import verifier
-from zorch.transcript import StubTranscript
+from zorch.testkit.transcript import cheap_transcript
 from zorch.verify import verify
 
 from sp1_zorch.zerocheck.prover import rlc_coeffs
@@ -49,20 +49,21 @@ class ZerocheckRoundTest(absltest.TestCase):
     def test_random_trace_self_verifies(self) -> None:
         num_vars = 4
         cols, alpha, zeta, claim = _setup(num_vars)
-        challenges = _rand(11, (num_vars,))
 
+        # Real (cheap) Fiat-Shamir: prover and verifier each derive the same
+        # challenge stream from the observed round polys.
         final_state, _, msgs = prove_zerocheck(
-            _eval_fn, cols, alpha, zeta, StubTranscript(challenges), degree=_DEGREE
+            _eval_fn, cols, alpha, zeta, cheap_transcript(KB), degree=_DEGREE
         )
         point, final_claim, _, ok = verify(
             verifier.SumcheckRound(_DEGREE),
             claim,
             msgs.round_poly,
-            StubTranscript(challenges),
+            cheap_transcript(KB),
         )
 
         self.assertTrue(bool(ok))
-        self.assertTrue(bool(jnp.all(point == challenges)))
+        self.assertEqual(point.shape, (num_vars,))
         # The verifier's reduced claim must equal the summand at the bound point,
         # i.e. the prover's fully-folded factors run back through the summand.
         want = ZerocheckRound(alpha=alpha, eval_fn=_eval_fn, degree=_DEGREE)._combine(
@@ -73,15 +74,14 @@ class ZerocheckRoundTest(absltest.TestCase):
     def test_wrong_claim_rejected(self) -> None:
         num_vars = 4
         cols, alpha, zeta, claim = _setup(num_vars)
-        challenges = _rand(11, (num_vars,))
         _, _, msgs = prove_zerocheck(
-            _eval_fn, cols, alpha, zeta, StubTranscript(challenges), degree=_DEGREE
+            _eval_fn, cols, alpha, zeta, cheap_transcript(KB), degree=_DEGREE
         )
         _, _, _, ok = verify(
             verifier.SumcheckRound(_DEGREE),
             claim + jnp.array(1, KB),
             msgs.round_poly,
-            StubTranscript(challenges),
+            cheap_transcript(KB),
         )
         self.assertFalse(bool(ok))
 

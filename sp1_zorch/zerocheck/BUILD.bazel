@@ -39,8 +39,8 @@ py_test(
     srcs = ["round_test.py"],
     deps = [
         ":zerocheck",
-        "@zorch//zorch:transcript",
         "@zorch//zorch:verify",
+        "@zorch//zorch/testkit:transcript",
         "@zorch//zorch/poly:poly",
         "@zorch//zorch/sumcheck",
         requirement("absl_py"),
