@@ -24,9 +24,9 @@ bazel_dep(name = "zorch", version = "0.0.0")
 git_override(
     module_name = "zorch",
     remote = "https://github.com/fractalyze/zorch.git",
-    # main @ jagged GKR layer prover + verifier dual (fractalyze/zorch#151);
-    # also brings the fri migration onto the FoldableCode seam (#153).
-    commit = "d0394e97de7520d7859a8183c6594dd7d3f73f3f",
+    # main @ (lam, claim) recorded on jagged layer proofs + lazily consumed
+    # ProveChain (fractalyze/zorch#158).
+    commit = "413c14f6acc9a196913e78f751251644fbd6f72c",
 )
 
 python = use_extension("@rules_python//python/extensions:python.bzl", "python")
