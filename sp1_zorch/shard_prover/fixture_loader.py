@@ -96,11 +96,12 @@ def _parse_ef_list(value: str) -> Array:
 def check_match(label: str, got, want) -> bool:
     """The byte-match runnables' OK/MISMATCH line: compare a value against
     its dump reference and print the verdict (got/want on mismatch)."""
-    ok = (
-        got == want
-        if isinstance(got, (int, list, tuple))
-        else bool(jnp.all(got == want))
-    )
+    if isinstance(got, (int, list, tuple)):
+        ok = got == want
+    else:
+        # array_equal, not all(got == want): shape divergence must read as
+        # a mismatch, and broadcasting would equate e.g. (1,) with (1, 1).
+        ok = bool(jnp.array_equal(got, want))
     print(f"{'OK ' if ok else 'MISMATCH'} {label}")
     if not ok:
         print(f"  got:  {got}")
