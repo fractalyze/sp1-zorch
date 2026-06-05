@@ -5,9 +5,9 @@ A chip's K constraints are folded under ``alpha`` into one value per row by
 zorch's ``constraint_eval`` (the SP1 RLC layout lives in ``prover.rlc_coeffs``);
 the zerocheck weights that by the equality polynomial ``eq(zeta, .)`` and sums
 over the boolean hypercube. ``ZerocheckRound`` supplies only that summand to
-zorch's summand-generic per-variable driver (``zorch.prove``), so the round
-reduction, the Fiat-Shamir thread, and the ``zorch.sumcheck`` fusion are reused
-unchanged — only ``eq * constraint-fold`` is SP1's.
+zorch's summand-generic per-variable driver (``zorch.sumcheck.prover.prove``),
+so the round reduction, the Fiat-Shamir thread, and the ``zorch.sumcheck``
+fusion are reused unchanged — only ``eq * constraint-fold`` is SP1's.
 
 State threaded through the driver is ``[eq, col_0, ..., col_{nc-1}]``: the eq
 MLE followed by the chip's column-major trace.

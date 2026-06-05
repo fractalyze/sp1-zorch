@@ -24,10 +24,10 @@ bazel_dep(name = "zorch", version = "0.0.0")
 git_override(
     module_name = "zorch",
     remote = "https://github.com/fractalyze/zorch.git",
-    # main @ jagged GKR circuit layer (fractalyze/zorch#131); also carries
-    # the public testkit transcript (#129), internal_j_scale (#126), the
-    # coding bazel targets, and the jagged opening stack (#121/#128).
-    commit = "38cbc010b037ce13abd23fe5121359e7990ef555",
+    # main @ num_real marker attr (fractalyze/zorch#139); also brings the
+    # coset-codeword fold fix (#137) and the FoldableCode basefold/RS seam
+    # (#136).
+    commit = "0cd727a96971fbc953c053c1b83c466136697306",
 )
 
 python = use_extension("@rules_python//python/extensions:python.bzl", "python")
