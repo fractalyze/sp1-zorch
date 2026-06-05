@@ -9,7 +9,11 @@ from absl.testing import absltest
 from zk_dtypes import koalabear_mont as F
 
 from sp1_zorch.shard_prover.chip_loader import load_sp1_chips
-from sp1_zorch.shard_prover.fixture_loader import load_fixture_shard, read_dump
+from sp1_zorch.shard_prover.fixture_loader import (
+    check_match,
+    load_fixture_shard,
+    read_dump,
+)
 
 _VK_TEXT = """\
 preprocessed_commit=[1, 2, 3, 4, 5, 6, 7, 8]
@@ -44,6 +48,18 @@ def _write_dump(root: Path, trace_subdir: str = "gpu_traces") -> dict[str, np.nd
     raws["public_values"] = pv
     (root / "gpu_vk.txt").write_text(_VK_TEXT)
     return raws
+
+
+class CheckMatchTest(absltest.TestCase):
+    def test_equal_arrays_match(self):
+        self.assertTrue(check_match("eq", jnp.ones((2,), F), jnp.ones((2,), F)))
+
+    def test_shape_divergence_is_a_mismatch(self):
+        # (1,) vs (1, 1) broadcast as all-equal; the harness must still
+        # report a mismatch.
+        self.assertFalse(
+            check_match("shape", jnp.ones((1,), F), jnp.ones((1, 1), F))
+        )
 
 
 class ReadDumpTest(absltest.TestCase):

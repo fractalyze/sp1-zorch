@@ -1,21 +1,26 @@
 load("@rules_python//python:defs.bzl", "py_binary", "py_library", "py_test")
 load("@sp1_zorch_pip//:requirements.bzl", "requirement")
 
-# SP1-aligned LogUp-GKR circuit construction: interaction fingerprinting +
-# first layer over zorch's jagged GKR blocks.
+# SP1-aligned LogUp-GKR: interaction fingerprinting + first layer over
+# zorch's jagged GKR blocks, and the layered prove threading the duplex
+# transcript.
 py_library(
     name = "logup_gkr",
     srcs = [
         "__init__.py",
         "circuit.py",
+        "prover.py",
     ],
     visibility = ["//visibility:public"],
     deps = [
         "//sp1_zorch/commit:region",
+        "@zorch//zorch:transcript",
         "@zorch//zorch/logup_gkr",
+        "@zorch//zorch/poly",
         "@zorch//zorch/utils:bits",
         requirement("jax"),
         requirement("rw_constraints"),
+        requirement("zk_dtypes"),
     ],
 )
 
@@ -27,6 +32,27 @@ py_test(
         ":logup_gkr",
         "//sp1_zorch/commit:region",
         "//sp1_zorch/shard_prover",
+        requirement("absl_py"),
+        requirement("jax"),
+        requirement("rw_constraints"),
+        requirement("zk_dtypes"),
+    ],
+)
+
+py_test(
+    name = "prover_test",
+    size = "medium",
+    srcs = ["prover_test.py"],
+    deps = [
+        ":logup_gkr",
+        "//sp1_zorch/commit:region",
+        "//sp1_zorch/shard_prover",
+        "@zorch//zorch:round",
+        "@zorch//zorch:transcript",
+        "@zorch//zorch/logup_gkr",
+        "@zorch//zorch/poly",
+        "@zorch//zorch/testkit:transcript",
+        "@zorch//zorch/utils:bits",
         requirement("absl_py"),
         requirement("jax"),
         requirement("rw_constraints"),
@@ -46,6 +72,29 @@ py_binary(
         "//sp1_zorch/commit:region",
         "//sp1_zorch/shard_prover",
         "@zorch//zorch/poly",
+        "@zorch//zorch/utils:bits",
+        requirement("absl_py"),
+        requirement("jax"),
+        requirement("jax_cuda12_plugin"),
+        requirement("zk_dtypes"),
+        requirement("zkx_cuda_pjrt"),
+    ],
+)
+
+# rsp byte-match for the full layered GKR prove (preamble transcript ->
+# grind -> challenges -> circuit -> per-layer sumcheck stream):
+#   bazel run //sp1_zorch/logup_gkr:verify_gkr_prove -- \
+#       --shard_dir=/path/to/rsp_dump/shardN
+py_binary(
+    name = "verify_gkr_prove",
+    srcs = ["verify_gkr_prove.py"],
+    deps = [
+        ":logup_gkr",
+        "//sp1_zorch/commit:region",
+        "//sp1_zorch/poseidon2:koalabear16",
+        "//sp1_zorch/shard_prover",
+        "@zorch//zorch:transcript",
+        "@zorch//zorch/hash/poseidon2",
         "@zorch//zorch/utils:bits",
         requirement("absl_py"),
         requirement("jax"),

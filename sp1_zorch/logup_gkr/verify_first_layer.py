@@ -23,7 +23,6 @@ accounting (fast iteration on chip-set / unit / schedule questions).
 
 from __future__ import annotations
 
-import re
 import sys
 from pathlib import Path
 
@@ -40,8 +39,10 @@ from sp1_zorch.logup_gkr.circuit import (
     sp1_next_row_counts,
 )
 from sp1_zorch.shard_prover.fixture_loader import (
+    _parse_ef_list,
     _parse_int_list,
     _parse_kv_lines,
+    check_match,
     load_fixture_shard,
 )
 from zorch.poly.eq import expand_eq_to_hypercube
@@ -59,30 +60,6 @@ _ACCOUNTING_ONLY = flags.DEFINE_bool(
 # SP1 core machine parameters (same as verify_trace_commit).
 _LOG_STACKING_HEIGHT = 21
 _MAX_LOG_ROW_COUNT = 22
-
-_EF_RE = re.compile(r"value: \[([0-9, ]+)\]")
-
-
-def _parse_ef_list(value: str) -> jnp.ndarray:
-    """All ``BinomialExtensionField { value: [...] }`` blobs in a dump value,
-    as one EF array (canonical limbs Mont-encoded)."""
-    rows = [
-        [int(t) for t in m.group(1).split(",")] for m in _EF_RE.finditer(value)
-    ]
-    return jnp.array(rows, dtype=F).reshape(-1).view(EF)
-
-
-def _check(label: str, got, want) -> bool:
-    ok = (
-        got == want
-        if isinstance(got, (int, list, tuple))
-        else bool(jnp.all(got == want))
-    )
-    print(f"{'OK ' if ok else 'MISMATCH'} {label}")
-    if not ok:
-        print(f"  got:  {got}")
-        print(f"  want: {want}")
-    return ok
 
 
 def _round_schedule_check(gkr_chips, traces, shard_dir: Path) -> bool:
@@ -114,13 +91,13 @@ def _round_schedule_check(gkr_chips, traces, shard_dir: Path) -> bool:
 
     by_nrv = {int(r["nrv"]): int(r["height"]) for r in rounds}
     levels = sorted(by_nrv)
-    ok = _check(
+    ok = check_match(
         f"per-round heights, nrv {levels[0]}..{levels[-1]} (col_h units)",
         [by_nrv[n] for n in levels],
         [heights[n] for n in levels],
     )
     niv = log2_ceil_usize(len(counts))
-    ok &= _check(
+    ok &= check_match(
         "per-round niv",
         sorted({int(r["niv"]) for r in rounds}),
         [niv],
@@ -141,7 +118,7 @@ def _accounting(shard, ref: dict[str, str], shard_dir: Path) -> bool:
         sp1_col_h(traces.per_chip[c.name].array.shape[0]) * len(c.interactions)
         for c in gkr_chips
     )
-    ok = _check("height (col_h units)", units, int(ref["height"]))
+    ok = check_match("height (col_h units)", units, int(ref["height"]))
     ok &= _round_schedule_check(gkr_chips, traces, shard_dir)
     return ok
 
@@ -199,20 +176,20 @@ def main(argv) -> None:
     # the real-interaction prefix.
     n_real = sum(len(c.interactions) for c in gkr_chips)
     starts = layer.start_indices
-    ok &= _check("height (col_h units)", starts[n_real] // 2, int(ref["height"]))
-    ok &= _check(
+    ok &= check_match("height (col_h units)", starts[n_real] // 2, int(ref["height"]))
+    ok &= check_match(
         "num_row_variables (SP1 fixed depth)",
         _MAX_LOG_ROW_COUNT - 1,
         int(ref["num_row_variables"]),
     )
     rc_head = _parse_int_list(ref["interaction_row_counts_head"])
-    ok &= _check(
+    ok &= check_match(
         "row_counts head (col_h units)",
         [rc // 2 for rc in layer.row_counts[: len(rc_head)]],
         rc_head,
     )
     si_head = _parse_int_list(ref["start_indices_head"])
-    ok &= _check(
+    ok &= check_match(
         "start_indices head (col_h units)",
         [si // 2 for si in starts[: len(si_head)]],
         si_head,
@@ -222,13 +199,13 @@ def main(argv) -> None:
     # the dump heads print the n0 / d0 planes directly. Only the diag's
     # row-count bookkeeping above is in col_h units.
     num_head = jnp.array(_parse_int_list(ref["num_buf_head"]), dtype=F)
-    ok &= _check(
+    ok &= check_match(
         "num_buf head (n0 plane)",
         layer.numerator_0[: len(num_head)],
         num_head,
     )
     den_head = _parse_ef_list(ref["den_buf_head"])
-    ok &= _check(
+    ok &= check_match(
         "den_buf head (d0 plane)",
         layer.denominator_0[: len(den_head)],
         den_head,

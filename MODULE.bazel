@@ -24,10 +24,9 @@ bazel_dep(name = "zorch", version = "0.0.0")
 git_override(
     module_name = "zorch",
     remote = "https://github.com/fractalyze/zorch.git",
-    # main @ poly coefficient-form + virtual geq blocks (fractalyze/zorch#150);
-    # also brings the absorb-block scan (#138) and the PcsProver/PcsVerifier
-    # seam unification (#134).
-    commit = "df0d46c31ce79b5eeba0f207cbfd73826ff54816",
+    # main @ jagged GKR layer prover + verifier dual (fractalyze/zorch#151);
+    # also brings the fri migration onto the FoldableCode seam (#153).
+    commit = "d0394e97de7520d7859a8183c6594dd7d3f73f3f",
 )
 
 python = use_extension("@rules_python//python/extensions:python.bzl", "python")
