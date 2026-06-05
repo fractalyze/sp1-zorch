@@ -14,10 +14,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+import jax.numpy as jnp
 from jax import Array
 
 if TYPE_CHECKING:
     from rw_constraints import Chip
+    from zorch.transcript import Transcript
 
 # SP1 v1: every shard's public-values vector is padded to this length on both
 # the prover and verifier side; PV-aware chips index fixed slots in the padded
@@ -34,6 +36,17 @@ class MachineVerifyingKey:
     cum_sum_x: Array  # [7] SepticDigest x-coordinate
     cum_sum_y: Array  # [7] SepticDigest y-coordinate
     enable_untrusted: int  # 0 or 1
+
+    def observe_into(self, transcript: Transcript) -> Transcript:
+        """Absorb the vk in SP1's order (``config.rs::observe_into``):
+        commit, pc_start, cum sums, enable_untrusted, six zero pads."""
+        dtype = self.preprocessed_commit.dtype
+        transcript = transcript.observe(self.preprocessed_commit)
+        transcript = transcript.observe(self.pc_start)
+        transcript = transcript.observe(self.cum_sum_x)
+        transcript = transcript.observe(self.cum_sum_y)
+        transcript = transcript.observe(jnp.array(self.enable_untrusted, dtype))
+        return transcript.observe(jnp.zeros(6, dtype))
 
 
 @dataclass(frozen=True)
