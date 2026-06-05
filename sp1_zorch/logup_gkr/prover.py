@@ -10,11 +10,6 @@ lambda (EF), run the materialized sumcheck, observe the four pair openings,
 sample r (EF). Every EF challenge is four base squeezes, zorch's
 ``sample_challenge`` with four limbs.
 
-The layer loop hand-threads the carry instead of chaining zorch's
-``JaggedGkrLayerRound`` so each layer's ``(lambda, claim)`` lands in the
-proof record -- the per-layer values ``gkr_sumcheck_rounds.txt`` anchors,
-and the first thing to diff when a byte-match diverges mid-pyramid.
-
 Grinding searches for the witness; proving from a reference dump replays the
 recorded one. The search loop arrives with the end-to-end shard prover --
 until then ``witness`` is required when ``pow_bits > 0``.
@@ -43,25 +38,15 @@ from zorch.logup_gkr.circuit import (
     extract_jagged_outputs,
     jagged_layer_transition,
 )
-from zorch.logup_gkr.jagged_prover import JaggedLayerProof, prove_jagged_layer
+from zorch.logup_gkr.jagged_prover import JaggedGkrLayerRound, JaggedLayerProof
 from zorch.poly.eq import expand_eq_to_hypercube
 from zorch.poly.multilinear import eval_mle
+from zorch.round import ProveChain
 from zorch.transcript import Transcript, sample_challenge
 from zorch.utils.bits import log2_ceil_usize, log2_strict_usize
 
 # An SP1 extension-field challenge is four base-field squeezes.
 _EF_LIMBS = 4
-
-
-@dataclass(frozen=True)
-class LogupGkrRoundProof:
-    """One GKR layer's record: the batching challenge and claim the layer
-    opened with (the per-layer anchors of a reference dump), plus the
-    sumcheck transcript."""
-
-    lam: Array
-    claim: Array
-    sumcheck: JaggedLayerProof
 
 
 @dataclass(frozen=True)
@@ -80,7 +65,7 @@ class LogupGkrProof:
 
     witness: Array
     circuit_output: LogUpGkrOutput
-    round_proofs: list[LogupGkrRoundProof]
+    round_proofs: list[JaggedLayerProof]
     eval_point: Array
     chip_openings: dict[str, ChipEvaluation]
 
@@ -248,27 +233,15 @@ def prove_logup_gkr(
     num_eval = eval_mle(output.numerator, z1)
     den_eval = eval_mle(output.denominator, z1)
 
-    eval_point = z1
-    round_proofs: list[LogupGkrRoundProof] = []
-    for i in range(len(layers) - 1, -1, -1):
-        layer = layers[i]
-        # Release the layer once its round is done -- the pyramid's planes
-        # sum to gigabytes at shard scale, and nothing downstream rereads
-        # a proved layer.
-        layers[i] = None
-        transcript, lam = sample_challenge(transcript, EF, _EF_LIMBS)
-        claim = lam * num_eval + den_eval
-        point, transcript, sumcheck = prove_jagged_layer(
-            layer, lam, claim, eval_point, transcript, challenge_limbs=_EF_LIMBS
-        )
-        n0, n1 = sumcheck.numerator_0, sumcheck.numerator_1
-        d0, d1 = sumcheck.denominator_0, sumcheck.denominator_1
-        transcript = transcript.observe(jnp.stack([n0, n1, d0, d1]))
-        transcript, r = sample_challenge(transcript, EF, _EF_LIMBS)
-        num_eval = n0 + (n1 - n0) * r
-        den_eval = d0 + (d1 - d0) * r
-        eval_point = jnp.concatenate([point, jnp.atleast_1d(r)])
-        round_proofs.append(LogupGkrRoundProof(lam, claim, sumcheck))
+    # layers.pop() walks output to input; the lazily consumed chain builds
+    # each round on demand and releases it once proved, so at most one layer
+    # of the pyramid stays live -- the planes sum to gigabytes at shard scale.
+    chain = ProveChain(
+        JaggedGkrLayerRound(layers.pop(), _EF_LIMBS) for _ in range(len(layers))
+    )
+    (_, _, eval_point), transcript, round_proofs = chain(
+        (num_eval, den_eval, z1), transcript
+    )
 
     transcript, chip_openings = open_traces(
         main_region,
