@@ -8,9 +8,10 @@ transitions run on zorch's scheme-agnostic jagged fold.
 
 The SP1-specific pieces live here: the interaction fingerprint over
 rw-constraints ``VirtualPairCol`` decompositions, the per-interaction slot
-schedule (``sp1_col_h``) with fold-neutral trailing padding, and the
-power-of-two interaction padding. Numerator slots stay in the main trace's
-BF dtype; denominators are EF.
+schedule (``sp1_col_h``) with fold-neutral trailing padding, the power-of-two
+interaction padding, and the fixed-depth transition schedule
+(``sp1_next_row_counts``) driving zorch's jagged fold. Numerator slots stay
+in the main trace's BF dtype; denominators are EF.
 """
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ from jax import Array, lax
 from rw_constraints import Chip, Interaction
 
 from sp1_zorch.commit.region import JaggedRegion
-from zorch.logup_gkr.circuit import JaggedGkrLayer
+from zorch.logup_gkr.circuit import JaggedGkrLayer, jagged_layer_transition
 from zorch.utils.bits import log2_ceil_usize
 
 
@@ -277,3 +278,46 @@ def generate_first_layer(
         denominator_1=jnp.concatenate(d1_parts),
         row_counts=tuple(row_counts),
     )
+
+
+def sp1_next_row_counts(row_counts: tuple[int, ...]) -> tuple[int, ...]:
+    """One step of SP1's transition schedule: ``ceil(rc / 4) * 2`` per segment.
+
+    Mirrors ``JaggedMle::next_start_indices_and_column_heights``:
+    https://github.com/fractalyze/sp1/blob/e2c02f376/sp1-gpu/crates/utils/src/jagged.rs
+    Each step folds a segment to half its (evened) height and rounds the
+    result up to even, saturating at 2 — a saturated segment keeps its real
+    fraction in the 0-child and re-pads the 1-child with the fold-neutral
+    (n=0, d=1) row every remaining step.
+
+    SP1 bookkeeps in col_h units; like whir-zorch's byte-matched prover, we
+    apply the same step to the materialized per-plane slot counts (2x col_h).
+    Past saturation the two layouts diverge in how much neutral padding they
+    materialize, which never changes the underlying dense MLE.
+    """
+    return tuple(((rc + 3) // 4) * 2 for rc in row_counts)
+
+
+def generate_circuit_layers(
+    first_layer: JaggedGkrLayer, num_row_variables: int
+) -> list[JaggedGkrLayer]:
+    """Every layer of the SP1-aligned circuit, first layer to the floor.
+
+    SP1's circuit depth is fixed: ``num_row_variables - 1`` transitions
+    (``max_log_row_count - 1`` row variables on a core shard) regardless of
+    where individual segments saturate.
+
+    A host-orchestrated Python loop, per the ``@jit`` convention
+    (``fractalyze/zorch:docs/conventions.md``): the pyramid is heterogeneous
+    step to step, so the fold/gather bodies inside ``jagged_layer_transition``
+    are the fusion target, not this driver — and one fused pyramid graph
+    would recompile per shard shape.
+    """
+    if num_row_variables < 1:
+        raise ValueError(f"num_row_variables must be >= 1, got {num_row_variables}")
+    layers = [first_layer]
+    counts = first_layer.row_counts
+    for _ in range(num_row_variables - 1):
+        counts = sp1_next_row_counts(counts)
+        layers.append(jagged_layer_transition(layers[-1], counts))
+    return layers
