@@ -25,7 +25,7 @@ from jax import Array
 
 from zorch.constraint_eval import constraint_eval
 from zorch.poly.eq import expand_eq_to_hypercube
-from zorch.prove import RoundMsg, prove
+from zorch.sumcheck.prover import RoundMsg, prove
 from zorch.round import Round
 from zorch.transcript import Transcript
 
