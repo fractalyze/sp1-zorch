@@ -47,17 +47,34 @@ class DumpData:
     vk: MachineVerifyingKey
 
 
-def _parse_kv_lines(text: str) -> dict[str, str]:
+def _parse_kv_lines(text: str, *, skip_unkeyed: bool = False) -> dict[str, str]:
     """``key=value`` lines. Blank lines and stray whitespace are tolerated;
     any other malformed line fails loudly — these files are machine-generated,
-    so silent skipping would mask dump-format drift."""
+    so silent skipping would mask dump-format drift. ``skip_unkeyed``
+    tolerates exactly the ``--- section ---`` separator shape some diag files
+    carry (``gpu_gkr_state.txt``'s ``--- round N ---``); anything else still
+    fails loudly."""
     out = {}
     for line in text.splitlines():
-        if not line.strip():
+        stripped = line.strip()
+        if not stripped:
             continue
+        if "=" not in line:
+            if (
+                skip_unkeyed
+                and stripped.startswith("---")
+                and stripped.endswith("---")
+            ):
+                continue
+            raise ValueError(f"malformed dump line: {line!r}")
         key, value = line.split("=", 1)
         out[key.strip()] = value.strip()
     return out
+
+
+def _parse_int_list(value: str) -> list[int]:
+    """A dump's ``[a, b, c]`` canonical-int list."""
+    return [int(t) for t in value.strip("[]").split(",")]
 
 
 def _read_meta(meta_path: Path) -> tuple[int, int]:

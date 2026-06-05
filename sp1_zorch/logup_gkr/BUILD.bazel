@@ -1,5 +1,58 @@
-load("@rules_python//python:defs.bzl", "py_binary")
+load("@rules_python//python:defs.bzl", "py_binary", "py_library", "py_test")
 load("@sp1_zorch_pip//:requirements.bzl", "requirement")
+
+# SP1-aligned LogUp-GKR circuit construction: interaction fingerprinting +
+# first layer over zorch's jagged GKR blocks.
+py_library(
+    name = "logup_gkr",
+    srcs = [
+        "__init__.py",
+        "circuit.py",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//sp1_zorch/commit:region",
+        "@zorch//zorch/logup_gkr",
+        "@zorch//zorch/utils:bits",
+        requirement("jax"),
+        requirement("rw_constraints"),
+    ],
+)
+
+py_test(
+    name = "circuit_test",
+    size = "small",
+    srcs = ["circuit_test.py"],
+    deps = [
+        ":logup_gkr",
+        "//sp1_zorch/commit:region",
+        "//sp1_zorch/shard_prover",
+        requirement("absl_py"),
+        requirement("jax"),
+        requirement("rw_constraints"),
+        requirement("zk_dtypes"),
+    ],
+)
+
+# rsp byte-match harness over a local GPU-trace capture — a runnable, not a
+# unit test (same convention as //sp1_zorch/commit:verify_trace_commit):
+#   bazel run //sp1_zorch/logup_gkr:verify_first_layer -- \
+#       --shard_dir=/path/to/rsp_dump/shardN
+py_binary(
+    name = "verify_first_layer",
+    srcs = ["verify_first_layer.py"],
+    deps = [
+        ":logup_gkr",
+        "//sp1_zorch/commit:region",
+        "//sp1_zorch/shard_prover",
+        "@zorch//zorch/poly",
+        requirement("absl_py"),
+        requirement("jax"),
+        requirement("jax_cuda12_plugin"),
+        requirement("zk_dtypes"),
+        requirement("zkx_cuda_pjrt"),
+    ],
+)
 
 # SP1-shaped LogUp-GKR benchmark over zorch's agnostic dense prover.
 # GPU-only manual tool (bazel run), not a CI test — see the module docstring.
