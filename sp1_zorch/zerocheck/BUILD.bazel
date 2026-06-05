@@ -1,12 +1,14 @@
 load("@rules_python//python:defs.bzl", "py_library", "py_test")
 load("@sp1_zorch_pip//:requirements.bzl", "requirement")
 
-# SP1's zerocheck: constraint RLC over zorch's constraint_eval, plus the
-# single-chip sumcheck round driven by zorch's summand-generic prover.
+# SP1's zerocheck: constraint RLC over zorch's constraint_eval, the sumcheck
+# rounds driven by zorch's summand-generic prover (equal-height) and the
+# SP1-schedule jagged driver (height-aware).
 py_library(
     name = "zerocheck",
     srcs = [
         "__init__.py",
+        "jagged.py",
         "prover.py",
         "round.py",
     ],
@@ -29,6 +31,21 @@ py_test(
         ":zerocheck",
         requirement("absl_py"),
         requirement("jax"),
+        requirement("zk_dtypes"),
+    ],
+)
+
+py_test(
+    name = "jagged_test",
+    size = "small",
+    srcs = ["jagged_test.py"],
+    deps = [
+        ":zerocheck",
+        "@zorch//zorch/testkit:transcript",
+        "@zorch//zorch/poly:poly",
+        requirement("absl_py"),
+        requirement("jax"),
+        requirement("numpy"),
         requirement("zk_dtypes"),
     ],
 )
