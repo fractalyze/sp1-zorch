@@ -24,10 +24,10 @@ bazel_dep(name = "zorch", version = "0.0.0")
 git_override(
     module_name = "zorch",
     remote = "https://github.com/fractalyze/zorch.git",
-    # main @ num_real marker attr (fractalyze/zorch#139); also brings the
-    # coset-codeword fold fix (#137) and the FoldableCode basefold/RS seam
-    # (#136).
-    commit = "0cd727a96971fbc953c053c1b83c466136697306",
+    # main @ poly coefficient-form + virtual geq blocks (fractalyze/zorch#150);
+    # also brings the absorb-block scan (#138) and the PcsProver/PcsVerifier
+    # seam unification (#134).
+    commit = "df0d46c31ce79b5eeba0f207cbfd73826ff54816",
 )
 
 python = use_extension("@rules_python//python/extensions:python.bzl", "python")
