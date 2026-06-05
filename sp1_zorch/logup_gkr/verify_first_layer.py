@@ -3,9 +3,10 @@
 
 Rebuilds the first GKR layer from the dumped traces plus the dump's own
 ``alpha`` / ``beta_seed`` challenges (``gpu_gkr_state.txt``), then compares
-against ``gpu_first_layer.txt``. No transcript involved — that stream is
-byte-matched separately against ``gpu_gkr_state.txt``. Exits non-zero on
-any mismatch.
+against ``gpu_first_layer.txt``; also anchors the transition schedule against
+the per-round layer heights in ``gkr_sumcheck_rounds.txt``. No transcript
+involved — that stream is byte-matched separately against
+``gpu_gkr_state.txt``. Exits non-zero on any mismatch.
 
 SP1 stores the same four stride-2 planes (n0/n1/d0/d1) we do, so buffer
 heads compare directly; only the diag's row-count bookkeeping (height,
@@ -17,7 +18,7 @@ so those comparisons convert units rather than the layer.
         --shard_dir=/path/to/rsp_dump/shardN
 
 ``--accounting_only`` skips all field math and checks just the static slot
-accounting (fast iteration on chip-set / unit questions).
+accounting (fast iteration on chip-set / unit / schedule questions).
 """
 
 from __future__ import annotations
@@ -33,9 +34,10 @@ from zk_dtypes import koalabearx4_mont as EF
 
 from sp1_zorch.commit.region import JaggedRegion
 from sp1_zorch.logup_gkr.circuit import (
-    _sp1_col_h,
     build_gkr_chips,
     generate_first_layer,
+    sp1_col_h,
+    sp1_next_row_counts,
 )
 from sp1_zorch.shard_prover.fixture_loader import (
     _parse_int_list,
@@ -43,6 +45,7 @@ from sp1_zorch.shard_prover.fixture_loader import (
     load_fixture_shard,
 )
 from zorch.poly.eq import expand_eq_to_hypercube
+from zorch.utils.bits import log2_ceil_usize
 
 _SHARD_DIR = flags.DEFINE_string(
     "shard_dir", None, "rsp shard dump directory (e.g. .../rsp_dump/shard1)."
@@ -82,20 +85,65 @@ def _check(label: str, got, want) -> bool:
     return ok
 
 
-def _accounting(shard, ref: dict[str, str]) -> bool:
+def _round_schedule_check(gkr_chips, traces, shard_dir: Path) -> bool:
+    """Per-round layer heights in ``gkr_sumcheck_rounds.txt`` vs the schedule.
+
+    SP1 bookkeeps the schedule in col_h units, where ``ceil(rc / 4) * 2``
+    saturates at 2 col_h units per interaction. Our materialized planes run
+    the same step in slot units (2x col_h) and so saturate at 2 slots = 1
+    col_h unit — same dense MLE, more implicit padding — which is why this
+    check re-runs the schedule in SP1's units instead of converting the
+    materialized row counts. Static accounting only, no field math.
+    """
+    blocks = (shard_dir / "gkr_sumcheck_rounds.txt").read_text().split(
+        "--- round ---"
+    )
+    rounds = [_parse_kv_lines(b) for b in blocks if b.strip()]
+
+    counts = tuple(
+        sp1_col_h(traces.per_chip[c.name].array.shape[0])
+        for c in gkr_chips
+        for _ in c.interactions
+    )
+    heights: dict[int, int] = {}
+    nrv = _MAX_LOG_ROW_COUNT - 1
+    while nrv > 1:
+        counts = sp1_next_row_counts(counts)
+        nrv -= 1
+        heights[nrv] = sum(counts)
+
+    by_nrv = {int(r["nrv"]): int(r["height"]) for r in rounds}
+    levels = sorted(by_nrv)
+    ok = _check(
+        f"per-round heights, nrv {levels[0]}..{levels[-1]} (col_h units)",
+        [by_nrv[n] for n in levels],
+        [heights[n] for n in levels],
+    )
+    niv = log2_ceil_usize(len(counts))
+    ok &= _check(
+        "per-round niv",
+        sorted({int(r["niv"]) for r in rounds}),
+        [niv],
+    )
+    return ok
+
+
+def _accounting(shard, ref: dict[str, str], shard_dir: Path) -> bool:
     """Static slot accounting vs the dump, in the dump's col_h units.
 
-    Field-math-free, so chip-set / unit questions iterate in seconds. SP1's
-    height covers every real interaction (zero-height chips included) and
-    gives the power-of-two interaction padding no rows.
+    Field-math-free, so chip-set / unit / schedule questions iterate in
+    seconds. SP1's height covers every real interaction (zero-height chips
+    included) and gives the power-of-two interaction padding no rows.
     """
     traces = shard.main_trace_data.traces
     gkr_chips = build_gkr_chips(shard.main_trace_data.chips, traces.chip_order)
     units = sum(
-        _sp1_col_h(traces.per_chip[c.name].array.shape[0]) * len(c.interactions)
+        sp1_col_h(traces.per_chip[c.name].array.shape[0]) * len(c.interactions)
         for c in gkr_chips
     )
-    return _check("height (col_h units)", units, int(ref["height"]))
+    ok = _check("height (col_h units)", units, int(ref["height"]))
+    ok &= _round_schedule_check(gkr_chips, traces, shard_dir)
+    return ok
 
 
 def main(argv) -> None:
@@ -105,7 +153,7 @@ def main(argv) -> None:
     ref = _parse_kv_lines((shard_dir / "gpu_first_layer.txt").read_text())
 
     if _ACCOUNTING_ONLY.value:
-        sys.exit(0 if _accounting(shard, ref) else 1)
+        sys.exit(0 if _accounting(shard, ref, shard_dir) else 1)
 
     traces = shard.main_trace_data.traces
     order = traces.chip_order
@@ -185,6 +233,8 @@ def main(argv) -> None:
         layer.denominator_0[: len(den_head)],
         den_head,
     )
+
+    ok &= _round_schedule_check(gkr_chips, traces, shard_dir)
 
     if not ok:
         sys.exit(1)

@@ -16,9 +16,11 @@ from zk_dtypes import koalabear_mont as F
 from sp1_zorch.commit.region import JaggedRegion
 from sp1_zorch.logup_gkr.circuit import (
     GkrChip,
-    _sp1_col_h,
     build_gkr_chips,
+    generate_circuit_layers,
     generate_first_layer,
+    sp1_col_h,
+    sp1_next_row_counts,
 )
 from sp1_zorch.shard_prover.chip_loader import make_chip_stub
 
@@ -65,10 +67,10 @@ def _expected_vals(trace, inter, prep=None):
 
 class Sp1ColHTest(absltest.TestCase):
     def test_matches_populate_last_circuit_layer(self) -> None:
-        self.assertEqual(_sp1_col_h(0), 2)
-        self.assertEqual(_sp1_col_h(8), 2)
-        self.assertEqual(_sp1_col_h(9), 3)
-        self.assertEqual(_sp1_col_h(150704), 37676)
+        self.assertEqual(sp1_col_h(0), 2)
+        self.assertEqual(sp1_col_h(8), 2)
+        self.assertEqual(sp1_col_h(9), 3)
+        self.assertEqual(sp1_col_h(150704), 37676)
 
 
 class GenerateFirstLayerTest(absltest.TestCase):
@@ -109,7 +111,7 @@ class GenerateFirstLayerTest(absltest.TestCase):
         layer = generate_first_layer(
             chips, _region(main_a, main_b, names=("A", "B")), None, ALPHA, BETAS
         )
-        # 3 real interactions pad to 4; the pad slot is 2 * _sp1_col_h(0) = 4
+        # 3 real interactions pad to 4; the pad slot is 2 * sp1_col_h(0) = 4
         # rows of the neutral fraction.
         self.assertEqual(layer.row_counts, (4, 4, 4, 4))
         self.assertEqual(layer.num_interaction_variables, 2)
@@ -164,6 +166,56 @@ class GenerateFirstLayerTest(absltest.TestCase):
                 ALPHA,
                 BETAS,
             )
+
+
+class Sp1NextRowCountsTest(absltest.TestCase):
+    def test_matches_sp1_jagged_mle_schedule(self) -> None:
+        # ceil(rc / 4) * 2: halves multiples of 4, rounds the fold up to
+        # even otherwise, saturates at 2.
+        self.assertEqual(sp1_next_row_counts((4, 8, 150704)), (2, 4, 75352))
+        self.assertEqual(sp1_next_row_counts((10,)), (6,))
+        self.assertEqual(sp1_next_row_counts((2,)), (2,))
+
+
+class GenerateCircuitLayersTest(absltest.TestCase):
+    def _first_layer(self):
+        # col_h(24) = 6 -> 12 slots; col_h(4) clamps at 8 -> 4 slots.
+        main_a, main_b = _main(24), _main(4, offset=100)
+        chips = [
+            GkrChip("A", (_interaction(0, 1),)),
+            GkrChip("B", (_interaction(0, 1, kind=5),)),
+        ]
+        return generate_first_layer(
+            chips, _region(main_a, main_b, names=("A", "B")), None, ALPHA, BETAS
+        )
+
+    def test_layer_shapes_follow_schedule(self) -> None:
+        layers = generate_circuit_layers(self._first_layer(), 4)
+        self.assertEqual(
+            [layer.row_counts for layer in layers],
+            [(12, 4), (6, 2), (4, 2), (2, 2)],
+        )
+
+    def test_saturated_segment_repads_neutral(self) -> None:
+        # B saturates at rc=2 after the first step; each later fold collapses
+        # it to one real fraction and re-pads the 1-child slot with (n=0, d=1).
+        layers = generate_circuit_layers(self._first_layer(), 4)
+        last = layers[-1]
+        b_pad = last.start_indices[1] + 1
+        self.assertTrue(bool(last.numerator_0[b_pad] == jnp.array(0, F)))
+        self.assertTrue(bool(last.numerator_1[b_pad] == jnp.array(0, F)))
+        self.assertTrue(bool(last.denominator_0[b_pad] == jnp.array(1, F)))
+        self.assertTrue(bool(last.denominator_1[b_pad] == jnp.array(1, F)))
+
+    def test_depth_one_keeps_only_the_first_layer(self) -> None:
+        first = self._first_layer()
+        layers = generate_circuit_layers(first, 1)
+        self.assertEqual(len(layers), 1)
+        self.assertIs(layers[0], first)
+
+    def test_rejects_nonpositive_depth(self) -> None:
+        with self.assertRaises(ValueError):
+            generate_circuit_layers(self._first_layer(), 0)
 
 
 class BuildGkrChipsTest(absltest.TestCase):
