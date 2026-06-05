@@ -46,6 +46,7 @@ py_binary(
         "//sp1_zorch/commit:region",
         "//sp1_zorch/shard_prover",
         "@zorch//zorch/poly",
+        "@zorch//zorch/utils:bits",
         requirement("absl_py"),
         requirement("jax"),
         requirement("jax_cuda12_plugin"),
