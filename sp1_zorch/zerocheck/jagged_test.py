@@ -11,7 +11,11 @@ through its truncated sums, claim identity, and virtual-geq correction.
 Traces are WITNESS traces (constraints vanish on real rows, ``C(0_row) != 0``):
 round 0's constraint-skip and the ``claim - y0`` identity are protocol-equal
 only on witnesses, and a zero ``C(0_row)`` would leave the padded-row
-correction unexercised."""
+correction unexercised.
+
+GKR-batched cases weight each chip's columns by ``beta**(j+1)`` in both
+driver and reference, seeding the claims from the columns' MLE openings at
+``zeta``."""
 
 from __future__ import annotations
 
@@ -77,7 +81,9 @@ def _zero_extend(trace: jnp.ndarray, width: int) -> jnp.ndarray:
     )
 
 
-def _naive_round_polys(traces, num_reals, alphas, lambdas, zeta, challenges):
+def _naive_round_polys(
+    traces, num_reals, alphas, lambdas, zeta, challenges, gkr_powers=None
+):
     n = int(zeta.shape[0])
     width = 1 << n
     one = jnp.ones((), KB)
@@ -101,6 +107,8 @@ def _naive_round_polys(traces, num_reals, alphas, lambdas, zeta, challenges):
             for i in range(len(cols)):
                 ct = _lift(cols[i], tv)
                 cv = _eval_fn(ct.T) @ alphas[i]
+                if gkr_powers is not None:
+                    cv = cv + ct.T @ gkr_powers[i]
                 tot = tot + lambdas[i] * (cv - adjs[i] * _lift(geqs[i], tv))
             evals.append(jnp.sum(et * tot))
         polys.append(jnp.dot(inv_vand, jnp.stack(evals)))
@@ -110,14 +118,44 @@ def _naive_round_polys(traces, num_reals, alphas, lambdas, zeta, challenges):
     return polys
 
 
+def _gkr_inputs(beta, traces, zeta):
+    """Per-chip ``beta**(j+1)`` weights and matching claims — each chip's
+    ``sum_j beta**(j+1) * mle_j(zeta)`` over its zero-extended columns."""
+    width = 1 << int(zeta.shape[0])
+    pows = [beta]
+    for _ in range(_NUM_COLS - 1):
+        pows.append(pows[-1] * beta)
+    gkr = jnp.stack(pows)
+    e = expand_eq_to_hypercube(zeta, jnp.ones((), KB))
+    claims = [gkr @ (_zero_extend(t, width) @ e) for t in traces]
+    return [gkr] * len(traces), claims
+
+
 class JaggedZerocheckRoundTest(absltest.TestCase):
-    def _check_against_reference(self, num_vars: int, num_reals, seed: int = 0):
+    def _assert_claim_thread(self, msgs, claim) -> None:
+        """On the lambda-RLC'd coefficient polys: ``p_r(0) + p_r(1) == claim_r``
+        and ``claim_{r+1} = p_r(challenge_r)``."""
+        for r in range(msgs.round_poly.shape[0]):
+            coeffs = msgs.round_poly[r]
+            self.assertTrue(
+                bool(coeffs[0] + jnp.sum(coeffs) == claim), msg=f"round {r}"
+            )
+            claim = eval_coeffs(coeffs, msgs.challenge[r])
+
+    def _check_against_reference(
+        self, num_vars: int, num_reals, seed: int = 0, *, with_gkr: bool = False
+    ):
         nchips = len(num_reals)
         traces = [_witness_trace(seed + i, nr) for i, nr in enumerate(num_reals)]
         alphas = [rlc_coeffs(_rand(99 + i, ()), _K) for i in range(nchips)]
         lambdas = _rand(55, (nchips,))
         zeta = _rand(7, (num_vars,))
         challenges = [_rand(1000 + r, ()) for r in range(num_vars)]
+
+        gkr_powers = beta = claims = None
+        if with_gkr:
+            beta = _rand(77, ())
+            gkr_powers, claims = _gkr_inputs(beta, traces, zeta)
 
         _, _, msgs = prove_jagged_zerocheck(
             [_eval_fn] * nchips,
@@ -127,8 +165,12 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
             lambdas,
             zeta,
             _ScriptedTranscript(challenges),
+            beta=beta,
+            claims=claims,
         )
-        want = _naive_round_polys(traces, num_reals, alphas, lambdas, zeta, challenges)
+        want = _naive_round_polys(
+            traces, num_reals, alphas, lambdas, zeta, challenges, gkr_powers
+        )
         for r in range(num_vars):
             self.assertTrue(
                 bool(jnp.all(msgs.round_poly[r] == want[r])), msg=f"round {r}"
@@ -149,6 +191,44 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
     def test_single_chip(self) -> None:
         self._check_against_reference(num_vars=3, num_reals=[6])
 
+    def test_gkr_jagged_heights_match_reference(self) -> None:
+        self._check_against_reference(num_vars=3, num_reals=[5, 8, 3], with_gkr=True)
+
+    def test_gkr_zero_height_chip_among_live(self) -> None:
+        self._check_against_reference(num_vars=3, num_reals=[5, 0, 3], with_gkr=True)
+
+    def test_gkr_freeze_at_two_tail(self) -> None:
+        self._check_against_reference(num_vars=4, num_reals=[3, 1], with_gkr=True)
+
+    def test_gkr_claim_threading(self) -> None:
+        # With batching, the claim thread starts at the lambda-RLC of the GKR
+        # claims (zero in the pure case) and follows the same identity.
+        num_vars, num_reals = 3, [5, 8, 3]
+        nchips = len(num_reals)
+        traces = [_witness_trace(20 + i, nr) for i, nr in enumerate(num_reals)]
+        alphas = [rlc_coeffs(_rand(80 + i, ()), _K) for i in range(nchips)]
+        lambdas = _rand(40, (nchips,))
+        zeta = _rand(5, (num_vars,))
+        beta = _rand(70, ())
+        _, claims = _gkr_inputs(beta, traces, zeta)
+
+        _, _, msgs = prove_jagged_zerocheck(
+            [_eval_fn] * nchips,
+            traces,
+            num_reals,
+            alphas,
+            lambdas,
+            zeta,
+            cheap_transcript(KB),
+            beta=beta,
+            claims=claims,
+        )
+
+        claim = jnp.zeros((), KB)
+        for i in range(nchips):
+            claim = claim + lambdas[i] * claims[i]
+        self._assert_claim_thread(msgs, claim)
+
     def test_transcript_invariants_and_final_fold(self) -> None:
         num_vars, num_reals = 3, [5, 8, 3]
         nchips = len(num_reals)
@@ -167,15 +247,8 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
             cheap_transcript(KB),
         )
 
-        # Claim threading on the lambda-RLC'd coefficient polys: claim_0 = 0,
-        # p_r(0) + p_r(1) == claim_r, claim_{r+1} = p_r(challenge_r).
-        claim = jnp.zeros((), KB)
-        for r in range(num_vars):
-            coeffs = msgs.round_poly[r]
-            self.assertTrue(
-                bool(coeffs[0] + jnp.sum(coeffs) == claim), msg=f"round {r}"
-            )
-            claim = eval_coeffs(coeffs, msgs.challenge[r])
+        # Pure zerocheck: the claim thread starts at zero.
+        self._assert_claim_thread(msgs, jnp.zeros((), KB))
 
         # Final folded columns == naive even/odd binds of the zero-extended
         # traces at the transcript's challenges.
@@ -200,6 +273,25 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
                 _rand(55, (1,)),
                 _rand(7, (3,)),
                 cheap_transcript(KB),
+            )
+
+    def test_validation_rejects_split_or_short_gkr_inputs(self) -> None:
+        args = (
+            [_eval_fn],
+            [_witness_trace(0, 4)],
+            [4],
+            [rlc_coeffs(_rand(99, ()), _K)],
+            _rand(55, (1,)),
+            _rand(7, (3,)),
+            cheap_transcript(KB),
+        )
+        with self.assertRaisesRegex(ValueError, "come together"):
+            prove_jagged_zerocheck(*args, beta=_rand(77, ()))
+        with self.assertRaisesRegex(ValueError, "come together"):
+            prove_jagged_zerocheck(*args, claims=[jnp.zeros((), KB)])
+        with self.assertRaisesRegex(ValueError, "per chip"):
+            prove_jagged_zerocheck(
+                *args, beta=_rand(77, ()), claims=[jnp.zeros((), KB)] * 2
             )
 
 

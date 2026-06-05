@@ -9,6 +9,10 @@ storage stays proportional to ``sum(num_cols * num_real)`` instead of
 as zero; their constant constraint value ``C_alpha(0_row)`` is subtracted via
 a virtual ``x >= num_real`` indicator, making the effective summand
 ``eq * (C_alpha(trace) - C_alpha(0_row) * geq)`` — zero past the real prefix.
+With GKR column batching (``beta`` + ``claims``) the summand gains
+``sum_j beta**(j+1) * col_j``, turning each chip's proved sum from zero into
+its GKR opening at ``zeta``; padded rows are unaffected (a zero row's column
+term vanishes with it).
 
 Own per-round Python loop, NOT zorch's scan driver: per-chip widths change
 every round (and differ across chips), which a fixed-shape scan carry cannot
@@ -54,6 +58,8 @@ from zorch.poly.univariate import (
 from zorch.sumcheck.prover import RoundMsg
 from zorch.transcript import Transcript
 
+from sp1_zorch.zerocheck.prover import gkr_powers
+
 # SP1's zerocheck round-poly degree: constraint degree <= 3 plus the eq
 # factor. The 4-point evaluation trick below is specific to this degree;
 # the constraint-degree bound is the caller's contract (not probeable).
@@ -79,6 +85,7 @@ def _chip_round_poly(
     eq_rest: Array,
     eval_fn: Callable[[Array], Array],
     alpha: Array,
+    gkr_powers: Array | None,
     padded_row_adj: Array,
     claim: Array,
     last: Array,
@@ -92,7 +99,8 @@ def _chip_round_poly(
     ``sum_as_poly_in_last_variable``: truncated inner sums over the real row
     pairs, the claim identity for t=1, and the virtual-geq padded-row
     correction per t-point. Round 0 skips the constraint term at t=0 (the
-    zerocheck statement: constraints vanish on real witness rows)."""
+    zerocheck statement: constraints vanish on real witness rows) — but never
+    the ``gkr_powers`` column term, which does not vanish there."""
     ef = last.dtype
     one = jnp.ones((), ef)
     zero = jnp.zeros((), ef)
@@ -106,13 +114,17 @@ def _chip_round_poly(
         eq = eq_rest[:num_non_padded]
         c0 = p0[:, :num_non_padded]
         slopes = diff[:, :num_non_padded]
-        inner_0 = (
-            zero
-            if skip_constraint_at_zero
-            else jnp.sum(constraint_eval(eval_fn, c0.T, alpha) * eq)
-        )
-        inner_2 = jnp.sum(constraint_eval(eval_fn, (c0 + two * slopes).T, alpha) * eq)
-        inner_4 = jnp.sum(constraint_eval(eval_fn, (c0 + four * slopes).T, alpha) * eq)
+
+        def inner(rows: Array, *, skip_constraint: bool = False) -> Array:
+            rows_t = rows.T
+            v = zero if skip_constraint else constraint_eval(eval_fn, rows_t, alpha)
+            if gkr_powers is not None:
+                v = v + rows_t @ gkr_powers
+            return jnp.sum(v * eq)
+
+        inner_0 = inner(c0, skip_constraint=skip_constraint_at_zero)
+        inner_2 = inner(c0 + two * slopes)
+        inner_4 = inner(c0 + four * slopes)
 
     # num_real == 0 puts the threshold pair index at -1; everything below
     # zeroes out through the guard (the inner sums are already zero).
@@ -140,6 +152,9 @@ def prove_jagged_zerocheck(
     lambdas: Array,
     zeta: Array,
     transcript: Transcript,
+    *,
+    beta: Array | None = None,
+    claims: Sequence[Array] | None = None,
 ) -> tuple[list[Array], Transcript, RoundMsg]:
     """Run the SP1-schedule jagged multi-chip zerocheck sumcheck.
 
@@ -148,6 +163,12 @@ def prove_jagged_zerocheck(
     soundness contract is internal). ``alphas[c]`` is its constraint-RLC
     vector (``prover.rlc_coeffs``) and ``lambdas[c]`` its cross-chip
     coefficient; ``zeta`` is the eq point, one round per coordinate.
+
+    ``beta`` and ``claims`` switch on GKR column batching: chip ``c``'s
+    summand gains ``sum_j beta**(j+1) * col_j`` and ``claims[c]`` — its GKR
+    opening at ``zeta`` — seeds the ``p(1) = claim - p(0)`` identity. They
+    come together (either alone breaks round 0's identity); omitted, the
+    round proves the pure zero sum.
 
     Returns the final per-chip ``(num_cols_c, h)`` folded traces
     (``h in {0, 2}``; position 0 holds the column's evaluation at the
@@ -165,6 +186,16 @@ def prove_jagged_zerocheck(
             "eval_fns, traces, num_reals, alphas, and lambdas must agree on the "
             f"chip count: {len(eval_fns)}, {num_chips}, {len(num_reals)}, "
             f"{len(alphas)}, {lambdas.shape[0]}"
+        )
+    if (beta is None) != (claims is None):
+        raise ValueError(
+            "beta and claims come together: the GKR column term reshapes every "
+            "round poly and claims seed its p(1) = claim - p(0) identity"
+        )
+    if claims is not None and len(claims) != num_chips:
+        raise ValueError(
+            f"claims must give one GKR opening per chip: got {len(claims)} "
+            f"for {num_chips} chips"
         )
     num_vars = int(zeta.shape[0])
     width = 1 << num_vars
@@ -198,9 +229,15 @@ def prove_jagged_zerocheck(
 
     chip_traces = list(traces)
     vgeqs = [VirtualGeq(nr, one, zero) for nr in nrs]
-    # Pure zerocheck: sum eq * (C - C(0)*geq) = 0. GKR-derived claims arrive
-    # with the joint-opening slice.
-    claims: list[Array] = [zero] * num_chips
+    if claims is None:
+        # Pure zerocheck: sum eq * (C - C(0)*geq) = 0.
+        chip_claims: list[Array] = [zero] * num_chips
+        chip_gkr: list[Array | None] = [None] * num_chips
+    else:
+        chip_claims = list(claims)
+        max_cols = max(t.shape[0] for t in traces)
+        gkr_all = gkr_powers(beta, max_cols) if max_cols else jnp.zeros(0, ef)
+        chip_gkr = [gkr_all[: t.shape[0]] for t in traces]
     eq_adj = one
 
     round_polys = []
@@ -234,8 +271,9 @@ def prove_jagged_zerocheck(
                 eq_rest,
                 eval_fns[i],
                 alphas[i],
+                chip_gkr[i],
                 adjs[i],
-                claims[i],
+                chip_claims[i],
                 last,
                 eq_adj,
                 nrs[i],
@@ -253,7 +291,7 @@ def prove_jagged_zerocheck(
         chip_traces = [p0s[i] + alpha_r * diffs[i] for i in range(num_chips)]
         vgeqs = [vg.fix_last_variable(alpha_r) for vg in vgeqs]
         nrs = [(nr + 1) // 2 for nr in nrs]
-        claims = [eval_coeffs(polys[i], alpha_r) for i in range(num_chips)]
+        chip_claims = [eval_coeffs(polys[i], alpha_r) for i in range(num_chips)]
         eq_adj = eq_adj * (alpha_r * last + (one - alpha_r) * (one - last))
 
         round_polys.append(rlc)
