@@ -19,6 +19,11 @@ from jax import Array
 if TYPE_CHECKING:
     from rw_constraints import Chip
 
+# SP1 v1: every shard's public-values vector is padded to this length on both
+# the prover and verifier side; PV-aware chips index fixed slots in the padded
+# layout (sp1-hypercube ``PROOF_MAX_NUM_PVS``).
+PROOF_MAX_NUM_PVS = 187
+
 
 @dataclass(frozen=True)
 class MachineVerifyingKey:
