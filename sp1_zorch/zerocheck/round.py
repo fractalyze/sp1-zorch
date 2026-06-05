@@ -20,6 +20,7 @@ folds every chip at once. Its state concatenates the chips' columns,
 column counts. Equal height only — chips that retire at different heights
 (jagged) need a height-aware schedule and are a separate round.
 """
+
 from __future__ import annotations
 
 import operator
@@ -83,17 +84,24 @@ def prove_zerocheck(
     transcript: Transcript,
     *,
     degree: int,
+    num_real: int | None = None,
 ) -> tuple[list[Array], Transcript, RoundMsg]:
     """Run the single-chip zerocheck sumcheck.
 
     ``columns`` are the chip's column-major trace MLEs (each ``2**num_vars``
-    wide); ``zeta`` is the eq point (``num_vars`` coordinates). Returns the
-    folded state, the advanced transcript, and the stacked per-round
-    ``RoundMsg`` (``.round_poly`` is the proof, ``.challenge`` the point)."""
+    wide); ``zeta`` is the eq point (``num_vars`` coordinates). ``num_real``
+    is the chip's real height when the trace is zero-padded to the width —
+    passed through verbatim; the bound semantics (and the zero-tail soundness
+    contract) are zorch's. Returns the folded state, the advanced transcript,
+    and the stacked per-round ``RoundMsg`` (``.round_poly`` is the proof,
+    ``.challenge`` the point)."""
     eq = expand_eq_to_hypercube(zeta, jnp.ones((), zeta.dtype))
     state = [eq, *columns]
     return prove(
-        ZerocheckRound(alpha=alpha, eval_fn=eval_fn, degree=degree), state, transcript
+        ZerocheckRound(alpha=alpha, eval_fn=eval_fn, degree=degree),
+        state,
+        transcript,
+        num_real=num_real,
     )
 
 
@@ -142,12 +150,18 @@ def prove_multi_chip_zerocheck(
     transcript: Transcript,
     *,
     degree: int,
+    num_reals: Sequence[int] | None = None,
 ) -> tuple[list[Array], Transcript, RoundMsg]:
     """Run the equal-height multi-chip joint zerocheck sumcheck.
 
     ``columns_per_chip[c]`` are chip ``c``'s column-major trace MLEs (every chip
     the same ``2**num_vars`` width); ``alphas[c]`` is its constraint-RLC vector
     and ``lambdas[c]`` its cross-chip coefficient. ``zeta`` is the shared eq point.
+    ``num_reals[c]`` is chip ``c``'s real height when the jagged trace is
+    zero-padded to the shared width. The ``zorch.sumcheck`` marker carries ONE
+    bound, so the longest real prefix is forwarded — sound only because every
+    chip's constraint-fold vanishes on its zero rows, which keeps the joint
+    summand zero past its own height.
     Returns the folded state, the advanced transcript, and the stacked per-round
     ``RoundMsg``."""
     nc = len(columns_per_chip)
@@ -173,6 +187,19 @@ def prove_multi_chip_zerocheck(
                     f"chip {i} has a column of shape {col.shape}; every column "
                     f"must be ({width},) for the equal-height joint zerocheck"
                 )
+    num_real = None
+    if num_reals is not None:
+        if len(num_reals) != nc:
+            raise ValueError(
+                f"num_reals must give one height per chip: got {len(num_reals)} "
+                f"for {nc} chips"
+            )
+        for i, h in enumerate(num_reals):
+            if not 1 <= h <= width:
+                raise ValueError(
+                    f"num_reals[{i}] must be within [1, width {width}], got {h}"
+                )
+        num_real = max(num_reals)
     state = [eq, *(col for chip in columns_per_chip for col in chip)]
     round = MultiChipZerocheckRound(
         alphas=tuple(alphas),
@@ -181,4 +208,4 @@ def prove_multi_chip_zerocheck(
         col_counts=tuple(len(chip) for chip in columns_per_chip),
         degree=degree,
     )
-    return prove(round, state, transcript)
+    return prove(round, state, transcript, num_real=num_real)
