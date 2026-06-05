@@ -31,16 +31,21 @@ def _shifted_powers(shift: Array, generator: Array, size: int) -> Array:
     ``shifted_powers``. One cumprod rather than a per-power traced multiply:
     wide chips put hundreds of columns through this, and field multiplication
     reassociates exactly."""
-    return jnp.cumprod(jnp.full((size,), generator).at[0].set(shift))
+    powers = jnp.full((size,), generator)
+    if size == 0:
+        return powers
+    return jnp.cumprod(powers.at[0].set(shift))
 
 
 # Reference: SP1's `chip_powers_of_alpha` constraint-fold coefficients —
 # https://github.com/fractalyze/sp1/blob/640d8b80c/crates/hypercube/src/prover/shard.rs#L520-L524
 def rlc_coeffs(alpha: Array, num_constraints: int) -> Array:
     """SP1's RLC coefficients for `num_constraints` constraints: descending
-    powers of `alpha`, ``[alpha**(K-1), ..., alpha, 1]``."""
-    if num_constraints < 1:
-        raise ValueError("num_constraints must be >= 1")
+    powers of `alpha`, ``[alpha**(K-1), ..., alpha, 1]``. Empty for ``K = 0``
+    — a lookup-only chip (SP1's Byte / Program / Range) has no transition
+    constraints and folds to nothing."""
+    if num_constraints < 0:
+        raise ValueError("num_constraints must be >= 0")
     return _shifted_powers(jnp.ones_like(alpha), alpha, num_constraints)[::-1]
 
 

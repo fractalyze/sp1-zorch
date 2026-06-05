@@ -36,10 +36,12 @@ export PYTHONPATH="$PWD:/abs/path/to/zorch"
 export ZKX_REPO_ROOT="$HOME/Workspace/zkx"   # dev against a local ZKX checkout
 ```
 
-## SP1 byte-match (later slices)
+## SP1 byte-match
 
-The commit/open/verify path byte-matches the SP1 reference prover. The reference
-fixtures and the vendored CUDA FFI (`libsp1_gpu_jax_ffi`) live in `whir-zorch`
-today (`whir-zorch/sp1/testing`, `whir-zorch/third_party/sp1/`); how they're
-vendored or referenced here is decided when the byte-match slice lands. Compare
-Montgomery-form `u32` bytes directly, no tolerances.
+The commit/open/verify path byte-matches the SP1 reference prover. Reference
+fixtures are vendored per module under `testdata/` (e.g.
+`sp1_zorch/zerocheck/testdata/gpu_fibonacci`); full-shard dumps too large to
+vendor stay external and are checked via the `verify_*` `py_binary` tools
+(`--shard_dir`). The CUDA FFI (`libsp1_gpu_jax_ffi`) still lives in
+`whir-zorch` (`third_party/sp1/`). Compare Montgomery-form `u32` bytes
+directly, no tolerances.

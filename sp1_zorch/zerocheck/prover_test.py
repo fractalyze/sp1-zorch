@@ -41,6 +41,12 @@ class ConstraintRlcTest(absltest.TestCase):
         got = rlc_coeffs(_ALPHA, 3)
         self.assertTrue(bool(jnp.array_equal(got, want)), (got, want))
 
+    def test_rlc_coeffs_empty_for_constraint_less_chip(self) -> None:
+        # Lookup-only chips (SP1's Byte / Program / Range) carry K=0.
+        self.assertEqual(rlc_coeffs(_ALPHA, 0).shape, (0,))
+        with self.assertRaises(ValueError):
+            rlc_coeffs(_ALPHA, -1)
+
     def test_folds_byte_equal_to_plain_dot(self) -> None:
         # The composite must inline to the identical result as the plain
         # `eval_fn(rows) @ alpha_slice` the SP1 reference computes.

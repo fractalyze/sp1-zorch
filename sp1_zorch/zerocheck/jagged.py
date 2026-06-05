@@ -115,9 +115,14 @@ def _chip_round_poly(
         c0 = p0[:, :num_non_padded]
         slopes = diff[:, :num_non_padded]
 
+        # `constraint_eval` rejects an empty alpha — a lookup-only chip
+        # (e.g. SP1's Byte) has no transition constraints to evaluate.
+        has_constraints = alpha.shape[-1] > 0
+
         def inner(rows: Array, *, skip_constraint: bool = False) -> Array:
             rows_t = rows.T
-            v = zero if skip_constraint else constraint_eval(eval_fn, rows_t, alpha)
+            skip = skip_constraint or not has_constraints
+            v = zero if skip else constraint_eval(eval_fn, rows_t, alpha)
             if gkr_powers is not None:
                 v = v + rows_t @ gkr_powers
             return jnp.sum(v * eq)
@@ -161,8 +166,9 @@ def prove_jagged_zerocheck(
     ``traces[c]`` is chip ``c``'s column-major ``(num_cols_c, num_reals[c])``
     trace — exactly its real rows; the driver owns all padding (the zero-tail
     soundness contract is internal). ``alphas[c]`` is its constraint-RLC
-    vector (``prover.rlc_coeffs``) and ``lambdas[c]`` its cross-chip
-    coefficient; ``zeta`` is the eq point, one round per coordinate.
+    vector (``prover.rlc_coeffs``; empty for a lookup-only chip with no
+    transition constraints) and ``lambdas[c]`` its cross-chip coefficient;
+    ``zeta`` is the eq point, one round per coordinate.
 
     ``beta`` and ``claims`` switch on GKR column batching: chip ``c``'s
     summand gains ``sum_j beta**(j+1) * col_j`` and ``claims[c]`` — its GKR
@@ -217,10 +223,11 @@ def prove_jagged_zerocheck(
     inv_vand = compute_inv_vandermonde(DEGREE, ef)
 
     # C_alpha(0_row), the constant every padded row contributes — probed once
-    # per chip; num_real == 0 chips never trace their constraint formula.
+    # per chip; num_real == 0 and constraint-less chips never trace their
+    # constraint formula.
     adjs = [
         zero
-        if nrs[i] == 0
+        if nrs[i] == 0 or alphas[i].shape[-1] == 0
         else constraint_eval(
             eval_fns[i], jnp.zeros((1, traces[i].shape[0]), dtype=ef), alphas[i]
         )[0]

@@ -44,6 +44,12 @@ def _eval_fn(trace: jnp.ndarray) -> jnp.ndarray:
     return jnp.stack([(a - one) * (c - one), (a - one) * b * c], axis=-1)
 
 
+def _eval_fn_empty(trace: jnp.ndarray) -> jnp.ndarray:
+    """Lookup-only chip: no transition constraints (SP1's Byte / Program /
+    Range shape) — ``(N, 0)``, so only the GKR column term contributes."""
+    return jnp.zeros((trace.shape[0], 0), dtype=trace.dtype)
+
+
 def _rand(seed: int, shape) -> jnp.ndarray:
     ints = np.random.default_rng(seed).integers(1, 1 << 30, size=shape, dtype=np.int64)
     return jnp.array(ints, dtype=KB)
@@ -82,7 +88,7 @@ def _zero_extend(trace: jnp.ndarray, width: int) -> jnp.ndarray:
 
 
 def _naive_round_polys(
-    traces, num_reals, alphas, lambdas, zeta, challenges, gkr_powers=None
+    eval_fns, traces, num_reals, alphas, lambdas, zeta, challenges, gkr_powers=None
 ):
     n = int(zeta.shape[0])
     width = 1 << n
@@ -94,7 +100,9 @@ def _naive_round_polys(
         jnp.concatenate([jnp.zeros(nr, dtype=KB), jnp.ones(width - nr, dtype=KB)])
         for nr in num_reals
     ]
-    adjs = [_eval_fn(jnp.zeros((1, _NUM_COLS), dtype=KB))[0] @ a for a in alphas]
+    adjs = [
+        f(jnp.zeros((1, _NUM_COLS), dtype=KB))[0] @ a for f, a in zip(eval_fns, alphas)
+    ]
     e = expand_eq_to_hypercube(zeta, one)
 
     polys = []
@@ -106,7 +114,7 @@ def _naive_round_polys(
             tot = jnp.zeros_like(et)
             for i in range(len(cols)):
                 ct = _lift(cols[i], tv)
-                cv = _eval_fn(ct.T) @ alphas[i]
+                cv = eval_fns[i](ct.T) @ alphas[i]
                 if gkr_powers is not None:
                     cv = cv + ct.T @ gkr_powers[i]
                 tot = tot + lambdas[i] * (cv - adjs[i] * _lift(geqs[i], tv))
@@ -143,11 +151,23 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
             claim = eval_coeffs(coeffs, msgs.challenge[r])
 
     def _check_against_reference(
-        self, num_vars: int, num_reals, seed: int = 0, *, with_gkr: bool = False
+        self,
+        num_vars: int,
+        num_reals,
+        seed: int = 0,
+        *,
+        with_gkr: bool = False,
+        constraint_free: frozenset[int] = frozenset(),
     ):
         nchips = len(num_reals)
         traces = [_witness_trace(seed + i, nr) for i, nr in enumerate(num_reals)]
-        alphas = [rlc_coeffs(_rand(99 + i, ()), _K) for i in range(nchips)]
+        eval_fns = [
+            _eval_fn_empty if i in constraint_free else _eval_fn for i in range(nchips)
+        ]
+        alphas = [
+            rlc_coeffs(_rand(99 + i, ()), 0 if i in constraint_free else _K)
+            for i in range(nchips)
+        ]
         lambdas = _rand(55, (nchips,))
         zeta = _rand(7, (num_vars,))
         challenges = [_rand(1000 + r, ()) for r in range(num_vars)]
@@ -158,7 +178,7 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
             gkr_powers, claims = _gkr_inputs(beta, traces, zeta)
 
         _, _, msgs = prove_jagged_zerocheck(
-            [_eval_fn] * nchips,
+            eval_fns,
             traces,
             num_reals,
             alphas,
@@ -169,7 +189,7 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
             claims=claims,
         )
         want = _naive_round_polys(
-            traces, num_reals, alphas, lambdas, zeta, challenges, gkr_powers
+            eval_fns, traces, num_reals, alphas, lambdas, zeta, challenges, gkr_powers
         )
         for r in range(num_vars):
             self.assertTrue(
@@ -190,6 +210,19 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
 
     def test_single_chip(self) -> None:
         self._check_against_reference(num_vars=3, num_reals=[6])
+
+    def test_constraint_free_chip_among_live(self) -> None:
+        self._check_against_reference(
+            num_vars=3, num_reals=[5, 8, 3], constraint_free=frozenset({1})
+        )
+
+    def test_gkr_constraint_free_chip_among_live(self) -> None:
+        self._check_against_reference(
+            num_vars=3,
+            num_reals=[5, 8, 3],
+            with_gkr=True,
+            constraint_free=frozenset({1}),
+        )
 
     def test_gkr_jagged_heights_match_reference(self) -> None:
         self._check_against_reference(num_vars=3, num_reals=[5, 8, 3], with_gkr=True)

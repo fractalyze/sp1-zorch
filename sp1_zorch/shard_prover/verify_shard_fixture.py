@@ -19,6 +19,7 @@ from absl import app, flags
 from zk_dtypes import koalabear_mont as F
 
 from sp1_zorch.shard_prover.fixture_loader import _parse_kv_lines, load_fixture_shard
+from sp1_zorch.shard_prover.types import PROOF_MAX_NUM_PVS
 
 _SHARD_DIR = flags.DEFINE_string(
     "shard_dir", None, "rsp shard dump directory (e.g. .../rsp_dump/shard1)."
@@ -56,7 +57,7 @@ def main(argv: list[str]) -> None:
 
     ok &= _check(
         "public values (SP1 max PVs)",
-        shard.main_trace_data.public_values.shape == (187,),
+        shard.main_trace_data.public_values.shape == (PROOF_MAX_NUM_PVS,),
     )
     ok &= _check(
         "vk + prep loaded",
