@@ -8,7 +8,7 @@ transitions run on zorch's scheme-agnostic jagged fold.
 
 The SP1-specific pieces live here: the interaction fingerprint over
 rw-constraints ``VirtualPairCol`` decompositions, the per-interaction slot
-schedule (``_sp1_col_h``) with fold-neutral trailing padding, and the
+schedule (``sp1_col_h``) with fold-neutral trailing padding, and the
 power-of-two interaction padding. Numerator slots stay in the main trace's
 BF dtype; denominators are EF.
 """
@@ -90,7 +90,7 @@ def generate_interaction_vals_batch(
     return mult, fingerprint
 
 
-def _sp1_col_h(real_h: int) -> int:
+def sp1_col_h(real_h: int) -> int:
     """Per-interaction column height ``ceil(max(real_h, 8) / 4)``
     (``populateLastCircuitLayer``); the layer reserves ``2 * col_h`` slots."""
     return (max(real_h, 8) + 3) // 4
@@ -142,7 +142,7 @@ def _get_chip_first_layer_jit(chip: GkrChip, has_prep: bool, bf_dtype, ef_dtype)
     def _make_chunk_body(chunk_inters):
         def _body(main_trace, prep_trace, alpha, betas):
             real_height = main_trace.shape[0]
-            slot_count = 2 * _sp1_col_h(real_height)
+            slot_count = 2 * sp1_col_h(real_height)
             # One shared pad per chunk — the slot shortfall is per-chip, not
             # per-interaction (even heights enforced by the caller). A
             # zero-length pad concat folds away under jit, so the full-slot
@@ -199,11 +199,11 @@ def generate_first_layer(
 ) -> JaggedGkrLayer:
     """Build the first GKR layer with SP1-aligned per-interaction storage.
 
-    Each interaction reserves ``2 * _sp1_col_h(real_h)`` paired slots; the
+    Each interaction reserves ``2 * sp1_col_h(real_h)`` paired slots; the
     first ``real_h // 2`` hold real ``(mult, fingerprint)`` pairs split by
     even/odd row index, the rest the fold-neutral ``(n=0, d=1)`` —
     byte-equivalent to SP1's ``paddingValues``. Interactions missing past the
-    power-of-two total get a full padding slot of ``2 * _sp1_col_h(0) == 4``.
+    power-of-two total get a full padding slot of ``2 * sp1_col_h(0) == 4``.
 
     Real heights must be even: an odd height would leave the odd-row side one
     slot short of the even-row side (the SP1 reference never produces one).
@@ -256,10 +256,10 @@ def generate_first_layer(
         n1_parts.append(chip_n1)
         d0_parts.append(chip_d0)
         d1_parts.append(chip_d1)
-        slot_count = 2 * _sp1_col_h(real_height)
+        slot_count = 2 * sp1_col_h(real_height)
         row_counts.extend([slot_count] * len(chip.interactions))
 
-    pad_slot_count = 2 * _sp1_col_h(0)
+    pad_slot_count = 2 * sp1_col_h(0)
     n_pad = padded_interactions - total_interactions
     if n_pad > 0:
         # One allocation per side instead of n_pad tiny ones.

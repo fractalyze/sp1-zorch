@@ -16,7 +16,7 @@ from zk_dtypes import koalabear_mont as F
 from sp1_zorch.commit.region import JaggedRegion
 from sp1_zorch.logup_gkr.circuit import (
     GkrChip,
-    _sp1_col_h,
+    sp1_col_h,
     build_gkr_chips,
     generate_first_layer,
 )
@@ -65,10 +65,10 @@ def _expected_vals(trace, inter, prep=None):
 
 class Sp1ColHTest(absltest.TestCase):
     def test_matches_populate_last_circuit_layer(self) -> None:
-        self.assertEqual(_sp1_col_h(0), 2)
-        self.assertEqual(_sp1_col_h(8), 2)
-        self.assertEqual(_sp1_col_h(9), 3)
-        self.assertEqual(_sp1_col_h(150704), 37676)
+        self.assertEqual(sp1_col_h(0), 2)
+        self.assertEqual(sp1_col_h(8), 2)
+        self.assertEqual(sp1_col_h(9), 3)
+        self.assertEqual(sp1_col_h(150704), 37676)
 
 
 class GenerateFirstLayerTest(absltest.TestCase):
@@ -109,7 +109,7 @@ class GenerateFirstLayerTest(absltest.TestCase):
         layer = generate_first_layer(
             chips, _region(main_a, main_b, names=("A", "B")), None, ALPHA, BETAS
         )
-        # 3 real interactions pad to 4; the pad slot is 2 * _sp1_col_h(0) = 4
+        # 3 real interactions pad to 4; the pad slot is 2 * sp1_col_h(0) = 4
         # rows of the neutral fraction.
         self.assertEqual(layer.row_counts, (4, 4, 4, 4))
         self.assertEqual(layer.num_interaction_variables, 2)

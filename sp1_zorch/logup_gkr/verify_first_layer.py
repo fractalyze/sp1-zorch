@@ -33,7 +33,7 @@ from zk_dtypes import koalabearx4_mont as EF
 
 from sp1_zorch.commit.region import JaggedRegion
 from sp1_zorch.logup_gkr.circuit import (
-    _sp1_col_h,
+    sp1_col_h,
     build_gkr_chips,
     generate_first_layer,
 )
@@ -92,7 +92,7 @@ def _accounting(shard, ref: dict[str, str]) -> bool:
     traces = shard.main_trace_data.traces
     gkr_chips = build_gkr_chips(shard.main_trace_data.chips, traces.chip_order)
     units = sum(
-        _sp1_col_h(traces.per_chip[c.name].array.shape[0]) * len(c.interactions)
+        sp1_col_h(traces.per_chip[c.name].array.shape[0]) * len(c.interactions)
         for c in gkr_chips
     )
     return _check("height (col_h units)", units, int(ref["height"]))
