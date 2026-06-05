@@ -11,12 +11,14 @@ subdir autodetect.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
 import jax.numpy as jnp
 import numpy as np
+import zk_dtypes
 from jax import Array
 from zk_dtypes import koalabear_mont
 
@@ -75,6 +77,35 @@ def _parse_kv_lines(text: str, *, skip_unkeyed: bool = False) -> dict[str, str]:
 def _parse_int_list(value: str) -> list[int]:
     """A dump's ``[a, b, c]`` canonical-int list."""
     return [int(t) for t in value.strip("[]").split(",")]
+
+
+_EF_RE = re.compile(r"value: \[([0-9, ]+)\]")
+
+
+def _parse_ef_list(value: str) -> Array:
+    """All ``BinomialExtensionField { value: [...] }`` blobs in a dump value,
+    as one EF array (canonical limbs Mont-encoded)."""
+    rows = [[int(t) for t in m.group(1).split(",")] for m in _EF_RE.finditer(value)]
+    return (
+        jnp.array(rows, dtype=koalabear_mont)
+        .reshape(-1)
+        .view(zk_dtypes.koalabearx4_mont)
+    )
+
+
+def check_match(label: str, got, want) -> bool:
+    """The byte-match runnables' OK/MISMATCH line: compare a value against
+    its dump reference and print the verdict (got/want on mismatch)."""
+    ok = (
+        got == want
+        if isinstance(got, (int, list, tuple))
+        else bool(jnp.all(got == want))
+    )
+    print(f"{'OK ' if ok else 'MISMATCH'} {label}")
+    if not ok:
+        print(f"  got:  {got}")
+        print(f"  want: {want}")
+    return ok
 
 
 def _read_meta(meta_path: Path) -> tuple[int, int]:
