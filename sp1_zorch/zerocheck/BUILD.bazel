@@ -13,8 +13,8 @@ py_library(
     visibility = ["//visibility:public"],
     deps = [
         "@zorch//zorch:constraint_eval",
-        "@zorch//zorch:prove",
         "@zorch//zorch:round",
+        "@zorch//zorch/sumcheck",
         "@zorch//zorch:transcript",
         "@zorch//zorch/poly:poly",
         requirement("jax"),

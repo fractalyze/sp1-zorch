@@ -24,10 +24,10 @@ bazel_dep(name = "zorch", version = "0.0.0")
 git_override(
     module_name = "zorch",
     remote = "https://github.com/fractalyze/zorch.git",
-    # main @ public testkit transcript (fractalyze/zorch#129); also brings
-    # internal_j_scale (#126), the coding bazel targets, and the jagged
-    # opening stack (#121/#128).
-    commit = "7bd976f92fceae4871060c40dcca572c8adca025",
+    # main @ jagged GKR circuit layer (fractalyze/zorch#131); also carries
+    # the public testkit transcript (#129), internal_j_scale (#126), the
+    # coding bazel targets, and the jagged opening stack (#121/#128).
+    commit = "38cbc010b037ce13abd23fe5121359e7990ef555",
 )
 
 python = use_extension("@rules_python//python/extensions:python.bzl", "python")
