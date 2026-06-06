@@ -1,5 +1,5 @@
 # Copyright 2026 The sp1-zorch Authors. SPDX-License-Identifier: Apache-2.0
-"""`prove_shard_zerocheck` glue vs the hand-derived SP1 Phase-3 recipe.
+"""`prove_shard_zerocheck` glue vs the hand-derived SP1 zerocheck-stage recipe.
 
 The stage's job is pure derivation glue: sample the three stage challenges in
 SP1's order (batching -> GKR opening batch -> lambda), slice zeta off the GKR
@@ -10,7 +10,8 @@ same deterministic sponge and demands byte-identical outputs — any drift in
 sampling order, claim weighting, or trace assembly desynchronizes the two
 Fiat-Shamir streams and fails loudly.
 
-Reference: whir-zorch ``sp1/shard_prover/prover.py`` Phase 3.
+Reference: whir-zorch ``sp1/shard_prover/prover.py``, its zerocheck (SP1
+"phase 3") block; vocabulary in ``docs/shard-pipeline.md``.
 """
 
 from __future__ import annotations

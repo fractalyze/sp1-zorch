@@ -8,9 +8,10 @@ claim as the beta-power weighting of its ``[main | prep]`` column openings,
 and the per-chip column-major traces sliced out of the committed regions. The
 round engine (`prove_jagged_zerocheck`) owns the sumcheck itself.
 
-Reference: whir-zorch ``sp1/shard_prover/prover.py`` (Phase 3) mirroring SP1's
-zerocheck schedule —
+Reference: whir-zorch ``sp1/shard_prover/prover.py``, its zerocheck (SP1
+"phase 3") block, mirroring SP1's schedule —
 https://github.com/fractalyze/sp1/blob/640d8b80c/crates/hypercube/src/prover/shard.rs
+Stage / dump vocabulary: ``docs/shard-pipeline.md``.
 """
 
 from __future__ import annotations
