@@ -24,9 +24,11 @@ bazel_dep(name = "zorch", version = "0.0.0")
 git_override(
     module_name = "zorch",
     remote = "https://github.com/fractalyze/zorch.git",
-    # main @ runtime live-width bound on constraint_eval (fractalyze/zorch#175);
-    # also brings the scalar-explicit combine seam (fractalyze/zorch#172).
-    commit = "130b05894632e5e3eebb6ac6c1fe2c34265063b5",
+    # main @ traced-threshold VirtualGeq (fractalyze/zorch#183) — lets the
+    # zerocheck round indicator thread a lax.scan carry. Also carries the
+    # runtime live-width bound on constraint_eval (#175) and the
+    # scalar-explicit combine seam (#172).
+    commit = "82ad9c6d726354626894067b9571c5d71d81b6f7",
 )
 
 python = use_extension("@rules_python//python/extensions:python.bzl", "python")
