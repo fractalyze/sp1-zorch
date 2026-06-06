@@ -1,0 +1,162 @@
+# Copyright 2026 The sp1-zorch Authors. SPDX-License-Identifier: Apache-2.0
+"""Shared scaffolding for the rsp byte-match runnables.
+
+The transcript-driven ``verify_*`` runnables replay the same shard entry:
+SP1's duplex challenger over poseidon2 koalabear16, the preamble observation
+stream, the jagged regions at SP1's core machine parameters, and the layered
+GKR leg those streams feed. One definition keeps the runnables' Fiat-Shamir
+streams from drifting apart — a preamble divergence shows up as a stage
+mismatch two tools later, which is exactly the kind of hunt this module
+exists to prevent.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+import jax
+import jax.numpy as jnp
+import numpy as np
+from jax import Array
+from zk_dtypes import koalabear_mont as F
+
+from sp1_zorch.commit.region import JaggedRegion
+from sp1_zorch.logup_gkr.circuit import build_gkr_chips
+from sp1_zorch.logup_gkr.prover import LogupGkrProof, num_beta_values, prove_logup_gkr
+from sp1_zorch.poseidon2.koalabear16 import koalabear16_params
+from sp1_zorch.shard_prover.fixture_loader import _parse_int_list, _parse_kv_lines
+from sp1_zorch.shard_prover.types import ShardData
+from zorch.hash.poseidon2.poseidon2 import Poseidon2
+from zorch.transcript import DuplexTranscript, Transcript
+
+# SP1 core machine parameters.
+LOG_STACKING_HEIGHT = 21
+MAX_LOG_ROW_COUNT = 22
+
+# SP1's challenger: poseidon2 koalabear16 duplex sponge at rate 8.
+RATE = 8
+
+
+def to_u32(a: Array) -> np.ndarray:
+    """Montgomery-form u32 bitpatterns — the byte-match comparison unit."""
+    return np.asarray(jax.lax.bitcast_convert_type(a, jnp.uint32))
+
+
+def from_u32(u32: np.ndarray, dtype: Any) -> Array:
+    """Raw u32 Mont bitpatterns -> field array (EF collapses a trailing 4)."""
+    return jax.lax.bitcast_convert_type(jnp.asarray(u32, dtype=jnp.uint32), dtype)
+
+
+class JitPermutation:
+    """`Permutation` wrapper with a jitted `permute`.
+
+    The transcript drives the permutation from eager host loops where each
+    un-jitted permute re-dispatches its few hundred field ops per call; one
+    compile here collapses that to a single dispatch."""
+
+    def __init__(self, inner: Poseidon2) -> None:
+        self.width: int = inner.width
+        self.dtype: Any = inner.dtype
+        self.has_dedicated_fusion: bool = inner.has_dedicated_fusion
+        self._permute = jax.jit(inner.permute)
+
+    def permute(self, state: Array) -> Array:
+        return self._permute(state)
+
+
+def fresh_transcript() -> DuplexTranscript:
+    """SP1's challenger at its initial state."""
+    return DuplexTranscript.new(JitPermutation(Poseidon2(koalabear16_params())), RATE)
+
+
+def preamble_transcript(shard: ShardData, shard_dir: Path) -> Transcript:
+    """The challenger state SP1 enters GKR with: fresh duplex sponge, then
+    vk -> public values -> main commitment -> chip count -> per chip (sorted)
+    num_reals, name length, name bytes. The commitment is the dump's value --
+    our own main-commit byte-match is the trace-commit stage's concern.
+
+    The chip metadata absorbs as one flat array: the sponge eats elements
+    one at a time either way, so the bytes match SP1's per-value observes
+    while skipping hundreds of single-element transcript calls."""
+    commit_kv = _parse_kv_lines((shard_dir / "gpu_commitment.txt").read_text())
+    # gpu_commitment.txt carries canonical integers (the same convention
+    # verify_trace_commit reads it with), so encode rather than view.
+    commitment = jnp.array(_parse_int_list(commit_kv["main_commit"]), F)
+
+    transcript: Transcript = fresh_transcript()
+    transcript = shard.vk.observe_into(transcript)
+    transcript = transcript.observe(shard.main_trace_data.public_values)
+    transcript = transcript.observe(commitment)
+
+    traces = shard.main_trace_data.traces
+    names = traces.chip_order
+    metadata: list[int] = [len(names)]
+    for name in names:
+        metadata.append(traces.per_chip[name].num_real)
+        metadata.append(len(name))
+        metadata.extend(name.encode("ascii"))
+    return transcript.observe(jnp.array(metadata, F))
+
+
+def clone_diag(transcript: Transcript) -> int:
+    """SP1's challenger diags are one squeeze off a clone; the functional
+    transcript makes the clone free."""
+    _, sample = transcript.sample(1)
+    return int(sample[0])
+
+
+def replay_gkr(
+    shard: ShardData,
+    shard_dir: Path,
+    main_region: JaggedRegion,
+    prep_region: JaggedRegion | None,
+    *,
+    pow_bits: int,
+) -> tuple[Transcript, LogupGkrProof]:
+    """The pipeline through the layered GKR prove, grind skipped via the
+    dump's witness. One call site for the stage invocation so the GKR and
+    zerocheck runnables cannot drift on its wiring; each caller owns its own
+    checks against the dump."""
+    state = _parse_kv_lines(
+        (shard_dir / "gpu_gkr_state.txt").read_text(), skip_unkeyed=True
+    )
+    preamble = preamble_transcript(shard, shard_dir)
+    order = shard.main_trace_data.traces.chip_order
+    gkr_chips = build_gkr_chips(shard.main_trace_data.chips, order)
+    return prove_logup_gkr(
+        gkr_chips,
+        main_region,
+        prep_region,
+        preamble,
+        num_betas=num_beta_values(shard.main_trace_data.chips),
+        num_row_variables=MAX_LOG_ROW_COUNT - 1,
+        pow_bits=pow_bits,
+        witness=jnp.array(int(state["witness"]), F),
+    )
+
+
+def shard_regions(shard: ShardData) -> tuple[JaggedRegion, JaggedRegion | None]:
+    """The shard's main/prep jagged regions at SP1's core machine parameters
+    (prep chips in sorted-name order, SP1's preprocessed enumeration)."""
+    traces = shard.main_trace_data.traces
+    order = traces.chip_order
+    main_region = JaggedRegion.from_chips(
+        [traces.per_chip[n].array for n in order],
+        log_stacking_height=LOG_STACKING_HEIGHT,
+        max_log_row_count=MAX_LOG_ROW_COUNT,
+        chip_names=order,
+    )
+    prep = shard.preprocessed_traces
+    prep_names = tuple(sorted(prep))
+    prep_region = (
+        JaggedRegion.from_chips(
+            [prep[n] for n in prep_names],
+            log_stacking_height=LOG_STACKING_HEIGHT,
+            max_log_row_count=MAX_LOG_ROW_COUNT,
+            chip_names=prep_names,
+        )
+        if prep
+        else None
+    )
+    return main_region, prep_region
