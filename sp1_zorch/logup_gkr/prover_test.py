@@ -176,7 +176,7 @@ class ProveLogupGkrTest(absltest.TestCase):
             [VerifierRound(_EF_LIMBS) for _ in proof.round_proofs]
         )
         (num_eval, den_eval, point), _, ok = chain(
-            carry, [rp.sumcheck for rp in proof.round_proofs], transcript
+            carry, proof.round_proofs, transcript
         )
         self.assertTrue(bool(ok))
         self.assertTrue(bool(jnp.all(point == proof.eval_point)))
