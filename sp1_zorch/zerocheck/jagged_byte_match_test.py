@@ -24,6 +24,8 @@ prove_test.py`` and copy the directory under ``testdata/``.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 
 import jax
@@ -74,18 +76,29 @@ def _chip_eval_fn(chip, public_values):
     return lambda trace: chip.eval_constraints(trace, public_values)
 
 
+@partial(
+    jax.tree_util.register_dataclass, data_fields=["challenges", "pos"], meta_fields=[]
+)
+@dataclass(frozen=True)
 class _ScriptedTranscript:
     """Returns the dumped per-round challenges — the byte-match replays the
     reference run's Fiat-Shamir outcomes rather than re-deriving them (the
     duplex-sponge encoding is the pipeline integration's concern, not the
-    round engine's)."""
+    round engine's). A registered pytree with the cursor as a leaf so it rides
+    the round ``lax.scan`` carry; ``observe_and_sample`` advances it with
+    ``dynamic_slice``."""
 
-    def __init__(self, challenges):
-        self._next = list(challenges)
+    challenges: jnp.ndarray
+    pos: jnp.ndarray
+
+    @classmethod
+    def replaying(cls, challenges) -> "_ScriptedTranscript":
+        return cls(jnp.asarray(challenges), jnp.asarray(0, jnp.int32))
 
     def observe_and_sample(self, values, n=1):
-        out = jnp.stack([self._next.pop(0) for _ in range(n)])
-        return self, out
+        del values
+        out = jax.lax.dynamic_slice_in_dim(self.challenges, self.pos, n, axis=0)
+        return _ScriptedTranscript(self.challenges, self.pos + n), out
 
 
 def _u32(a) -> np.ndarray:
@@ -166,7 +179,7 @@ class JaggedZerocheckByteMatchTest(absltest.TestCase):
             alphas,
             lambdas,
             zeta,
-            _ScriptedTranscript(cls.zc_sumcheck_point[::-1]),
+            _ScriptedTranscript.replaying(cls.zc_sumcheck_point[::-1]),
             beta=beta,
             claims=list(chip_claims),
         )
