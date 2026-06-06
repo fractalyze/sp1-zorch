@@ -20,6 +20,8 @@ driver and reference, seeding the claims from the columns' MLE openings at
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
+from functools import partial
 
 import jax
 import jax.numpy as jnp
@@ -70,17 +72,28 @@ def _witness_trace(seed: int, nr: int) -> jnp.ndarray:
     return jnp.concatenate([ones, _rand(seed, (2, nr))], axis=0)
 
 
+@partial(
+    jax.tree_util.register_dataclass, data_fields=["challenges", "pos"], meta_fields=[]
+)
+@dataclass(frozen=True)
 class _ScriptedTranscript:
     """Transcript stub returning preset challenges — the forced-challenge seam
     for comparing the driver against the reference (the driver only calls
-    ``observe_and_sample``)."""
+    ``observe_and_sample``). A registered pytree with the cursor as a leaf so it
+    rides the round ``lax.scan`` carry; ``observe_and_sample`` advances it with
+    ``dynamic_slice`` (a Python ``list.pop`` cannot be a scan carry)."""
 
-    def __init__(self, challenges):
-        self._next = list(challenges)
+    challenges: jnp.ndarray
+    pos: jnp.ndarray
+
+    @classmethod
+    def replaying(cls, challenges) -> "_ScriptedTranscript":
+        return cls(jnp.asarray(challenges), jnp.asarray(0, jnp.int32))
 
     def observe_and_sample(self, values, n=1):
-        out = jnp.stack([self._next.pop(0) for _ in range(n)])
-        return self, out
+        del values
+        out = jax.lax.dynamic_slice_in_dim(self.challenges, self.pos, n, axis=0)
+        return _ScriptedTranscript(self.challenges, self.pos + n), out
 
 
 def _lift(v: jnp.ndarray, t: jnp.ndarray) -> jnp.ndarray:
@@ -185,7 +198,7 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
             alphas,
             lambdas,
             zeta,
-            _ScriptedTranscript(challenges),
+            _ScriptedTranscript.replaying(challenges),
             beta=beta,
             claims=claims,
         )
@@ -245,14 +258,7 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
             num_vars=4, num_reals=[9, 16, 2, 0, 5], with_gkr=True
         )
 
-    @absltest.skipUnless(_HAS_COMPOSITE_OP, "jaxlib lacks stablehlo.CompositeOp")
-    def test_constraint_markers_are_bounded_and_round_invariant(self) -> None:
-        # The compile-time contract this module's fixed-width buffers exist
-        # for: every per-pair constraint evaluation rides a live-width-bounded
-        # marker whose trace operand keeps ONE shape across all rounds and
-        # t-points, so a recognizing compiler reuses one kernel per chip
-        # instead of one per chip per round.
-        num_vars, num_reals = 3, [5, 2]
+    def _constraint_markers(self, num_vars: int, num_reals):
         nchips = len(num_reals)
         traces = [_witness_trace(i, nr) for i, nr in enumerate(num_reals)]
         alphas = [rlc_coeffs(_rand(99 + i, ()), _K) for i in range(nchips)]
@@ -266,7 +272,7 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
                 alphas,
                 lambdas,
                 zeta,
-                _ScriptedTranscript(challenges),
+                _ScriptedTranscript.replaying(challenges),
             )[2].round_poly
 
         txt = (
@@ -276,14 +282,37 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
         )
         calls = re.findall(r'stablehlo\.composite "zorch\.constraint_eval".*', txt)
         bounded = [c for c in calls if "live_width_operand_idx" in c]
+        return calls, bounded
+
+    @absltest.skipUnless(_HAS_COMPOSITE_OP, "jaxlib lacks stablehlo.CompositeOp")
+    def test_constraint_markers_are_bounded_and_round_invariant(self) -> None:
+        # The compile-time contract the fixed-width buffers + lax.scan exist
+        # for: every per-pair constraint evaluation rides a live-width-bounded
+        # marker whose trace operand keeps ONE shape, so a recognizing compiler
+        # reuses one kernel per chip across all rounds.
+        num_reals = [5, 2]
+        nchips = len(num_reals)
+        calls, bounded = self._constraint_markers(3, num_reals)
         # The only unbounded markers are the per-chip C_alpha(0_row) probes.
-        self.assertEqual(len(calls) - len(bounded), nchips, txt)
-        # 3 t-points per round, minus round 0's skipped t=0, per chip.
-        self.assertEqual(len(bounded), (3 * num_vars - 1) * nchips)
+        self.assertEqual(len(calls) - len(bounded), nchips, calls)
+        # One rolled round body: 3 t-points per chip (round 0's t=0 is masked,
+        # not dropped, so the kernel still emits exactly once).
+        self.assertEqual(len(bounded), 3 * nchips)
         shapes = {re.search(r"tensor<(\d+x\d+)x", c).group(1) for c in bounded}  # type: ignore[union-attr]
         # One trace shape per chip — pad4(5)/2 = 4 and pad4(2)/2 = 2 pairs —
         # never one per round.
         self.assertEqual(shapes, {"4x3", "2x3"})
+
+    @absltest.skipUnless(_HAS_COMPOSITE_OP, "jaxlib lacks stablehlo.CompositeOp")
+    def test_round_loop_stays_rolled(self) -> None:
+        # The regression guard for the scan: the constraint-marker count (the
+        # term that drove the unrolled compile wall) must be invariant in
+        # num_vars. An accidental return to a Python round loop would scale it
+        # with the round count.
+        num_reals = [5, 2]
+        calls3, bounded3 = self._constraint_markers(3, num_reals)
+        calls6, bounded6 = self._constraint_markers(6, num_reals)
+        self.assertEqual((len(calls6), len(bounded6)), (len(calls3), len(bounded3)))
 
     def test_gkr_claim_threading(self) -> None:
         # With batching, the claim thread starts at the lambda-RLC of the GKR
