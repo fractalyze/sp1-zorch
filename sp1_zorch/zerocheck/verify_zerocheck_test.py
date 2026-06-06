@@ -107,6 +107,29 @@ class ParsePhase3Test(absltest.TestCase):
         np.testing.assert_array_equal(_u32(parsed["Byte"]["prep"]), _ef(9, 13))
         np.testing.assert_array_equal(_u32(parsed["Byte"]["main"]), _ef(13, 17))
 
+    def test_unrecognized_line_fails_loudly(self):
+        path = pathlib.Path(self.create_tempdir().full_path) / "phase3.txt"
+        path.write_text(
+            "chip Add:\n"
+            "  prep_len=0\n"
+            "  main_len=1\n"
+            "  main[0]=BinomialExtensionField { value: [1, 2, 3, 4] }\n"
+            "  eq=BinomialExtensionField { value: [5, 6, 7, 8] }\n"
+        )
+        with self.assertRaisesRegex(ValueError, "eq="):
+            _parse_phase3(path)
+
+    def test_count_mismatch_fails_loudly(self):
+        path = pathlib.Path(self.create_tempdir().full_path) / "phase3.txt"
+        path.write_text(
+            "chip Add:\n"
+            "  prep_len=0\n"
+            "  main_len=2\n"
+            "  main[0]=BinomialExtensionField { value: [1, 2, 3, 4] }\n"
+        )
+        with self.assertRaisesRegex(ValueError, "Add.*main"):
+            _parse_phase3(path)
+
 
 if __name__ == "__main__":
     absltest.main()

@@ -142,23 +142,44 @@ def _replay_gkr(shard, shard_dir: Path, main_region, prep_region):
 
 
 def _parse_phase3(path: Path) -> dict[str, dict[str, Array]]:
-    """``phase3_chip_opened_values_full.txt`` -> {chip: {prep, main}} (EF)."""
+    """``phase3_chip_opened_values_full.txt`` -> {chip: {prep, main}} (EF).
+
+    Same loud-failure contract as ``_parse_kv_lines``: the file is
+    machine-generated, so an unrecognized line or a count drifting from its
+    ``*_len`` header means dump-format drift, never something to skip."""
     chips: dict[str, dict[str, Array]] = {}
     name = None
     parts: dict[str, list[str]] = {}
+    lens: dict[str, int] = {}
+
+    def _close(chip_name: str) -> None:
+        for kind in ("prep", "main"):
+            if len(parts[kind]) != lens[kind]:
+                raise ValueError(
+                    f"chip {chip_name}: {len(parts[kind])} {kind} entries vs "
+                    f"{kind}_len={lens[kind]} in {path}"
+                )
+        chips[chip_name] = {k: _parse_ef_list(" ".join(v)) for k, v in parts.items()}
+
     for line in path.read_text().splitlines():
         stripped = line.strip()
+        if not stripped:
+            continue
         if stripped.startswith("chip ") and stripped.endswith(":"):
             if name is not None:
-                chips[name] = {k: _parse_ef_list(" ".join(v)) for k, v in parts.items()}
+                _close(name)
             name = stripped[len("chip ") : -1]
             parts = {"prep": [], "main": []}
-        elif stripped.startswith("prep["):
-            parts["prep"].append(stripped.split("=", 1)[1])
-        elif stripped.startswith("main["):
-            parts["main"].append(stripped.split("=", 1)[1])
+            lens = {"prep": 0, "main": 0}
+        elif stripped.startswith(("prep_len=", "main_len=")):
+            kind, value = stripped.split("_len=", 1)
+            lens[kind] = int(value)
+        elif stripped.startswith(("prep[", "main[")):
+            parts[stripped[:4]].append(stripped.split("=", 1)[1])
+        else:
+            raise ValueError(f"unrecognized phase3 line in {path}: {stripped!r}")
     if name is not None:
-        chips[name] = {k: _parse_ef_list(" ".join(v)) for k, v in parts.items()}
+        _close(name)
     return chips
 
 
