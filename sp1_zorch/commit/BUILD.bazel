@@ -129,3 +129,24 @@ py_binary(
         requirement("zk_dtypes"),
     ],
 )
+
+# Absolute open/verify throughput (no SP1 FFI entry for paths -> no vs-SP1 A/B).
+# GPU-only manual tool (bazel run), not a CI test — see the module docstring.
+#   bazel run //sp1_zorch/commit:bench_smcs_open_verify -- --log-heights 16 18 20 22
+py_binary(
+    name = "bench_smcs_open_verify",
+    srcs = ["bench_smcs_open_verify.py"],
+    deps = [
+        ":smcs",
+        "//sp1_zorch/poseidon2:koalabear16",
+        "@zorch//zorch/hash:compression",
+        "@zorch//zorch/hash:sponge",
+        "@zorch//zorch/hash/poseidon2",
+        requirement("jax"),
+        requirement("jax_cuda12_plugin"),
+        requirement("numpy"),
+        requirement("zk_dtypes"),
+        requirement("zkbench"),
+        requirement("zkx_cuda_pjrt"),
+    ],
+)
