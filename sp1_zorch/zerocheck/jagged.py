@@ -1,13 +1,21 @@
 # Copyright 2026 The sp1-zorch Authors. SPDX-License-Identifier: Apache-2.0
 """SP1-schedule jagged zerocheck: the height-aware multi-chip sumcheck round.
 
-Chips keep their own heights: each trace starts at its real height, pads to
-the next multiple of 4, and halves per round (``h_out = ((h+3)//4) * 2``,
-frozen at ``h = 2``) — SP1's ``next_start_indices_and_column_heights`` — so
-storage stays proportional to ``sum(num_cols * num_real)`` instead of
-``num_chips * num_cols * 2**num_vars``. Rows past a chip's real height read
-as zero; their constant constraint value ``C_alpha(0_row)`` is subtracted via
-a virtual ``x >= num_real`` indicator, making the effective summand
+Chips keep their own heights: each trace lives in a fixed-width buffer — its
+real height padded to the next multiple of 4, SP1's round-0 alignment — with
+the live prefix packed at the front, halving per round
+(``ceil(num_real / 2)``, SP1's ``next_start_indices_and_column_heights``
+schedule) while the buffer width stays put. The fixed width keeps every
+per-chip op shape-invariant across rounds, so each chip's constraint circuit
+compiles to ONE kernel reused by every round and t-point: the
+``constraint_eval`` live-width bound masks rows past the live prefix to the
+field's zero (a recognizing emitter skips their circuit work entirely), and
+the zero tail makes the full-width sums byte-equal to sums truncated at the
+live bound — field zero-adds are exact. Storage stays proportional to
+``sum(num_cols * num_real)`` instead of ``num_chips * num_cols *
+2**num_vars``. Rows past a chip's real height read as zero; their constant
+constraint value ``C_alpha(0_row)`` is subtracted via a virtual
+``x >= num_real`` indicator, making the effective summand
 ``eq * (C_alpha(trace) - C_alpha(0_row) * geq)`` — zero past the real prefix.
 With GKR column batching (``beta`` + ``claims``) the summand gains
 ``sum_j beta**(j+1) * col_j``, turning each chip's proved sum from zero into
@@ -66,23 +74,31 @@ from sp1_zorch.zerocheck.prover import gkr_powers
 DEGREE = 4
 
 
-def _pad_to_mult_of_4(trace: Array) -> Array:
-    """Zero-pad axis 1 to the next multiple of 4 — SP1's per-round height
-    invariant (the fold consumes pairs and emits ``h_pad // 2``); the zero
-    tail never enters the truncated round-poly sums."""
-    h = trace.shape[1]
-    h_pad = ((h + 3) // 4) * 4
-    if h_pad == h:
+def _zero_extend_cols(trace: Array, width: int) -> Array:
+    """Zero-extend axis 1 to ``width``. The zero tail is load-bearing: it
+    keeps the buffer's dead suffix exactly zero, so the GKR column term
+    vanishes there and full-width sums match truncated sums byte-for-byte."""
+    pad = width - trace.shape[1]
+    if pad == 0:
         return trace
     return jnp.concatenate(
-        [trace, jnp.zeros((trace.shape[0], h_pad - h), dtype=trace.dtype)], axis=1
+        [trace, jnp.zeros((trace.shape[0], pad), dtype=trace.dtype)], axis=1
     )
+
+
+def _fit_width(v: Array, width: int) -> Array:
+    """Truncate or zero-extend a 1-D vector to ``width``. The eq table starts
+    wider than any chip's pair width and ends narrower; either way the live
+    prefix is preserved and the appended tail multiplies masked zeros only."""
+    if v.shape[0] >= width:
+        return v[:width]
+    return jnp.concatenate([v, jnp.zeros((width - v.shape[0],), dtype=v.dtype)])
 
 
 def _chip_round_poly(
     p0: Array,
     diff: Array,
-    eq_rest: Array,
+    eq: Array,
     eval_fn: Callable[[Array], Array],
     alpha: Array,
     gkr_powers: Array | None,
@@ -96,11 +112,13 @@ def _chip_round_poly(
     skip_constraint_at_zero: bool,
 ) -> tuple[Array, Array, Array, Array]:
     """One chip's ``(y0, y1, y2, y4)`` round-poly evaluations — SP1's
-    ``sum_as_poly_in_last_variable``: truncated inner sums over the real row
-    pairs, the claim identity for t=1, and the virtual-geq padded-row
-    correction per t-point. Round 0 skips the constraint term at t=0 (the
-    zerocheck statement: constraints vanish on real witness rows) — but never
-    the ``gkr_powers`` column term, which does not vanish there."""
+    ``sum_as_poly_in_last_variable``: inner sums over the chip's fixed pair
+    width with rows past the live bound masked to zero (byte-equal to SP1's
+    truncated sums), the claim identity for t=1, and the virtual-geq
+    padded-row correction per t-point. ``eq`` arrives pre-fitted to the same
+    pair width. Round 0 skips the constraint term at t=0 (the zerocheck
+    statement: constraints vanish on real witness rows) — but never the
+    ``gkr_powers`` column term, which does not vanish there."""
     ef = last.dtype
     one = jnp.ones((), ef)
     zero = jnp.zeros((), ef)
@@ -111,10 +129,6 @@ def _chip_round_poly(
     if num_real == 0:
         inner_0 = inner_2 = inner_4 = zero
     else:
-        eq = eq_rest[:num_non_padded]
-        c0 = p0[:, :num_non_padded]
-        slopes = diff[:, :num_non_padded]
-
         # `constraint_eval` rejects an empty alpha — a lookup-only chip
         # (e.g. SP1's Byte) has no transition constraints to evaluate.
         has_constraints = alpha.shape[-1] > 0
@@ -122,19 +136,28 @@ def _chip_round_poly(
         def inner(rows: Array, *, skip_constraint: bool = False) -> Array:
             rows_t = rows.T
             skip = skip_constraint or not has_constraints
-            v = zero if skip else constraint_eval(eval_fn, rows_t, alpha)
+            v = (
+                zero
+                if skip
+                else constraint_eval(
+                    eval_fn, rows_t, alpha, live_width=num_non_padded
+                )
+            )
             if gkr_powers is not None:
+                # Unmasked, but zero past the live prefix anyway: the buffer's
+                # dead tail is exactly zero, and a zero row's column term
+                # vanishes with it.
                 v = v + rows_t @ gkr_powers
             return jnp.sum(v * eq)
 
-        inner_0 = inner(c0, skip_constraint=skip_constraint_at_zero)
-        inner_2 = inner(c0 + two * slopes)
-        inner_4 = inner(c0 + four * slopes)
+        inner_0 = inner(p0, skip_constraint=skip_constraint_at_zero)
+        inner_2 = inner(p0 + two * diff)
+        inner_4 = inner(p0 + four * diff)
 
     # num_real == 0 puts the threshold pair index at -1; everything below
     # zeroes out through the guard (the inner sums are already zero).
     threshold_half = num_non_padded - 1
-    msb_lagrange = eq_adj * (eq_rest[threshold_half] if threshold_half >= 0 else zero)
+    msb_lagrange = eq_adj * (eq[threshold_half] if threshold_half >= 0 else zero)
 
     def correct(y: Array, t_val: Array) -> Array:
         # The bound eq factor (1-t)*(1-last) + t*last scales every term.
@@ -234,7 +257,12 @@ def prove_jagged_zerocheck(
         for i in range(num_chips)
     ]
 
-    chip_traces = list(traces)
+    # Fixed-width buffers: each chip's width is pinned once at its padded
+    # round-0 height and never shrinks; folds re-extend into the same width
+    # so every per-chip op (and its compiled kernel) is round-invariant.
+    widths = [((nr + 3) // 4) * 4 for nr in nrs]
+    bufs = [_zero_extend_cols(traces[i], widths[i]) for i in range(num_chips)]
+    pair_max = max(w // 2 for w in widths)
     vgeqs = [VirtualGeq(nr, one, zero) for nr in nrs]
     if claims is None:
         # Pure zerocheck: sum eq * (C - C(0)*geq) = 0.
@@ -257,6 +285,9 @@ def prove_jagged_zerocheck(
             if rest_z.shape[0] > 0
             else jnp.ones((1,), ef)
         )
+        # One round-varying reshape, shared by all chips; the per-chip slice
+        # of it below keeps round-invariant shapes.
+        eq_pairs = _fit_width(eq_rest, pair_max)
         # Domain pinning p(3): evals at {0, 1, 2, 4} plus the implicit zero at
         # b — the root of the eq-last factor that scales every term.
         b = (one - last) / (one - jnp.array(2, ef) * last)
@@ -267,15 +298,14 @@ def prove_jagged_zerocheck(
         p0s = []
         diffs = []
         for i in range(num_chips):
-            padded = _pad_to_mult_of_4(chip_traces[i])
-            p0 = padded[:, 0::2]
-            diff = padded[:, 1::2] - p0
+            p0 = bufs[i][:, 0::2]
+            diff = bufs[i][:, 1::2] - p0
             p0s.append(p0)
             diffs.append(diff)
             y_0, y_1, y_2, y_4 = _chip_round_poly(
                 p0,
                 diff,
-                eq_rest,
+                eq_pairs[: widths[i] // 2],
                 eval_fns[i],
                 alphas[i],
                 chip_gkr[i],
@@ -295,7 +325,10 @@ def prove_jagged_zerocheck(
         transcript, r = transcript.observe_and_sample(rlc, 1)
         alpha_r = r[0]
 
-        chip_traces = [p0s[i] + alpha_r * diffs[i] for i in range(num_chips)]
+        bufs = [
+            _zero_extend_cols(p0s[i] + alpha_r * diffs[i], widths[i])
+            for i in range(num_chips)
+        ]
         vgeqs = [vg.fix_last_variable(alpha_r) for vg in vgeqs]
         nrs = [(nr + 1) // 2 for nr in nrs]
         chip_claims = [eval_coeffs(polys[i], alpha_r) for i in range(num_chips)]
@@ -304,8 +337,10 @@ def prove_jagged_zerocheck(
         round_polys.append(rlc)
         challenges.append(alpha_r)
 
+    # The first pair of each buffer is the whole fold result; the rest of the
+    # fixed width is dead zeros.
     return (
-        chip_traces,
+        [b[:, :2] for b in bufs],
         transcript,
         RoundMsg(round_poly=jnp.stack(round_polys), challenge=jnp.stack(challenges)),
     )

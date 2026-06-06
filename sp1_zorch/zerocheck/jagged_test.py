@@ -19,16 +19,24 @@ driver and reference, seeding the claims from the columns' MLE openings at
 
 from __future__ import annotations
 
+import re
+
+import jax
 import jax.numpy as jnp
 import numpy as np
 from absl.testing import absltest
 from zk_dtypes import koalabear_mont as KB
 
+from zorch._composite import _HAS_COMPOSITE_OP
 from zorch.poly.eq import expand_eq_to_hypercube
 from zorch.poly.univariate import compute_inv_vandermonde, eval_coeffs
 from zorch.testkit.transcript import cheap_transcript
 
-from sp1_zorch.zerocheck.jagged import DEGREE, prove_jagged_zerocheck
+from sp1_zorch.zerocheck.jagged import (
+    DEGREE,
+    _zero_extend_cols,
+    prove_jagged_zerocheck,
+)
 from sp1_zorch.zerocheck.prover import rlc_coeffs
 
 # Witness chip: columns [a, b, c] with a == 1 on every real row, so both
@@ -80,13 +88,6 @@ def _lift(v: jnp.ndarray, t: jnp.ndarray) -> jnp.ndarray:
     return v[..., 0::2] + t * (v[..., 1::2] - v[..., 0::2])
 
 
-def _zero_extend(trace: jnp.ndarray, width: int) -> jnp.ndarray:
-    pad = width - trace.shape[1]
-    return jnp.concatenate(
-        [trace, jnp.zeros((trace.shape[0], pad), dtype=trace.dtype)], axis=1
-    )
-
-
 def _naive_round_polys(
     eval_fns, traces, num_reals, alphas, lambdas, zeta, challenges, gkr_powers=None
 ):
@@ -95,7 +96,7 @@ def _naive_round_polys(
     one = jnp.ones((), KB)
     inv_vand = compute_inv_vandermonde(DEGREE, KB)
 
-    cols = [_zero_extend(t, width) for t in traces]
+    cols = [_zero_extend_cols(t, width) for t in traces]
     geqs = [
         jnp.concatenate([jnp.zeros(nr, dtype=KB), jnp.ones(width - nr, dtype=KB)])
         for nr in num_reals
@@ -135,7 +136,7 @@ def _gkr_inputs(beta, traces, zeta):
         pows.append(pows[-1] * beta)
     gkr = jnp.stack(pows)
     e = expand_eq_to_hypercube(zeta, jnp.ones((), KB))
-    claims = [gkr @ (_zero_extend(t, width) @ e) for t in traces]
+    claims = [gkr @ (_zero_extend_cols(t, width) @ e) for t in traces]
     return [gkr] * len(traces), claims
 
 
@@ -233,6 +234,57 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
     def test_gkr_freeze_at_two_tail(self) -> None:
         self._check_against_reference(num_vars=4, num_reals=[3, 1], with_gkr=True)
 
+    def test_wider_mixed_heights_match_reference(self) -> None:
+        # Stresses both eq fits: a narrow chip truncates the early wide eq
+        # tables, and the late narrow tables zero-extend up to the widest
+        # chip's pair width.
+        self._check_against_reference(num_vars=4, num_reals=[9, 16, 2, 0, 5])
+
+    def test_gkr_wider_mixed_heights_match_reference(self) -> None:
+        self._check_against_reference(
+            num_vars=4, num_reals=[9, 16, 2, 0, 5], with_gkr=True
+        )
+
+    @absltest.skipUnless(_HAS_COMPOSITE_OP, "jaxlib lacks stablehlo.CompositeOp")
+    def test_constraint_markers_are_bounded_and_round_invariant(self) -> None:
+        # The compile-time contract this module's fixed-width buffers exist
+        # for: every per-pair constraint evaluation rides a live-width-bounded
+        # marker whose trace operand keeps ONE shape across all rounds and
+        # t-points, so a recognizing compiler reuses one kernel per chip
+        # instead of one per chip per round.
+        num_vars, num_reals = 3, [5, 2]
+        nchips = len(num_reals)
+        traces = [_witness_trace(i, nr) for i, nr in enumerate(num_reals)]
+        alphas = [rlc_coeffs(_rand(99 + i, ()), _K) for i in range(nchips)]
+        challenges = [_rand(1000 + r, ()) for r in range(num_vars)]
+
+        def run(traces, alphas, lambdas, zeta):  # type: ignore[no-untyped-def]
+            return prove_jagged_zerocheck(
+                [_eval_fn] * nchips,
+                traces,
+                num_reals,
+                alphas,
+                lambdas,
+                zeta,
+                _ScriptedTranscript(challenges),
+            )[2].round_poly
+
+        txt = (
+            jax.jit(run)
+            .lower(traces, alphas, _rand(55, (nchips,)), _rand(7, (num_vars,)))
+            .as_text()
+        )
+        calls = re.findall(r'stablehlo\.composite "zorch\.constraint_eval".*', txt)
+        bounded = [c for c in calls if "live_width_operand_idx" in c]
+        # The only unbounded markers are the per-chip C_alpha(0_row) probes.
+        self.assertEqual(len(calls) - len(bounded), nchips, txt)
+        # 3 t-points per round, minus round 0's skipped t=0, per chip.
+        self.assertEqual(len(bounded), (3 * num_vars - 1) * nchips)
+        shapes = {re.search(r"tensor<(\d+x\d+)x", c).group(1) for c in bounded}  # type: ignore[union-attr]
+        # One trace shape per chip — pad4(5)/2 = 4 and pad4(2)/2 = 2 pairs —
+        # never one per round.
+        self.assertEqual(shapes, {"4x3", "2x3"})
+
     def test_gkr_claim_threading(self) -> None:
         # With batching, the claim thread starts at the lambda-RLC of the GKR
         # claims (zero in the pure case) and follows the same identity.
@@ -287,7 +339,7 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
         # traces at the transcript's challenges.
         width = 1 << num_vars
         for i in range(nchips):
-            v = _zero_extend(traces[i], width)
+            v = _zero_extend_cols(traces[i], width)
             for r in range(num_vars):
                 v = _lift(v, msgs.challenge[r])
             if finals[i].shape[1] > 0:
