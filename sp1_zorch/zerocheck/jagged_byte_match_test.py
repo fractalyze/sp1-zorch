@@ -39,6 +39,7 @@ from sp1_zorch.shard_prover.chip_loader import load_sp1_chips, sp1_name_to_rw
 from sp1_zorch.shard_prover.types import PROOF_MAX_NUM_PVS
 from sp1_zorch.zerocheck.jagged import DEGREE, prove_jagged_zerocheck
 from sp1_zorch.zerocheck.prover import rlc_coeffs
+from sp1_zorch.zerocheck.stage import chip_traces
 
 BF = koalabear_mont
 EF = koalabearx4_mont
@@ -65,46 +66,6 @@ def _load_region(name: str, dense: jnp.ndarray) -> JaggedRegion:
         log_stacking_height=int(meta["log_stacking_height"]),
         chip_names=tuple(meta["chip_names"]),
     )
-
-
-def _chip_traces(chip_names, num_reals, main_region, prep_region) -> list[jnp.ndarray]:
-    """Per-chip column-major ``[main | prep]`` traces, exactly ``nr`` rows each.
-
-    Main-first matches the GKR claim's beta-weighting (the claims batch
-    ``concat([main_eval, prep_eval])``); prep is height-padded / truncated to
-    the chip's ``num_real``. The round driver owns all further padding.
-    """
-    prep_idx = (
-        {n: k for k, n in enumerate(prep_region.chip_names)} if prep_region else {}
-    )
-    traces = []
-    for i, name in enumerate(chip_names):
-        nr = int(num_reals[i])
-        mw = int(main_region.chip_widths[i])
-        start = main_region.chip_starts[i]
-        if mw > 0 and nr > 0:
-            cols = main_region.dense[start : start + nr * mw].reshape(mw, nr)
-        else:
-            cols = jnp.zeros((mw, nr), dtype=BF)
-        if name in prep_idx:
-            k = prep_idx[name]
-            pw = int(prep_region.chip_widths[k])
-            p_h = int(prep_region.chip_heights[k])
-            p_start = prep_region.chip_starts[k]
-            if pw > 0 and p_h > 0:
-                prep = prep_region.dense[p_start : p_start + p_h * pw].reshape(pw, p_h)
-                if p_h < nr:
-                    prep = jnp.concatenate(
-                        [prep, jnp.zeros((pw, nr - p_h), dtype=prep.dtype)], axis=1
-                    )
-                elif p_h > nr:
-                    prep = prep[:, :nr]
-            else:
-                prep = jnp.zeros((pw, nr), dtype=BF)
-            if pw > 0:
-                cols = jnp.concatenate([cols, prep], axis=0)
-        traces.append(cols)
-    return traces
 
 
 def _chip_eval_fn(chip, public_values):
@@ -151,7 +112,7 @@ class JaggedZerocheckByteMatchTest(absltest.TestCase):
         prep_region = _load_region("prep_region.json", _load_npy("prep_dense.npy", BF))
         assert tuple(chip_names) == tuple(main_region.chip_names)
 
-        traces = _chip_traces(chip_names, num_reals, main_region, prep_region)
+        traces = chip_traces(chip_names, num_reals, main_region, prep_region)
 
         # Reconstruct each chip's constraint set; a missing or width-drifted
         # manifest entry must fail loudly — a stub would silently break the
