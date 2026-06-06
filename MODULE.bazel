@@ -24,9 +24,9 @@ bazel_dep(name = "zorch", version = "0.0.0")
 git_override(
     module_name = "zorch",
     remote = "https://github.com/fractalyze/zorch.git",
-    # main @ (lam, claim) recorded on jagged layer proofs + lazily consumed
-    # ProveChain (fractalyze/zorch#158).
-    commit = "413c14f6acc9a196913e78f751251644fbd6f72c",
+    # main @ runtime live-width bound on constraint_eval (fractalyze/zorch#175);
+    # also brings the scalar-explicit combine seam (fractalyze/zorch#172).
+    commit = "130b05894632e5e3eebb6ac6c1fe2c34265063b5",
 )
 
 python = use_extension("@rules_python//python/extensions:python.bzl", "python")

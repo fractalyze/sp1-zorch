@@ -40,7 +40,7 @@ from zorch.transcript import Transcript
 
 
 def _fold_chip(
-    eval_fn: Callable[[Array], Array], cols: tuple[Array, ...], alpha: Array
+    eval_fn: Callable[[Array], Array], cols: Sequence[Array], alpha: Array
 ) -> Array:
     """``eval_fn(trace) @ alpha`` over the driver's lifted factors.
 
@@ -72,8 +72,21 @@ class ZerocheckRound(Round):
     eval_fn: Callable[[Array], Array]
     degree: int
 
+    def combine_scalars(self) -> tuple[Array, ...]:
+        """The RLC vector, fixed across the variable-rounds; the marked path
+        threads it as a marker operand so a vendor feeds the inlined combine."""
+        return (self.alpha,)
+
+    def combine(self, scalars: Sequence[Array], *factors: Array) -> Array:
+        """``eq * C_alpha(trace)`` over ``[eq, *cols]`` — the scalar-explicit
+        seam ``_combine``, the round-poly reduction, and the marked path's
+        nested combine region all route through, so they cannot drift."""
+        (alpha,) = scalars
+        eq, *cols = factors
+        return eq * _fold_chip(self.eval_fn, cols, alpha)
+
     def _combine(self, eq: Array, *cols: Array) -> Array:
-        return eq * _fold_chip(self.eval_fn, cols, self.alpha)
+        return self.combine(self.combine_scalars(), eq, *cols)
 
 
 def prove_zerocheck(
@@ -129,16 +142,29 @@ class MultiChipZerocheckRound(Round):
     col_counts: tuple[int, ...]
     degree: int
 
-    def _combine(self, eq: Array, *cols: Array) -> Array:
+    def combine_scalars(self) -> tuple[Array, ...]:
+        """Per-chip RLC vectors then the cross-chip ``lambdas``, fixed across
+        the variable-rounds; the marked path threads them as marker operands."""
+        return (*self.alphas, self.lambdas)
+
+    def combine(self, scalars: Sequence[Array], *factors: Array) -> Array:
+        """``eq * sum_c lambda_c * C_{alpha_c}(trace_c)`` over the flat
+        ``[eq, *all chip cols]`` — the scalar-explicit seam ``_combine`` and
+        the marked path's nested combine region both route through."""
+        *alphas, lambdas = scalars
+        eq, *cols = factors
         terms = []
         offset = 0
         for eval_fn, nc, alpha, lam in zip(
-            self.eval_fns, self.col_counts, self.alphas, self.lambdas, strict=True
+            self.eval_fns, self.col_counts, alphas, lambdas, strict=True
         ):
             folded = _fold_chip(eval_fn, cols[offset : offset + nc], alpha)
             offset += nc
             terms.append(lam * folded)
         return eq * reduce(operator.add, terms)
+
+    def _combine(self, eq: Array, *cols: Array) -> Array:
+        return self.combine(self.combine_scalars(), eq, *cols)
 
 
 def prove_multi_chip_zerocheck(
