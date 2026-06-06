@@ -1,13 +1,11 @@
 # Shard pipeline: Rounds, stages, and SP1 dump vocabulary
 
 The shard proof is one `zorch.round.Round` chain threading a single duplex
-transcript. Every building block follows zorch's Round contract — a prover
-round maps `(carry, transcript) -> (carry, transcript, msg)` — and a stage is
-just a named sub-chain whose carry is a claim being reduced. Chains nest
-(`ProveChain` is itself a `Round`), so the whole pipeline, each stage, and
-each per-variable sumcheck step are the same shape at different scales. That
-compositionality is the point of building on zorch: stages are assembled from
-Rounds, not hand-rolled as monoliths.
+transcript; a **stage** is a named sub-chain whose carry is a claim being
+reduced. The Round contract and chain composition are zorch's — see zorch
+`round.py` and `docs/sumcheck.md`. This page adds only the SP1 layer: which
+Rounds each stage composes, and how SP1's reference-dump vocabulary maps onto
+them.
 
 ## Stages
 
@@ -16,10 +14,10 @@ Rounds, not hand-rolled as monoliths.
 | Trace commit | SMCS merkle commit over the jagged dense packing (no sumcheck rounds; transcript observes vk, public values, commitment, chip metadata) | — (seeds the transcript) | `sp1_zorch/commit` | `commit:verify_trace_commit` |
 | LogUp-GKR | A chain of layer Rounds (output layer → input layer), each layer a chain of per-variable sumcheck rounds | Per-layer running claim, ending in trace-column openings at the final evaluation point | `sp1_zorch/logup_gkr` | `logup_gkr:verify_first_layer`, `logup_gkr:verify_gkr_prove` |
 | Zerocheck | One jagged multi-chip sumcheck: 22 homogeneous per-variable rounds over `eq * (constraint RLC + GKR column term)` | In: every chip's constraint zero-sum + its GKR opening claim; out: one claim at the sumcheck point | `sp1_zorch/zerocheck` | `zerocheck:verify_zerocheck` |
-| Jagged evaluation | Outer/inner sumcheck rounds + stacked BaseFold opening | In: the zerocheck point claim (row point) + column claims; out: the PCS opening | planned (`zorch/pcs/jagged`) | planned |
-| Assembly | Proof layout + bincode serialization + `sp1_verify_shard` FFI | — | planned | planned |
 
-The issue tracker maps stages to fractalyze/sp1-zorch#13's plan (#16–#22).
+Two stages follow zerocheck — jagged evaluation (outer/inner sumcheck +
+stacked BaseFold opening, consuming the zerocheck point claim) and proof
+assembly/serialization; see fractalyze/sp1-zorch#13 for the plan.
 
 ## SP1 reference dump vocabulary
 
@@ -43,7 +41,7 @@ Per-file map (one rsp shard directory):
 
 | Dump file | Stage | Contents / consumer |
 |---|---|---|
-| `gpu_traces/*.bin`, `*.meta` | input | Per-chip main traces + dims; `shard_prover.fixture_loader` |
+| `gpu_traces/*.bin`, `*.meta` | input | Per-chip main traces + dims (`.meta` alone for zero-real chips; `public_values.bin` rides alongside); `shard_prover.fixture_loader` |
 | `gpu_vk.txt`, `gpu_commitment.txt` | Trace commit | vk, main commitment; preamble observes + `verify_trace_commit` |
 | `gpu_pre_gkr_diag.txt`, `gpu_post_grind_diag.txt`, `gpu_post_gkr_diag.txt` | LogUp-GKR | Challenger checkpoints (one cloned squeeze each); seal the transcript before/after the stage |
 | `gpu_gkr_state.txt` | LogUp-GKR | Grind witness, alpha, beta seeds, output MLEs, z1 |
