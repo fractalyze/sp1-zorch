@@ -1,0 +1,36 @@
+load("@rules_python//python:defs.bzl", "py_library", "py_test")
+load("@sp1_zorch_pip//:requirements.bzl", "requirement")
+
+# SP1-schedule jagged evaluation-proof sumchecks (the sumcheck half of stage 5).
+py_library(
+    name = "prover",
+    srcs = [
+        "__init__.py",
+        "prover.py",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        "@zorch//zorch:round",
+        "@zorch//zorch:transcript",
+        "@zorch//zorch/pcs/jagged:poly",
+        "@zorch//zorch/poly:poly",
+        requirement("jax"),
+        requirement("numpy"),
+    ],
+)
+
+py_test(
+    name = "prover_test",
+    # large: the 48-round BP sumcheck over 1726 columns compiles + runs ~20s CPU.
+    size = "large",
+    srcs = ["prover_test.py"],
+    data = glob(["testdata/gpu_fibonacci/**"]),
+    deps = [
+        ":prover",
+        "@zorch//zorch:round",
+        requirement("absl_py"),
+        requirement("jax"),
+        requirement("numpy"),
+        requirement("zk_dtypes"),
+    ],
+)
