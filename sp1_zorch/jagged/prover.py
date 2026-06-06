@@ -5,9 +5,10 @@
 so it sequences with the other stages —
 ``ProveChain([Commit(), LogUpGkr(), ZeroCheck(), JaggedEval()])``. It reproves
 SP1's jagged PCS opening sumchecks byte-identically: the OUTER Hadamard sumcheck
-``Σ_i D(i)·J̃(i)`` (column claim today; the round polys + ``dense_eval`` need the
-committed dense buffer, deferred with the BaseFold open) and the INNER
-branching-program sumcheck reproving ``J̃(z_row, z_col, z_trace)``.
+``Σ_i D(i)·J̃(i)`` over the committed dense buffer (round polys + ``dense_eval``)
+whose folded point feeds the INNER branching-program sumcheck reproving
+``J̃(z_row, z_col, z_final)``. The stacked BaseFold open of ``D`` at ``z_final``
+is the remaining half of stage 5.
 
 SP1 folds **LSB-first** (even/odd pairing ``[0::2]``/``[1::2]``), round polys
 travel in **coefficient** form ``[c0, c1, c2]``, and the proof point is the
@@ -40,10 +41,12 @@ from jax import Array
 
 from zorch.pcs.jagged.poly import (
     _TRANSITION_ROWS,
+    _offset_bit_tensor,
     bp_eval_core,
     build_jagged_layout,
     build_prefix_sums,
     msb_first_bits,
+    partial_eval,
 )
 from zorch.poly.eq import expand_eq_to_hypercube
 from zorch.poly.univariate import eval_coeffs
@@ -58,22 +61,30 @@ class JaggedEvalInputs:
 
     ``col_heights`` is the per-unit-column height list and ``all_claims`` the
     matching ``(L,)`` per-column GKR openings (see ``assemble_columns``).
-    ``z_trace`` is the outer sumcheck point (``z_final``) — passed in until the
-    dense-buffer outer round runs inside this ``Round``."""
+    ``dense`` is the combined committed dense buffer ``D`` (both rounds' raw
+    packed columns concatenated, padded to ``2^n``) over which the outer
+    Hadamard sumcheck runs; the outer point ``z_final`` it produces feeds the
+    inner sumcheck, so it is no longer carried in."""
 
     col_heights: tuple[int, ...]
     all_claims: Array
     z_row: Array
     z_col: Array
-    z_trace: Array
+    dense: Array
 
 
 @dataclass(frozen=True)
 class JaggedEvalMsg:
-    """Proof message: the outer column claim and the inner sumcheck transcript
-    (coefficient-form round polys, the folded point, the reproved claim)."""
+    """Proof message: the outer Hadamard sumcheck (initial column claim, its
+    coefficient-form round polys, the folded point ``z_final``, and
+    ``dense_eval = D(z_final)``) and the inner branching-program sumcheck
+    transcript (coefficient-form round polys, the folded point, the reproved
+    claim)."""
 
     outer_sumcheck_claim: Array
+    outer_sumcheck_polys: Array
+    outer_sumcheck_point: Array
+    dense_eval: Array
     inner_sumcheck_polys: Array
     inner_point: Array
     inner_claimed_sum: Array
@@ -116,6 +127,72 @@ def outer_sumcheck_claim(all_claims: Array, z_col: Array) -> Array:
         [all_claims, jnp.zeros((width - all_claims.shape[0],), dtype=dtype)], axis=0
     )
     return jnp.sum(col_eq * padded)
+
+
+def build_outer_indicator(
+    col_heights: Sequence[int],
+    z_row: Array,
+    z_col: Array,
+    target_size: int,
+    *,
+    dtype,
+) -> Array:
+    """Materialize ``J̃(z_row, z_col, ·)`` over the dense area ``[0, target_size)``.
+
+    ``partial_eval`` allocates ``2^n_d`` (``n_d`` = prefix-bit width, which can
+    exceed the dense area's address width when the total area is itself a power
+    of two), reading its scatter offsets from the canonical-limb tensor; every
+    nonzero entry lands below ``total_area <= target_size``, so the tail is zero
+    and slicing to ``target_size`` recovers the indicator over the dense area."""
+    heights = list(col_heights)
+    l_max = len(heights)
+    _, cfg = build_jagged_layout(heights, l_max, z_row.shape[0], dtype)
+    offsets = _offset_bit_tensor(heights, l_max, cfg)
+    return partial_eval(offsets, z_row, z_col, cfg=cfg)[:target_size]
+
+
+def outer_sumcheck(
+    dense: Array,
+    indicator: Array,
+    claim: Array,
+    transcript: Transcript,
+) -> tuple[Array, Array, Array, Transcript]:
+    """Outer Hadamard sumcheck ``Σ_i D(i)·J̃(i) = claim``, LSB-first.
+
+    Returns ``(round_polys (n,3), z_final (n,), dense_eval, transcript)`` where
+    ``n = log2(len(dense))``. Folds even/odd pairs (``[0::2]``/``[1::2]``) one
+    variable per round, observing each coefficient-form degree-2 round poly
+    ``[s(0), claim-2·s(0)-s(∞), s(∞)]`` and sampling the next challenge; the
+    point is the challenge list reversed (SP1's insert-at-front). ``dense_eval``
+    is ``D(z_final)`` — the indicator factor is reproved by the inner sumcheck,
+    not folded into the eval. Mirrors ``inner_sumcheck``'s LSB-first idiom over a
+    flat Hadamard product (no branching program)."""
+    state_a = dense
+    state_b = indicator
+    n_rounds = (state_a.shape[0] - 1).bit_length()
+    two = jnp.array(2, claim.dtype)
+
+    cur = claim
+    polys: list[Array] = []
+    challenges: list[Array] = []
+    for _ in range(n_rounds):
+        p0a, p1a = state_a[0::2], state_a[1::2]
+        p0b, p1b = state_b[0::2], state_b[1::2]
+        s0 = jnp.sum(p0a * p0b)
+        s_inf = jnp.sum((p1a - p0a) * (p1b - p0b))
+        coef = jnp.stack([s0, cur - two * s0 - s_inf, s_inf])
+
+        transcript, sampled = transcript.observe_and_sample(coef, 1)
+        alpha = sampled[0]
+        state_a = p0a + alpha * (p1a - p0a)
+        state_b = p0b + alpha * (p1b - p0b)
+        cur = eval_coeffs(coef, alpha)
+        polys.append(coef)
+        challenges.append(alpha)
+
+    dense_eval = state_a[0]
+    z_final = jnp.stack(challenges)[::-1]
+    return jnp.stack(polys), z_final, dense_eval, transcript
 
 
 def inner_sumcheck(
@@ -199,11 +276,11 @@ class JaggedEvalRound(Round):
     """The jagged PCS evaluation-proof sumcheck as a composable IOP ``Round``.
 
     ``__call__`` maps ``(JaggedEvalInputs, transcript) -> (inputs, transcript,
-    JaggedEvalMsg)`` so it sequences in ``ProveChain``. Covers the dense-free
-    half (outer column claim + inner BP sumcheck); the outer round polys /
-    ``dense_eval`` land once the committed dense buffer is threaded onto the
-    carry. See the module docstring for why it is a bespoke loop, not a
-    ``SumcheckRound``."""
+    JaggedEvalMsg)`` so it sequences in ``ProveChain``. Runs the full sumcheck
+    half: the outer Hadamard sumcheck ``Σ D·J̃`` over the committed dense buffer
+    (round polys + ``dense_eval``), whose folded point ``z_final`` then feeds the
+    inner branching-program sumcheck reproving ``J̃(z_row, z_col, z_final)``. See
+    the module docstring for why both are bespoke loops, not ``SumcheckRound``s."""
 
     def __init__(self, *, dtype) -> None:
         self._dtype = dtype
@@ -212,19 +289,32 @@ class JaggedEvalRound(Round):
         self, carry: JaggedEvalInputs, transcript: Transcript
     ) -> tuple[JaggedEvalInputs, Transcript, JaggedEvalMsg]:
         claim = outer_sumcheck_claim(carry.all_claims, carry.z_col)
-        polys, point, claimed_sum, transcript = inner_sumcheck(
+        indicator = build_outer_indicator(
             carry.col_heights,
             carry.z_row,
             carry.z_col,
-            carry.z_trace,
+            carry.dense.shape[0],
+            dtype=self._dtype,
+        )
+        outer_polys, z_final, dense_eval, transcript = outer_sumcheck(
+            carry.dense, indicator, claim, transcript
+        )
+        inner_polys, inner_point, inner_claimed_sum, transcript = inner_sumcheck(
+            carry.col_heights,
+            carry.z_row,
+            carry.z_col,
+            z_final,
             transcript,
             dtype=self._dtype,
         )
         msg = JaggedEvalMsg(
             outer_sumcheck_claim=claim,
-            inner_sumcheck_polys=polys,
-            inner_point=point,
-            inner_claimed_sum=claimed_sum,
+            outer_sumcheck_polys=outer_polys,
+            outer_sumcheck_point=z_final,
+            dense_eval=dense_eval,
+            inner_sumcheck_polys=inner_polys,
+            inner_point=inner_point,
+            inner_claimed_sum=inner_claimed_sum,
         )
         return carry, transcript, msg
 
@@ -235,5 +325,7 @@ __all__ = [
     "JaggedEvalRound",
     "assemble_columns",
     "outer_sumcheck_claim",
+    "build_outer_indicator",
+    "outer_sumcheck",
     "inner_sumcheck",
 ]
