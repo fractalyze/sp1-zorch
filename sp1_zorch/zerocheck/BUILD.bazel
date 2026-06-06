@@ -27,6 +27,19 @@ py_library(
     ],
 )
 
+# The shard's packed dense buffers, shared with the jagged eval-proof stage:
+# the jagged outer Hadamard sumcheck reproves Σ D·J̃ over the same committed
+# dense, reconstructed from these rather than re-dumped (the eval dump carries
+# only its own outputs).
+filegroup(
+    name = "shard_dense_fixture",
+    srcs = [
+        "testdata/gpu_fibonacci/inputs/main_dense.npy",
+        "testdata/gpu_fibonacci/inputs/prep_dense.npy",
+    ],
+    visibility = ["//visibility:public"],
+)
+
 py_test(
     name = "prover_test",
     size = "small",

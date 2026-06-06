@@ -24,7 +24,9 @@ py_test(
     # large: the 48-round BP sumcheck over 1726 columns compiles + runs ~20s CPU.
     size = "large",
     srcs = ["prover_test.py"],
-    data = glob(["testdata/gpu_fibonacci/**"]),
+    data = glob(["testdata/gpu_fibonacci/**"]) + [
+        "//sp1_zorch/zerocheck:shard_dense_fixture",
+    ],
     deps = [
         ":prover",
         "@zorch//zorch:round",
