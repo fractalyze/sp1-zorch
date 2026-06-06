@@ -26,32 +26,25 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any
 
-import jax
 import jax.numpy as jnp
 from absl import app, flags
-from jax import Array
-from zk_dtypes import koalabear_mont as F
 from zk_dtypes import koalabearx4_mont as EF
 
-from sp1_zorch.commit.region import JaggedRegion
-from sp1_zorch.logup_gkr.circuit import build_gkr_chips
-from sp1_zorch.logup_gkr.prover import (
-    LogupGkrProof,
-    num_beta_values,
-    prove_logup_gkr,
-)
-from sp1_zorch.poseidon2.koalabear16 import koalabear16_params
+from sp1_zorch.logup_gkr.prover import LogupGkrProof, num_beta_values
 from sp1_zorch.shard_prover.fixture_loader import (
     _parse_ef_list,
-    _parse_int_list,
     _parse_kv_lines,
     check_match,
     load_fixture_shard,
 )
-from zorch.hash.poseidon2.poseidon2 import Poseidon2
-from zorch.transcript import DuplexTranscript, Transcript, sample_challenge
+from sp1_zorch.shard_prover.replay import (
+    clone_diag,
+    preamble_transcript,
+    replay_gkr,
+    shard_regions,
+)
+from zorch.transcript import Transcript, sample_challenge
 from zorch.utils.bits import log2_ceil_usize
 
 _SHARD_DIR = flags.DEFINE_string(
@@ -63,68 +56,7 @@ _GKR_POW_BITS = flags.DEFINE_integer(
     "GKR grind bits (SP1 hardcodes GKR_GRINDING_BITS = 12).",
 )
 
-# SP1 core machine parameters (same as verify_first_layer).
-_LOG_STACKING_HEIGHT = 21
-_MAX_LOG_ROW_COUNT = 22
-
-# SP1's challenger: poseidon2 koalabear16 duplex sponge at rate 8.
-_RATE = 8
 _EF_LIMBS = 4
-
-
-class _JitPermutation:
-    """`Permutation` wrapper with a jitted `permute`.
-
-    The transcript drives the permutation from eager host loops where each
-    un-jitted permute re-dispatches its few hundred field ops per call; one
-    compile here collapses that to a single dispatch."""
-
-    def __init__(self, inner: Poseidon2) -> None:
-        self.width: int = inner.width
-        self.dtype: Any = inner.dtype
-        self.has_dedicated_fusion: bool = inner.has_dedicated_fusion
-        self._permute = jax.jit(inner.permute)
-
-    def permute(self, state: Array) -> Array:
-        return self._permute(state)
-
-
-def _preamble_transcript(shard, shard_dir: Path) -> Transcript:
-    """The challenger state SP1 enters GKR with: fresh duplex sponge, then
-    vk -> public values -> main commitment -> chip count -> per chip (sorted)
-    num_reals, name length, name bytes. The commitment is the dump's value --
-    our own main-commit byte-match is the trace-commit stage's concern.
-
-    The chip metadata absorbs as one flat array: the sponge eats elements
-    one at a time either way, so the bytes match SP1's per-value observes
-    while skipping hundreds of single-element transcript calls."""
-    commit_kv = _parse_kv_lines((shard_dir / "gpu_commitment.txt").read_text())
-    # gpu_commitment.txt carries canonical integers (the same convention
-    # verify_trace_commit reads it with), so encode rather than view.
-    commitment = jnp.array(_parse_int_list(commit_kv["main_commit"]), F)
-
-    transcript: Transcript = DuplexTranscript.new(
-        _JitPermutation(Poseidon2(koalabear16_params())), _RATE
-    )
-    transcript = shard.vk.observe_into(transcript)
-    transcript = transcript.observe(shard.main_trace_data.public_values)
-    transcript = transcript.observe(commitment)
-
-    traces = shard.main_trace_data.traces
-    names = traces.chip_order
-    metadata: list[int] = [len(names)]
-    for name in names:
-        metadata.append(traces.per_chip[name].num_real)
-        metadata.append(len(name))
-        metadata.extend(name.encode("ascii"))
-    return transcript.observe(jnp.array(metadata, F))
-
-
-def _clone_diag(transcript: Transcript) -> int:
-    """SP1's challenger diags are one squeeze off a clone; the functional
-    transcript makes the clone free."""
-    _, sample = transcript.sample(1)
-    return int(sample[0])
 
 
 def _replay_challenges_to_z1(
@@ -142,7 +74,7 @@ def _replay_challenges_to_z1(
     transcript = transcript.observe(proof.witness)
     transcript, _ = transcript.sample(1)
     ok = check_match(
-        "post_grind_diag", _clone_diag(transcript), int(state["witness_diag"])
+        "post_grind_diag", clone_diag(transcript), int(state["witness_diag"])
     )
     transcript, alpha = sample_challenge(transcript, EF, _EF_LIMBS)
     ok &= check_match("alpha", alpha, _parse_ef_list(state["alpha"])[0])
@@ -182,9 +114,7 @@ def _check_outputs(proof: LogupGkrProof, state: dict[str, str]) -> bool:
 
 def _check_rounds(proof: LogupGkrProof, shard_dir: Path) -> bool:
     blocks = (shard_dir / "gkr_sumcheck_rounds.txt").read_text().split("--- round ---")
-    rounds = [
-        _parse_kv_lines(b, skip_unkeyed=True) for b in blocks if b.strip()
-    ]
+    rounds = [_parse_kv_lines(b, skip_unkeyed=True) for b in blocks if b.strip()]
     # The dump logs one block per round EXCEPT the input layer's (its buffer
     # is gpu_first_layer.txt, dumped separately) -- so blocks anchor every
     # round but the last; the trace openings anchor that one.
@@ -198,7 +128,9 @@ def _check_rounds(proof: LogupGkrProof, shard_dir: Path) -> bool:
         want_claim = _parse_ef_list(ref["claim"])[0]
         ok_i = bool(jnp.all(rp.lam == want_lam))
         ok_i &= bool(jnp.all(rp.claim == want_claim))
-        print(f"{'OK ' if ok_i else 'MISMATCH'} round {i} (nrv={ref['nrv']}) lambda/claim")
+        print(
+            f"{'OK ' if ok_i else 'MISMATCH'} round {i} (nrv={ref['nrv']}) lambda/claim"
+        )
         if not ok_i:
             print(f"  lam  got:  {rp.lam}\n  lam  want: {want_lam}")
             print(f"  claim got:  {rp.claim}\n  claim want: {want_claim}")
@@ -218,44 +150,16 @@ def main(argv) -> None:
     grind = _parse_kv_lines((shard_dir / "gpu_post_grind_diag.txt").read_text())
     state["witness_diag"] = grind["post_grind_diag"]
 
-    traces = shard.main_trace_data.traces
-    order = traces.chip_order
-    main_region = JaggedRegion.from_chips(
-        [traces.per_chip[n].array for n in order],
-        log_stacking_height=_LOG_STACKING_HEIGHT,
-        max_log_row_count=_MAX_LOG_ROW_COUNT,
-        chip_names=order,
-    )
-    prep = shard.preprocessed_traces
-    prep_names = tuple(sorted(prep))
-    prep_region = (
-        JaggedRegion.from_chips(
-            [prep[n] for n in prep_names],
-            log_stacking_height=_LOG_STACKING_HEIGHT,
-            max_log_row_count=_MAX_LOG_ROW_COUNT,
-            chip_names=prep_names,
-        )
-        if prep
-        else None
-    )
+    main_region, prep_region = shard_regions(shard)
 
-    preamble = _preamble_transcript(shard, shard_dir)
-    ok = check_match("pre_gkr_diag", _clone_diag(preamble), int(diag["pre_gkr_diag"]))
+    preamble = preamble_transcript(shard, shard_dir)
+    ok = check_match("pre_gkr_diag", clone_diag(preamble), int(diag["pre_gkr_diag"]))
 
-    witness = jnp.array(int(state["witness"]), F)
     num_betas = num_beta_values(shard.main_trace_data.chips)
     print(f"num_beta_values={num_betas}")
 
-    gkr_chips = build_gkr_chips(shard.main_trace_data.chips, order)
-    transcript, proof = prove_logup_gkr(
-        gkr_chips,
-        main_region,
-        prep_region,
-        preamble,
-        num_betas=num_betas,
-        num_row_variables=_MAX_LOG_ROW_COUNT - 1,
-        pow_bits=_GKR_POW_BITS.value,
-        witness=witness,
+    transcript, proof = replay_gkr(
+        shard, shard_dir, main_region, prep_region, pow_bits=_GKR_POW_BITS.value
     )
 
     ok &= _check_outputs(proof, state)
@@ -265,7 +169,7 @@ def main(argv) -> None:
     # so a match here means the full opening stream byte-matched too.
     post = _parse_kv_lines((shard_dir / "gpu_post_gkr_diag.txt").read_text())
     ok &= check_match(
-        "post_gkr_diag", _clone_diag(transcript), int(post["post_gkr_diag"])
+        "post_gkr_diag", clone_diag(transcript), int(post["post_gkr_diag"])
     )
     if not ok:
         # Localize the drift: per-challenge replay names the first value

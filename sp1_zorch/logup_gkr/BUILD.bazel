@@ -90,11 +90,9 @@ py_binary(
     srcs = ["verify_gkr_prove.py"],
     deps = [
         ":logup_gkr",
-        "//sp1_zorch/commit:region",
-        "//sp1_zorch/poseidon2:koalabear16",
         "//sp1_zorch/shard_prover",
+        "//sp1_zorch/shard_prover:replay",
         "@zorch//zorch:transcript",
-        "@zorch//zorch/hash/poseidon2",
         "@zorch//zorch/utils:bits",
         requirement("absl_py"),
         requirement("jax"),

@@ -1,4 +1,4 @@
-load("@rules_python//python:defs.bzl", "py_library", "py_test")
+load("@rules_python//python:defs.bzl", "py_binary", "py_library", "py_test")
 load("@sp1_zorch_pip//:requirements.bzl", "requirement")
 
 # SP1's zerocheck: constraint RLC over zorch's constraint_eval, the sumcheck
@@ -11,15 +11,19 @@ py_library(
         "jagged.py",
         "prover.py",
         "round.py",
+        "stage.py",
     ],
     visibility = ["//visibility:public"],
     deps = [
+        "//sp1_zorch/commit:region",
+        "//sp1_zorch/logup_gkr",
         "@zorch//zorch:constraint_eval",
         "@zorch//zorch:round",
         "@zorch//zorch/sumcheck",
         "@zorch//zorch:transcript",
         "@zorch//zorch/poly:poly",
         requirement("jax"),
+        requirement("rw_constraints"),
     ],
 )
 
@@ -61,6 +65,67 @@ py_test(
         "//sp1_zorch/commit:region",
         "//sp1_zorch/shard_prover",
         "@zorch//zorch/poly:poly",
+        requirement("absl_py"),
+        requirement("jax"),
+        requirement("numpy"),
+        requirement("zk_dtypes"),
+    ],
+)
+
+# rsp byte-match for the zerocheck stage (GKR replay -> prove_shard_zerocheck
+# on the real transcript) — a runnable, not a unit test:
+#   bazel run //sp1_zorch/zerocheck:verify_zerocheck -- \
+#       --shard_dir=/path/to/rsp_dump/shardN --gkr_cache=/path/to/cache.npz
+py_binary(
+    name = "verify_zerocheck",
+    srcs = ["verify_zerocheck.py"],
+    deps = [
+        ":zerocheck",
+        "//sp1_zorch/logup_gkr",
+        "//sp1_zorch/shard_prover",
+        "//sp1_zorch/shard_prover:replay",
+        "@zorch//zorch/poly:poly",
+        "@zorch//zorch:transcript",
+        requirement("absl_py"),
+        requirement("jax"),
+        requirement("jax_cuda12_plugin"),
+        requirement("numpy"),
+        requirement("zk_dtypes"),
+        requirement("zkx_cuda_pjrt"),
+    ],
+)
+
+py_test(
+    name = "verify_zerocheck_test",
+    size = "medium",
+    srcs = [
+        "verify_zerocheck.py",
+        "verify_zerocheck_test.py",
+    ],
+    main = "verify_zerocheck_test.py",
+    deps = [
+        ":zerocheck",
+        "//sp1_zorch/logup_gkr",
+        "//sp1_zorch/shard_prover",
+        "//sp1_zorch/shard_prover:replay",
+        "@zorch//zorch/poly:poly",
+        "@zorch//zorch:transcript",
+        requirement("absl_py"),
+        requirement("jax"),
+        requirement("numpy"),
+        requirement("zk_dtypes"),
+    ],
+)
+
+py_test(
+    name = "stage_test",
+    size = "small",
+    srcs = ["stage_test.py"],
+    deps = [
+        ":zerocheck",
+        "//sp1_zorch/commit:region",
+        "//sp1_zorch/logup_gkr",
+        "@zorch//zorch/testkit:transcript",
         requirement("absl_py"),
         requirement("jax"),
         requirement("numpy"),

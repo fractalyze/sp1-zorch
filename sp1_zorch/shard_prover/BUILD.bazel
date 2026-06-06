@@ -18,6 +18,25 @@ py_library(
     ],
 )
 
+# Shared scaffolding for the verify_* byte-match runnables: SP1's duplex
+# challenger, the shard preamble stream, and the core-machine jagged regions.
+py_library(
+    name = "replay",
+    srcs = ["replay.py"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":shard_prover",
+        "//sp1_zorch/commit:region",
+        "//sp1_zorch/logup_gkr",
+        "//sp1_zorch/poseidon2:koalabear16",
+        "@zorch//zorch:transcript",
+        "@zorch//zorch/hash/poseidon2",
+        requirement("jax"),
+        requirement("numpy"),
+        requirement("zk_dtypes"),
+    ],
+)
+
 py_test(
     name = "fixture_loader_test",
     size = "small",

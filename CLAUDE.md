@@ -2,6 +2,7 @@
 
 - **Overview & quick start:** [`README.md`](README.md)
 - **Conventions:** [`docs/conventions.md`](docs/conventions.md) — comments (why-not-what), external SP1 references (pinned permalinks).
+- **Pipeline & terminology:** [`docs/shard-pipeline.md`](docs/shard-pipeline.md) — stages as Round compositions, SP1 dump "phase" vocabulary mapping.
 - **Current work:** [fractalyze/zorch#37](https://github.com/fractalyze/zorch/issues/37) — bootstrap + SMCS on zorch merkle blocks.
 
 ## One non-negotiable
