@@ -26,6 +26,7 @@ from sp1_zorch.logup_gkr.circuit import build_gkr_chips
 from sp1_zorch.logup_gkr.prover import LogupGkrProof, num_beta_values, prove_logup_gkr
 from sp1_zorch.poseidon2.koalabear16 import koalabear16_params
 from sp1_zorch.shard_prover.fixture_loader import _parse_int_list, _parse_kv_lines
+from sp1_zorch.shard_prover.prove_shard import preamble_chip_metadata
 from sp1_zorch.shard_prover.types import ShardData
 from zorch.hash.poseidon2.poseidon2 import Poseidon2
 from zorch.transcript import DuplexTranscript, Transcript
@@ -72,13 +73,10 @@ def fresh_transcript() -> DuplexTranscript:
 
 def preamble_transcript(shard: ShardData, shard_dir: Path) -> Transcript:
     """The challenger state SP1 enters GKR with: fresh duplex sponge, then
-    vk -> public values -> main commitment -> chip count -> per chip (sorted)
-    num_reals, name length, name bytes. The commitment is the dump's value --
-    our own main-commit byte-match is the trace-commit stage's concern.
-
-    The chip metadata absorbs as one flat array: the sponge eats elements
-    one at a time either way, so the bytes match SP1's per-value observes
-    while skipping hundreds of single-element transcript calls."""
+    vk -> public values -> main commitment -> chip metadata. The commitment is
+    the dump's value -- our own main-commit byte-match is the trace-commit
+    stage's concern; the metadata stream is ``preamble_chip_metadata``, the
+    same encoding the chain's ``TraceCommitRound`` observes."""
     commit_kv = _parse_kv_lines((shard_dir / "gpu_commitment.txt").read_text())
     # gpu_commitment.txt carries canonical integers (the same convention
     # verify_trace_commit reads it with), so encode rather than view.
@@ -91,12 +89,8 @@ def preamble_transcript(shard: ShardData, shard_dir: Path) -> Transcript:
 
     traces = shard.main_trace_data.traces
     names = traces.chip_order
-    metadata: list[int] = [len(names)]
-    for name in names:
-        metadata.append(traces.per_chip[name].num_real)
-        metadata.append(len(name))
-        metadata.extend(name.encode("ascii"))
-    return transcript.observe(jnp.array(metadata, F))
+    num_reals = [traces.per_chip[name].num_real for name in names]
+    return transcript.observe(preamble_chip_metadata(names, num_reals, dtype=F))
 
 
 def clone_diag(transcript: Transcript) -> int:
