@@ -20,7 +20,7 @@ import numpy as np
 from jax import Array, lax
 from zk_dtypes import efinfo
 
-from sp1_zorch.shard_prover.types import MachineVerifyingKey
+from sp1_zorch.shard_prover.types import ChipOpenedValues, MachineVerifyingKey
 
 
 def _u64(v: int) -> bytes:
@@ -148,6 +148,46 @@ def _encode_digest(arr) -> bytes:
     if hasattr(arr, "dtype"):
         return _field_bytes(arr)[:32]
     return struct.pack(f"<{len(arr)}I", *[int(x) for x in arr])[:32]
+
+
+def _encode_chip_opened_values(cov: ChipOpenedValues, max_log_row_count: int) -> bytes:
+    """Encode ``ChipOpenedValues<F, EF>``. A chip without a preprocessed
+    trace serializes an EMPTY ``Vec`` — unlike the GKR chip openings, whose
+    missing prep is an ``Option`` tag byte."""
+    parts = []
+
+    if cov.preprocessed_evals is not None:
+        n = int(cov.preprocessed_evals.shape[0])
+        parts.append(_vec_prefix(n))
+        parts.append(_field_bytes(cov.preprocessed_evals))
+    else:
+        parts.append(_vec_prefix(0))
+
+    n = int(cov.main_evals.shape[0])
+    parts.append(_vec_prefix(n))
+    parts.append(_field_bytes(cov.main_evals))
+
+    n_bits = max_log_row_count + 1
+    degree_bits = [(cov.degree >> bit) & 1 for bit in range(n_bits - 1, -1, -1)]
+    parts.append(_vec_prefix(n_bits))
+    parts.append(struct.pack(f"<{n_bits}I", *degree_bits))
+
+    return b"".join(parts)
+
+
+def _encode_shard_opened_values(
+    chip_opened_values, chip_names, max_log_row_count: int
+) -> bytes:
+    """Encode ``ShardOpenedValues<F, EF> = {chips: BTreeMap<String,
+    ChipOpenedValues>}`` — ascending chip-name order."""
+    sorted_pairs = sorted(zip(chip_names, chip_opened_values, strict=True))
+    parts = [_vec_prefix(len(sorted_pairs))]
+    for name, cov in sorted_pairs:
+        name_bytes = name.encode("utf-8")
+        parts.append(_vec_prefix(len(name_bytes)))
+        parts.append(name_bytes)
+        parts.append(_encode_chip_opened_values(cov, max_log_row_count))
+    return b"".join(parts)
 
 
 def encode_vk(vk: MachineVerifyingKey) -> bytes:

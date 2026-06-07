@@ -19,10 +19,12 @@ from zorch.logup_gkr.jagged_prover import JaggedLayerProof
 
 from sp1_zorch.logup_gkr.prover import ChipEvaluation, LogupGkrProof
 from sp1_zorch.shard_prover.serialize import (
+    _encode_chip_opened_values,
     _encode_digest,
     _encode_logup_gkr_proof,
     _encode_partial_sumcheck_proof,
     _encode_point,
+    _encode_shard_opened_values,
     _encode_tensor,
     _eval_poly_at,
     _field_bytes,
@@ -31,7 +33,7 @@ from sp1_zorch.shard_prover.serialize import (
     _vec_prefix,
     encode_vk,
 )
-from sp1_zorch.shard_prover.types import MachineVerifyingKey
+from sp1_zorch.shard_prover.types import ChipOpenedValues, MachineVerifyingKey
 
 
 class BincodePrimitivesTest(absltest.TestCase):
@@ -201,6 +203,58 @@ class EncodeLogupGkrProofTest(absltest.TestCase):
         # (the u64 prefix stays 8 bytes, only its value drops).
         self.assertEqual(len(full) - len(trimmed), 4)
         self.assertIn(_u64(1) + struct.pack("<I", 12), trimmed)
+
+
+class EncodeOpenedValuesTest(absltest.TestCase):
+    def test_chip_opened_values_with_prep_and_degree_bits(self) -> None:
+        cov = ChipOpenedValues(
+            preprocessed_evals=jnp.array([1, 2], dtype=F),
+            main_evals=jnp.array([3, 4, 5], dtype=F),
+            degree=4,
+        )
+        # degree bits are height decomposed MSB-first over
+        # max_log_row_count + 1 positions: 4 = 0b0100 over 4 bits.
+        expected = (
+            _u64(2)
+            + struct.pack("<2I", 1, 2)
+            + _u64(3)
+            + struct.pack("<3I", 3, 4, 5)
+            + _u64(4)
+            + struct.pack("<4I", 0, 1, 0, 0)
+        )
+        self.assertEqual(_encode_chip_opened_values(cov, max_log_row_count=3), expected)
+
+    def test_missing_prep_is_an_empty_vec_not_an_option(self) -> None:
+        # Unlike the GKR chip openings (Option<Tensor>, 0x00/0x01 tag), a
+        # chip with no preprocessed trace serializes an EMPTY Vec here.
+        cov = ChipOpenedValues(
+            preprocessed_evals=None,
+            main_evals=jnp.array([3], dtype=F),
+            degree=1,
+        )
+        expected = (
+            _u64(0) + _u64(1) + struct.pack("<I", 3) + _u64(2) + struct.pack("<2I", 0, 1)
+        )
+        self.assertEqual(_encode_chip_opened_values(cov, max_log_row_count=1), expected)
+
+    def test_shard_opened_values_sorts_chips_btreemap_order(self) -> None:
+        cov_a = ChipOpenedValues(
+            preprocessed_evals=None, main_evals=jnp.array([1], dtype=F), degree=1
+        )
+        cov_b = ChipOpenedValues(
+            preprocessed_evals=None, main_evals=jnp.array([2], dtype=F), degree=1
+        )
+        out = _encode_shard_opened_values([cov_b, cov_a], ["cpu", "add"], 1)
+        expected = (
+            _u64(2)
+            + _u64(3)
+            + b"add"
+            + _encode_chip_opened_values(cov_a, 1)
+            + _u64(3)
+            + b"cpu"
+            + _encode_chip_opened_values(cov_b, 1)
+        )
+        self.assertEqual(out, expected)
 
 
 class EncodeVkTest(absltest.TestCase):
