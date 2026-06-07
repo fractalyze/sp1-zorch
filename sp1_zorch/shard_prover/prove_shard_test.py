@@ -11,6 +11,8 @@ streams and fails loudly.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -184,6 +186,10 @@ class ProveShardChainTest(absltest.TestCase):
             ShardCarry(main_region, prep_region, public_values),
             cheap_transcript(BF),
         )
+        cls.chain = chain
+        cls.main_region = main_region
+        cls.prep_region = prep_region
+        cls.public_values = public_values
 
     def test_chain_emits_one_message_per_stage(self) -> None:
         self.assertLen(self.msgs, 3)
@@ -214,6 +220,26 @@ class ProveShardChainTest(absltest.TestCase):
             _assert_bytes_equal(g, w, f"finals[{i}]")
         _assert_bytes_equal(got.msgs.round_poly, want.msgs.round_poly, "round_poly")
         _assert_bytes_equal(got.msgs.challenge, want.msgs.challenge, "challenge")
+
+    def test_chain_lowers_under_single_jit(self) -> None:
+        """The whole chain traces as one ``@jit`` region: no stage forces a
+        host sync that would split it. The carry is built inside the traced
+        function (so this needs no pytree registration of ``ShardCarry``);
+        backend compile stays GPU's job — poseidon2 has no CPU fusion emitter
+        and CPU jit miscompiles field dots (fractalyze/jax#168) — so the smoke
+        stops at StableHLO lowering."""
+
+        def run(dense, public_values, transcript):
+            carry = ShardCarry(
+                replace(self.main_region, dense=dense), self.prep_region, public_values
+            )
+            _, out_transcript, _ = self.chain(carry, transcript)
+            return out_transcript
+
+        lowered = jax.jit(run).lower(
+            self.main_region.dense, self.public_values, cheap_transcript(BF)
+        )
+        self.assertIn("func", lowered.as_text())
 
     def test_carry_threads_stage_outputs(self) -> None:
         _assert_bytes_equal(

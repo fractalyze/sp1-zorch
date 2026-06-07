@@ -198,7 +198,10 @@ def prove_logup_gkr(
         witness = jnp.zeros((), dtype=bf_dtype)
     transcript = transcript.observe(witness)
     transcript, pow_sample = transcript.sample(1)
-    if int(pow_sample[0]) & ((1 << pow_bits) - 1):
+    # The PoW gate host-reads the sample; skip it when pow_bits == 0 (empty
+    # mask, always passes) so the stage traces inside one @jit. Grinding
+    # (pow_bits > 0) is not built and runs eagerly.
+    if pow_bits > 0 and int(pow_sample[0]) & ((1 << pow_bits) - 1):
         raise ValueError(f"witness fails the {pow_bits}-bit proof of work")
 
     transcript, alpha = sample_challenge(transcript, EF, _EF_LIMBS)
