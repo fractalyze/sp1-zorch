@@ -50,6 +50,18 @@ class MachineVerifyingKey:
 
 
 @dataclass(frozen=True)
+class ChipOpenedValues:
+    """SP1 mirror: ``ChipOpenedValues<F, EF>`` — one chip's zerocheck
+    openings as the shard-proof wire carries them. ``degree`` is the chip's
+    padded height; the wire stores its bits MSB-first over
+    ``max_log_row_count + 1`` positions."""
+
+    preprocessed_evals: Array | None
+    main_evals: Array
+    degree: int
+
+
+@dataclass(frozen=True)
 class ChipTrace:
     """SP1 mirror: ``Trace<F, B>`` — (trace matrix, live row count)."""
 

@@ -7,6 +7,7 @@ py_library(
     srcs = [
         "chip_loader.py",
         "fixture_loader.py",
+        "serialize.py",
         "types.py",
     ],
     visibility = ["//visibility:public"],
@@ -46,6 +47,20 @@ py_test(
         requirement("absl_py"),
         requirement("jax"),
         requirement("numpy"),
+        requirement("zk_dtypes"),
+    ],
+)
+
+py_test(
+    name = "serialize_test",
+    size = "small",
+    srcs = ["serialize_test.py"],
+    deps = [
+        ":shard_prover",
+        "//sp1_zorch/logup_gkr",
+        "@zorch//zorch/logup_gkr",
+        requirement("absl_py"),
+        requirement("jax"),
         requirement("zk_dtypes"),
     ],
 )
