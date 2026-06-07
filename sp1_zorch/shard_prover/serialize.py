@@ -20,6 +20,8 @@ import numpy as np
 from jax import Array, lax
 from zk_dtypes import efinfo
 
+from sp1_zorch.shard_prover.types import MachineVerifyingKey
+
 
 def _u64(v: int) -> bytes:
     return struct.pack("<Q", int(v))
@@ -65,3 +67,28 @@ def _encode_point(arr: Array) -> bytes:
     """Encode ``Point<T> = {values: Buffer<T>}`` = ``Vec<T>``."""
     flat = jnp.atleast_1d(arr)
     return _vec_prefix(int(flat.shape[0])) + _field_bytes(flat)
+
+
+def _encode_digest(arr) -> bytes:
+    """Encode ``GC::Digest = [F; 8]`` = 8 × canonical u32."""
+    if hasattr(arr, "dtype"):
+        return _field_bytes(arr)[:32]
+    return struct.pack(f"<{len(arr)}I", *[int(x) for x in arr])[:32]
+
+
+def encode_vk(vk: MachineVerifyingKey) -> bytes:
+    """Encode ``MachineVerifyingKey<SP1GlobalContext>`` to bincode.
+
+    Serde field order is pc_start, initial_global_cumulative_sum (SepticDigest
+    = x then y), preprocessed_commit, enable_untrusted_programs — NOT the
+    transcript ``observe_into`` order, which leads with the commit.
+    """
+    return b"".join(
+        [
+            _field_bytes(vk.pc_start),
+            _field_bytes(vk.cum_sum_x),
+            _field_bytes(vk.cum_sum_y),
+            _field_bytes(vk.preprocessed_commit),
+            struct.pack("<I", int(vk.enable_untrusted)),
+        ]
+    )

@@ -15,6 +15,7 @@ from zk_dtypes import koalabear_mont as F
 from zk_dtypes import koalabearx4_mont as EF
 
 from sp1_zorch.shard_prover.serialize import (
+    _encode_digest,
     _encode_point,
     _encode_tensor,
     _eval_poly_at,
@@ -22,7 +23,9 @@ from sp1_zorch.shard_prover.serialize import (
     _u64,
     _usize,
     _vec_prefix,
+    encode_vk,
 )
+from sp1_zorch.shard_prover.types import MachineVerifyingKey
 
 
 class BincodePrimitivesTest(absltest.TestCase):
@@ -73,6 +76,40 @@ class BincodePrimitivesTest(absltest.TestCase):
         coeffs = jnp.array([2, 3, 5], dtype=F)
         alpha = jnp.array(4, dtype=F)
         self.assertEqual(int(_eval_poly_at(coeffs, alpha)), 94)
+
+
+class EncodeDigestTest(absltest.TestCase):
+    def test_field_array_digest_is_32_canonical_bytes(self) -> None:
+        arr = jnp.arange(1, 9, dtype=F)  # [F; 8]
+        self.assertEqual(_encode_digest(arr), struct.pack("<8I", *range(1, 9)))
+
+    def test_plain_int_sequence_digest(self) -> None:
+        self.assertEqual(
+            _encode_digest(list(range(1, 9))), struct.pack("<8I", *range(1, 9))
+        )
+
+
+class EncodeVkTest(absltest.TestCase):
+    def test_wire_order_differs_from_transcript_observe_order(self) -> None:
+        # Serde field order is pc_start, cumulative sum, preprocessed_commit,
+        # enable_untrusted — NOT the observe_into transcript order (which
+        # leads with the commit). A swap would still verify locally but be
+        # rejected by sp1_verify_shard's deserializer.
+        vk = MachineVerifyingKey(
+            preprocessed_commit=jnp.arange(1, 9, dtype=F),
+            pc_start=jnp.array([9, 10, 11], dtype=F),
+            cum_sum_x=jnp.arange(1, 8, dtype=F),
+            cum_sum_y=jnp.arange(8, 15, dtype=F),
+            enable_untrusted=0,
+        )
+        expected = (
+            struct.pack("<3I", 9, 10, 11)
+            + struct.pack("<7I", *range(1, 8))
+            + struct.pack("<7I", *range(8, 15))
+            + struct.pack("<8I", *range(1, 9))
+            + struct.pack("<I", 0)
+        )
+        self.assertEqual(encode_vk(vk), expected)
 
 
 if __name__ == "__main__":
