@@ -69,6 +69,80 @@ def _encode_point(arr: Array) -> bytes:
     return _vec_prefix(int(flat.shape[0])) + _field_bytes(flat)
 
 
+def _encode_partial_sumcheck_proof(
+    round_polys: Array, claimed_sum: Array, point: Array, final_eval: Array
+) -> bytes:
+    """Encode ``PartialSumcheckProof<EF>``: ``{univariate_polys: Vec<Vec<EF>>,
+    claimed_sum: EF, point_and_eval: (Point<EF>, EF)}``."""
+    n_rounds = int(round_polys.shape[0])
+    n_coeffs = int(round_polys.shape[1])
+
+    parts = [_vec_prefix(n_rounds)]
+    for r in range(n_rounds):
+        parts.append(_vec_prefix(n_coeffs))
+        parts.append(_field_bytes(round_polys[r]))
+
+    parts.append(_field_bytes(claimed_sum))
+    parts.append(_encode_point(point))
+    parts.append(_field_bytes(final_eval))
+    return b"".join(parts)
+
+
+def _encode_logup_gkr_proof(proof, layer_points, max_log_row_count: int) -> bytes:
+    """Encode ``LogupGkrProof<F, EF>`` (rust field order: circuit_output,
+    round_proofs, logup_evaluations, witness).
+
+    ``proof`` is ``sp1_zorch.logup_gkr.prover.LogupGkrProof``. The wire's
+    per-layer ``point_and_eval`` is not retained on ``JaggedLayerProof`` (the
+    verifier re-derives the challenges from the transcript), so the layer
+    sumcheck points arrive separately as ``layer_points``, one per round
+    proof, supplied by the assembly's transcript replay.
+    """
+    parts = []
+
+    n_num = int(jnp.atleast_1d(proof.circuit_output.numerator).shape[0])
+    parts.append(_encode_tensor(proof.circuit_output.numerator, [n_num, 1]))
+    n_den = int(jnp.atleast_1d(proof.circuit_output.denominator).shape[0])
+    parts.append(_encode_tensor(proof.circuit_output.denominator, [n_den, 1]))
+
+    parts.append(_vec_prefix(len(proof.round_proofs)))
+    for rp, point in zip(proof.round_proofs, layer_points, strict=True):
+        parts.append(_field_bytes(rp.numerator_0))
+        parts.append(_field_bytes(rp.numerator_1))
+        parts.append(_field_bytes(rp.denominator_0))
+        parts.append(_field_bytes(rp.denominator_1))
+        final_eval = _eval_poly_at(rp.round_polys[-1], point[0])
+        parts.append(
+            _encode_partial_sumcheck_proof(rp.round_polys, rp.claim, point, final_eval)
+        )
+
+    # SP1's eval_point has exactly max_log_row_count dims after all GKR
+    # rounds. The prover-side point may overshoot — trim to the tail.
+    gkr_point = proof.eval_point
+    if gkr_point.shape[0] > max_log_row_count:
+        gkr_point = gkr_point[-max_log_row_count:]
+    parts.append(_encode_point(gkr_point))
+
+    chip_map = proof.chip_openings
+    parts.append(_vec_prefix(len(chip_map)))
+    for name in sorted(chip_map):  # BTreeMap: ascending key order
+        name_bytes = name.encode("utf-8")
+        parts.append(_vec_prefix(len(name_bytes)))
+        parts.append(name_bytes)
+        ce = chip_map[name]
+        n_main = int(jnp.atleast_1d(ce.main).shape[0])
+        parts.append(_encode_tensor(ce.main, [n_main]))
+        if ce.preprocessed is not None:
+            parts.append(b"\x01")
+            n_prep = int(jnp.atleast_1d(ce.preprocessed).shape[0])
+            parts.append(_encode_tensor(ce.preprocessed, [n_prep]))
+        else:
+            parts.append(b"\x00")
+
+    parts.append(_field_bytes(proof.witness))
+    return b"".join(parts)
+
+
 def _encode_digest(arr) -> bytes:
     """Encode ``GC::Digest = [F; 8]`` = 8 × canonical u32."""
     if hasattr(arr, "dtype"):

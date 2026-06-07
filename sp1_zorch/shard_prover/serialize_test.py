@@ -14,8 +14,14 @@ from absl.testing import absltest
 from zk_dtypes import koalabear_mont as F
 from zk_dtypes import koalabearx4_mont as EF
 
+from zorch.logup_gkr.circuit import LogUpGkrOutput
+from zorch.logup_gkr.jagged_prover import JaggedLayerProof
+
+from sp1_zorch.logup_gkr.prover import ChipEvaluation, LogupGkrProof
 from sp1_zorch.shard_prover.serialize import (
     _encode_digest,
+    _encode_logup_gkr_proof,
+    _encode_partial_sumcheck_proof,
     _encode_point,
     _encode_tensor,
     _eval_poly_at,
@@ -87,6 +93,114 @@ class EncodeDigestTest(absltest.TestCase):
         self.assertEqual(
             _encode_digest(list(range(1, 9))), struct.pack("<8I", *range(1, 9))
         )
+
+
+class EncodePartialSumcheckProofTest(absltest.TestCase):
+    def test_round_polys_then_claim_then_point_and_eval(self) -> None:
+        # PartialSumcheckProof<EF> = {univariate_polys: Vec<Vec<EF>>,
+        # claimed_sum: EF, point_and_eval: (Point<EF>, EF)} — each round poly
+        # is its own length-prefixed Vec.
+        round_polys = jnp.arange(6, dtype=F).reshape(2, 3)
+        claimed_sum = jnp.array(7, dtype=F)
+        point = jnp.array([8, 9], dtype=F)
+        final_eval = jnp.array(10, dtype=F)
+        expected = (
+            _u64(2)
+            + _u64(3)
+            + struct.pack("<3I", 0, 1, 2)
+            + _u64(3)
+            + struct.pack("<3I", 3, 4, 5)
+            + struct.pack("<I", 7)
+            + _u64(2)
+            + struct.pack("<2I", 8, 9)
+            + struct.pack("<I", 10)
+        )
+        self.assertEqual(
+            _encode_partial_sumcheck_proof(round_polys, claimed_sum, point, final_eval),
+            expected,
+        )
+
+
+def _gkr_proof() -> LogupGkrProof:
+    """One-layer synthetic proof; values chosen so every wire chunk is
+    recognizable in the golden."""
+    rp = JaggedLayerProof(
+        lam=jnp.array(5, dtype=F),
+        claim=jnp.array(6, dtype=F),
+        round_polys=jnp.array([[1, 2, 3]], dtype=F),
+        numerator_0=jnp.array(7, dtype=F),
+        numerator_1=jnp.array(8, dtype=F),
+        denominator_0=jnp.array(9, dtype=F),
+        denominator_1=jnp.array(10, dtype=F),
+    )
+    return LogupGkrProof(
+        witness=jnp.array(15, dtype=F),
+        circuit_output=LogUpGkrOutput(
+            numerator=jnp.array([1, 2], dtype=F),
+            denominator=jnp.array([3, 4], dtype=F),
+        ),
+        round_proofs=[rp],
+        eval_point=jnp.array([11, 12], dtype=F),
+        chip_openings={
+            # Two chips deliberately out of order: the wire is a BTreeMap,
+            # so "add" must serialize before "cpu" regardless of dict order.
+            "cpu": ChipEvaluation(main=jnp.array([13, 14], dtype=F), preprocessed=None),
+            "add": ChipEvaluation(
+                main=jnp.array([20], dtype=F),
+                preprocessed=jnp.array([21], dtype=F),
+            ),
+        },
+    )
+
+
+class EncodeLogupGkrProofTest(absltest.TestCase):
+    def test_full_structure_golden(self) -> None:
+        proof = _gkr_proof()
+        layer_points = [jnp.array([16], dtype=F)]
+        # final_eval = p(16) for p = 1 + 2x + 3x^2 -> 801.
+        partial_sumcheck = (
+            _u64(1)
+            + _u64(3)
+            + struct.pack("<3I", 1, 2, 3)
+            + struct.pack("<I", 6)
+            + _u64(1)
+            + struct.pack("<I", 16)
+            + struct.pack("<I", 801)
+        )
+        expected = (
+            # circuit_output: numerator/denominator as [n, 1] tensors
+            _u64(2) + struct.pack("<2I", 1, 2) + _u64(2) + _u64(2) + _u64(1)
+            + _u64(2) + struct.pack("<2I", 3, 4) + _u64(2) + _u64(2) + _u64(1)
+            # round_proofs
+            + _u64(1)
+            + struct.pack("<4I", 7, 8, 9, 10)
+            + partial_sumcheck
+            # logup_evaluations: point + BTreeMap("add" first)
+            + _u64(2) + struct.pack("<2I", 11, 12)
+            + _u64(2)
+            + _u64(3) + b"add"
+            + _u64(1) + struct.pack("<I", 20) + _u64(1) + _u64(1)
+            + b"\x01" + _u64(1) + struct.pack("<I", 21) + _u64(1) + _u64(1)
+            + _u64(3) + b"cpu"
+            + _u64(2) + struct.pack("<2I", 13, 14) + _u64(1) + _u64(2)
+            + b"\x00"
+            # witness
+            + struct.pack("<I", 15)
+        )
+        self.assertEqual(
+            _encode_logup_gkr_proof(proof, layer_points, max_log_row_count=2),
+            expected,
+        )
+
+    def test_eval_point_trims_to_max_log_row_count_tail(self) -> None:
+        proof = _gkr_proof()
+        layer_points = [jnp.array([16], dtype=F)]
+        full = _encode_logup_gkr_proof(proof, layer_points, max_log_row_count=2)
+        trimmed = _encode_logup_gkr_proof(proof, layer_points, max_log_row_count=1)
+        # Point [11, 12] trims to its tail [12]: one 4-byte element fewer
+        # (the u64 prefix stays 8 bytes, only its value drops).
+        self.assertEqual(len(full) - len(trimmed), 4)
+        self.assertIn(_u64(1) + struct.pack("<I", 12), trimmed)
 
 
 class EncodeVkTest(absltest.TestCase):

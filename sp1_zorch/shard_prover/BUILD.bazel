@@ -57,6 +57,8 @@ py_test(
     srcs = ["serialize_test.py"],
     deps = [
         ":shard_prover",
+        "//sp1_zorch/logup_gkr",
+        "@zorch//zorch/logup_gkr",
         requirement("absl_py"),
         requirement("jax"),
         requirement("zk_dtypes"),
