@@ -26,6 +26,7 @@ py_library(
     srcs = ["replay.py"],
     visibility = ["//visibility:public"],
     deps = [
+        ":prove_shard",
         ":shard_prover",
         "//sp1_zorch/commit:region",
         "//sp1_zorch/logup_gkr",
@@ -108,6 +109,32 @@ py_test(
         requirement("absl_py"),
         requirement("jax"),
         requirement("zk_dtypes"),
+    ],
+)
+
+py_binary(
+    name = "verify_prove_shard",
+    srcs = ["verify_prove_shard.py"],
+    # rsp byte-match of the assembled ProveChain (~1.5 GB/shard, GPU trace
+    # commit) — a runnable, not a unit test:
+    #   bazel run //sp1_zorch/shard_prover:verify_prove_shard -- \
+    #       --shard_dir=/path/to/rsp_dump/shardN
+    deps = [
+        ":prove_shard",
+        ":replay",
+        ":shard_prover",
+        "//sp1_zorch/commit:smcs",
+        "//sp1_zorch/logup_gkr",
+        "//sp1_zorch/poseidon2:koalabear16",
+        "@zorch//zorch/hash:compression",
+        "@zorch//zorch/hash:sponge",
+        "@zorch//zorch/hash/poseidon2",
+        "@zorch//zorch/poly:poly",
+        requirement("absl_py"),
+        requirement("jax"),
+        requirement("jax_cuda12_plugin"),
+        requirement("zk_dtypes"),
+        requirement("zkx_cuda_pjrt"),
     ],
 )
 

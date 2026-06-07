@@ -236,5 +236,16 @@ class ProveShardChainTest(absltest.TestCase):
             round_(carry, cheap_transcript(BF))
 
 
+class PreambleChipMetadataTest(absltest.TestCase):
+    """Pins the chip-metadata layout directly: the chain test only exercises it
+    on both TraceCommitRound and replay.py's preamble at once, where a layout
+    bug would cancel out."""
+
+    def test_flat_layout(self) -> None:
+        got = preamble_chip_metadata(("ab", "c"), (6, 4), dtype=BF)
+        want = jnp.array([2, 6, 2, ord("a"), ord("b"), 4, 1, ord("c")], dtype=BF)
+        _assert_bytes_equal(got, want, "chip metadata")
+
+
 if __name__ == "__main__":
     absltest.main()

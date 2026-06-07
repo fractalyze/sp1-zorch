@@ -15,6 +15,11 @@ them.
 | LogUp-GKR | A chain of layer Rounds (output layer → input layer), each layer a chain of per-variable sumcheck rounds | Per-layer running claim, ending in trace-column openings at the final evaluation point | `sp1_zorch/logup_gkr` | `logup_gkr:verify_first_layer`, `logup_gkr:verify_gkr_prove` |
 | Zerocheck | One jagged multi-chip sumcheck: 22 homogeneous per-variable rounds over `eq * (constraint RLC + GKR column term)` | In: every chip's constraint zero-sum + its GKR opening claim; out: one claim at the sumcheck point | `sp1_zorch/zerocheck` | `zerocheck:verify_zerocheck` |
 
+Each stage runnable above gates one stage's math; `shard_prover:verify_prove_shard`
+gates the *composition* — it runs the assembled `prove_shard_chain` over a dump
+and seals it on the chain's own trace commitment plus the zerocheck point, which
+transitively pins the full composed transcript.
+
 Two stages follow zerocheck — jagged evaluation (outer/inner sumcheck +
 stacked BaseFold opening, consuming the zerocheck point claim) and proof
 assembly/serialization; see fractalyze/sp1-zorch#13 for the plan.
