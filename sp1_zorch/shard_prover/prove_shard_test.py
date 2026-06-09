@@ -47,6 +47,7 @@ _MAX_LOG_ROW_COUNT = 5
 _NUM_ROW_VARIABLES = _MAX_LOG_ROW_COUNT - 1
 _NUM_BETAS = 3
 _LOG_BLOWUP = 1
+_OPEN_NUM_QUERIES = 2
 
 
 class _WitnessChip:
@@ -181,18 +182,30 @@ class ProveShardChainTest(absltest.TestCase):
             num_betas=_NUM_BETAS,
             num_row_variables=_NUM_ROW_VARIABLES,
             max_log_row_count=_MAX_LOG_ROW_COUNT,
+            open_num_queries=_OPEN_NUM_QUERIES,
         )
-        cls.carry, cls.got_transcript, cls.msgs = chain(
-            ShardCarry(main_region, prep_region, public_values),
-            cheap_transcript(BF),
-        )
+        # The jagged-eval stage can't execute eagerly on CPU (its EF->PF
+        # convert hits jax#168), so run only the CPU-executable prefix — trace
+        # commit, LogUp-GKR, zerocheck — for the byte-match tests. The full
+        # four-stage chain is covered by the lowering smoke below, and the
+        # open's byte-match is the GPU verify_prove_shard harness's job.
+        carry = ShardCarry(main_region, prep_region, public_values)
+        transcript = cheap_transcript(BF)
+        msgs = []
+        for stage in list(chain.rounds)[:3]:
+            carry, transcript, msg = stage(carry, transcript)
+            msgs.append(msg)
+        cls.carry, cls.got_transcript, cls.msgs = carry, transcript, msgs
         cls.chain = chain
         cls.main_region = main_region
         cls.prep_region = prep_region
         cls.public_values = public_values
 
-    def test_chain_emits_one_message_per_stage(self) -> None:
-        self.assertLen(self.msgs, 3)
+    def test_full_chain_has_four_stages(self) -> None:
+        self.assertLen(list(self.chain.rounds), 4)
+
+    def test_cpu_executable_prefix_emits_one_message_per_stage(self) -> None:
+        self.assertLen(self.msgs, 3)  # commit, LogUp-GKR, zerocheck
 
     def test_commitment_message_matches(self) -> None:
         _assert_bytes_equal(self.msgs[0], self.want_commitment, "commitment")
