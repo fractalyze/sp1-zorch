@@ -36,6 +36,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from functools import partial
 
 import jax
 import jax.numpy as jnp
@@ -50,6 +51,11 @@ from zorch.transcript import GrindingTranscript, sample_challenge
 from zorch.utils.bits import log2_ceil_usize, log2_strict_usize
 
 
+@partial(
+    jax.tree_util.register_dataclass,
+    data_fields=["mle", "codeword", "digest_layers"],
+    meta_fields=[],
+)
 @dataclass(frozen=True)
 class StackedRound:
     """One committed region's retained witness for the stacked open.

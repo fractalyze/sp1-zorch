@@ -296,6 +296,21 @@ class ProveShardChainTest(absltest.TestCase):
         for leaf in leaves:
             self.assertIsInstance(leaf, jax.Array)
 
+    def test_trace_commit_round_carries_stacked_open_witness(self) -> None:
+        """TraceCommitRound retains each region's stacked witness — the
+        ``[S, K]`` message matrix and the committed ``[S*blowup, K]``
+        bit-reversed codeword — on the carry as ``[prep, main]``, so the
+        jagged-eval open stage reproves them without recommitting."""
+        rounds = self.carry.commit_rounds
+        self.assertIsNotNone(rounds)
+        self.assertLen(rounds, 2)  # prep, then main
+        S = 1 << self.main_region.log_stacking_height
+        blowup = 1 << _LOG_BLOWUP
+        for rd in rounds:
+            self.assertEqual(rd.mle.shape[0], S)
+            self.assertEqual(rd.codeword.shape[0], S * blowup)
+            self.assertEqual(rd.mle.shape[1], rd.codeword.shape[1])
+
     def test_carry_threads_stage_outputs(self) -> None:
         _assert_bytes_equal(
             self.carry.gkr_eval_point, self.want_gkr.eval_point, "gkr_eval_point"
