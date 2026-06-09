@@ -134,6 +134,7 @@ py_binary(
     deps = [
         "@zorch//zorch/logup_gkr",
         "@zorch//zorch/logup_gkr/testing",
+        "@zorch//zorch/testkit:transcript",
         requirement("jax"),
         requirement("jax_cuda12_plugin"),
         requirement("numpy"),
