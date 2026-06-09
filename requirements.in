@@ -10,10 +10,10 @@
 # on the SP1 byte-match path.
 absl-py
 numpy
-jax==0.0.5.dev20260602054734
-jaxlib==0.0.5.dev20260602054734
-jax-cuda12-plugin==0.0.5.dev20260524000415
-zkx-cuda-pjrt==0.0.5.dev20260602054734
+jax==0.0.5.dev20260606003451
+jaxlib==0.0.5.dev20260606003451
+jax-cuda12-plugin==0.0.5.dev20260606003451
+zkx-cuda-pjrt==0.0.5.dev20260606003451
 
 # SP1 chip definitions (constraints + LogUp interactions) exported from
 # riscv-witness; consumed by the shard fixture loader. Same pin as whir-zorch.
