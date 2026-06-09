@@ -2,27 +2,40 @@
 """The shard proof as one zorch ``ProveChain`` of stage Rounds.
 
 ``prove_shard_chain`` sequences the stages of ``docs/shard-pipeline.md`` —
-trace commit, LogUp-GKR, zerocheck — as ``zorch.round.Round``s threading one
-duplex transcript and a single ``ShardCarry``. The carry holds only what a
-later stage reads from an earlier one; static configuration (vk, SMCS, chips)
-lives on the Round instances. The jagged evaluation proof appends as a fourth
-Round once its zerocheck wiring lands (fractalyze/sp1-zorch#20); proof
-assembly consumes the chain's message list (fractalyze/sp1-zorch#21).
+trace commit, LogUp-GKR, zerocheck, jagged evaluation proof — as
+``zorch.round.Round``s threading one duplex transcript and a single
+``ShardCarry``. The carry holds only what a later stage reads from an earlier
+one; static configuration (vk, SMCS, chips) lives on the Round instances.
+Proof assembly consumes the chain's message list (fractalyze/sp1-zorch#21).
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
+from functools import partial
 from typing import Any
 
+import jax
 import jax.numpy as jnp
 from jax import Array
 from rw_constraints import Chip
+from zk_dtypes import efinfo, koalabearx4_mont
 
 from sp1_zorch.commit.region import JaggedRegion
 from sp1_zorch.commit.smcs import SingleMatrixCommitmentScheme
 from sp1_zorch.commit.trace_commit import commit_region
+from sp1_zorch.jagged.open import (
+    StackedOpenProof,
+    StackedRound,
+    stacked_basefold_open,
+)
+from sp1_zorch.jagged.prover import (
+    JaggedEvalInputs,
+    JaggedEvalMsg,
+    JaggedEvalRound,
+    assemble_columns,
+)
 from sp1_zorch.logup_gkr.circuit import GkrChip
 from sp1_zorch.logup_gkr.prover import (
     ChipEvaluation,
@@ -31,10 +44,29 @@ from sp1_zorch.logup_gkr.prover import (
 )
 from sp1_zorch.shard_prover.types import MachineVerifyingKey
 from sp1_zorch.zerocheck.stage import ZerocheckProof, prove_shard_zerocheck
+from zorch.coding.reed_solomon import BitReversedReedSolomon
 from zorch.round import ProveChain, Round
-from zorch.transcript import Transcript
+from zorch.transcript import GrindingTranscript, Transcript, sample_challenge
+from zorch.utils.bits import log2_ceil_usize
 
 
+# Pytree: the two regions (themselves pytrees), public values, and written
+# stage outputs are array leaves; unwritten Optional fields are None (an empty
+# subtree). Lets the carry cross the chain's @jit boundary as one donatable
+# argument.
+@partial(
+    jax.tree_util.register_dataclass,
+    data_fields=[
+        "main_region",
+        "prep_region",
+        "public_values",
+        "commit_rounds",
+        "gkr_eval_point",
+        "gkr_chip_openings",
+        "zc_sumcheck_point",
+    ],
+    meta_fields=[],
+)
 @dataclass(frozen=True)
 class ShardCarry:
     """What flows between stages: the committed regions plus each stage's
@@ -44,9 +76,15 @@ class ShardCarry:
     main_region: JaggedRegion
     prep_region: JaggedRegion | None
     public_values: Array
+    # Written by TraceCommitRound; read by the jagged-eval open stage. [prep,
+    # main] order, matching SP1's round_evaluation_claims.
+    commit_rounds: tuple[StackedRound, ...] | None = None
     # Written by LogupGkrRound; read by ShardZerocheckRound.
     gkr_eval_point: Array | None = None
     gkr_chip_openings: Mapping[str, ChipEvaluation] | None = None
+    # Written by ShardZerocheckRound; read by the jagged-eval open stage as its
+    # z_row — the accumulated per-round sumcheck challenges, not the GKR zeta.
+    zc_sumcheck_point: Array | None = None
 
 
 def preamble_chip_metadata(
@@ -87,13 +125,30 @@ class TraceCommitRound(Round):
     def __call__(
         self, carry: ShardCarry, transcript: Transcript
     ) -> tuple[ShardCarry, Transcript, Array]:
-        bound, _ = commit_region(
+        bound, main_data = commit_region(
             carry.main_region, self._smcs, log_blowup=self._log_blowup
         )
         transcript = self._vk.observe_into(transcript)
         transcript = transcript.observe(carry.public_values)
         transcript = transcript.observe(bound)
         transcript = transcript.observe(self._chip_metadata)
+        # Retain each region's stacked witness for the jagged-eval open. The
+        # prep region is bound into the vk at setup, not re-observed here, but
+        # the open still reproves it, so commit it for its codeword too. Order
+        # is [prep, main], matching SP1's round_evaluation_claims.
+        commit_data = []
+        if carry.prep_region is not None:
+            _, prep_data = commit_region(
+                carry.prep_region, self._smcs, log_blowup=self._log_blowup
+            )
+            commit_data.append(prep_data)
+        commit_data.append(main_data)
+        carry = replace(
+            carry,
+            commit_rounds=tuple(
+                StackedRound(d.mle, d.codeword, d.digest_layers) for d in commit_data
+            ),
+        )
         return carry, transcript, bound
 
 
@@ -163,7 +218,131 @@ class ShardZerocheckRound(Round):
             transcript,
             max_log_row_count=self._max_log_row_count,
         )
+        carry = replace(carry, zc_sumcheck_point=proof.msgs.challenge)
         return carry, transcript, proof
+
+
+@dataclass(frozen=True)
+class ShardJaggedEvalProof:
+    """The jagged evaluation proof: the outer/inner sumcheck reducing the
+    committed trace to ``D(z_final)``, then the stacked BaseFold open of ``D``
+    at that point."""
+
+    eval: JaggedEvalMsg
+    open: StackedOpenProof
+
+
+class ShardJaggedEvalRound(Round):
+    """Jagged evaluation proof (SP1 Phase 4): reduce the committed trace to
+    ``D(z_final)`` via the outer/inner sumcheck, then open ``D`` at ``z_final``
+    with the stacked BaseFold FRI. Reads the zerocheck point, the per-chip GKR
+    openings, and the committed stacked witness off the carry."""
+
+    def __init__(
+        self,
+        smcs: SingleMatrixCommitmentScheme,
+        *,
+        log_blowup: int,
+        num_queries: int,
+        pow_bits: int,
+    ) -> None:
+        self._smcs = smcs
+        self._log_blowup = log_blowup
+        self._num_queries = num_queries
+        self._pow_bits = pow_bits
+
+    def __call__(
+        self, carry: ShardCarry, transcript: GrindingTranscript
+    ) -> tuple[ShardCarry, GrindingTranscript, ShardJaggedEvalProof]:
+        if (
+            carry.zc_sumcheck_point is None
+            or carry.commit_rounds is None
+            or carry.gkr_chip_openings is None
+        ):
+            raise ValueError(
+                "the jagged-eval stage needs the zerocheck point, committed "
+                "rounds, and GKR openings on the carry; sequence the commit, "
+                "LogUp-GKR, and zerocheck Rounds before it"
+            )
+        main = carry.main_region
+        openings = carry.gkr_chip_openings
+        # The jagged eval runs in the extension field; the sumcheck points
+        # (z_row) are base-field per-round challenge lists, embedded up to EF
+        # where the eval needs them.
+        ef = koalabearx4_mont
+
+        # Per-round (row/column counts, real per-column claims) in [prep, main]
+        # order — each chip's GKR opening field is its columns' claims — plus
+        # each region's raw (unpadded) dense for the combined committed D.
+        rc_rounds: list[Sequence[int]] = []
+        cc_rounds: list[Sequence[int]] = []
+        claims_rounds: list[Array] = []
+        denses: list[Array] = []
+        prep = carry.prep_region
+        regions = ([(prep, "preprocessed")] if prep is not None else []) + [
+            (main, "main")
+        ]
+        for region, claim_field in regions:
+            rc_rounds.append(region.row_counts)
+            cc_rounds.append(region.column_counts)
+            claims_rounds.append(
+                jnp.concatenate(
+                    [getattr(openings[n], claim_field) for n in region.chip_names]
+                )
+            )
+            denses.append(region.dense[: region.raw_size])
+
+        col_heights, all_claims = assemble_columns(
+            rc_rounds, cc_rounds, claims_rounds, dtype=ef
+        )
+
+        # The outer Hadamard sumcheck folds D variable by variable, so the
+        # combined dense pads to a power of two.
+        dense = jnp.concatenate(denses)
+        target = 1 << log2_ceil_usize(dense.shape[0])
+        dense = jnp.pad(dense, (0, target - dense.shape[0]))
+
+        # z_col is one EF challenge per column variable (SP1 samples it as
+        # extension elements, not stacked base squeezes).
+        ef_degree = efinfo(ef).degree
+        z_col_parts: list[Array] = []
+        for _ in range(log2_ceil_usize(len(col_heights))):
+            transcript, challenge = sample_challenge(transcript, ef, ef_degree)
+            z_col_parts.append(challenge)
+        z_col = jnp.stack(z_col_parts) if z_col_parts else jnp.zeros((0,), ef)
+
+        # z_row is the zerocheck sumcheck point in SP1's insert-at-front
+        # (reversed) order, embedded base->extension (exact) so the eval's scan
+        # carry stays in the extension field.
+        inputs = JaggedEvalInputs(
+            col_heights=tuple(col_heights),
+            all_claims=all_claims,
+            z_row=carry.zc_sumcheck_point[::-1].astype(ef),
+            z_col=z_col,
+            dense=dense,
+        )
+        _, transcript, eval_msg = JaggedEvalRound(dtype=ef)(inputs, transcript)
+
+        code = BitReversedReedSolomon(
+            message_len=1 << main.log_stacking_height,
+            blowup=1 << self._log_blowup,
+            dtype=main.dense.dtype,
+        )
+        # The outer sumcheck folds in the base field; the BaseFold open works
+        # in the extension field, so embed its folded point and D(z_final)
+        # base->extension (exact).
+        open_proof, transcript = stacked_basefold_open(
+            self._smcs,
+            code,
+            carry.commit_rounds,
+            eval_msg.outer_sumcheck_point.astype(ef),
+            eval_msg.dense_eval.astype(ef),
+            main.log_stacking_height,
+            num_queries=self._num_queries,
+            pow_bits=self._pow_bits,
+            transcript=transcript,
+        )
+        return carry, transcript, ShardJaggedEvalProof(eval=eval_msg, open=open_proof)
 
 
 def prove_shard_chain(
@@ -177,6 +356,8 @@ def prove_shard_chain(
     num_betas: int,
     num_row_variables: int,
     max_log_row_count: int,
+    open_num_queries: int,
+    open_pow_bits: int = 0,
     pow_bits: int = 0,
     witness: Array | None = None,
 ) -> ProveChain:
@@ -196,5 +377,11 @@ def prove_shard_chain(
                 witness=witness,
             ),
             ShardZerocheckRound(chips, max_log_row_count=max_log_row_count),
+            ShardJaggedEvalRound(
+                smcs,
+                log_blowup=log_blowup,
+                num_queries=open_num_queries,
+                pow_bits=open_pow_bits,
+            ),
         ]
     )

@@ -42,6 +42,20 @@ def _pack_chip_data(
     return jnp.concatenate(flats)
 
 
+# Pytree: `dense` is the only array leaf; the SMCS row/column counts, stacking
+# height, and names are static aux. Lets a region cross the chain's @jit
+# boundary as part of a donatable carry.
+@partial(
+    jax.tree_util.register_dataclass,
+    data_fields=["dense"],
+    meta_fields=[
+        "chip_starts",
+        "row_counts",
+        "column_counts",
+        "log_stacking_height",
+        "chip_names",
+    ],
+)
 @dataclass(frozen=True)
 class JaggedRegion:
     """One committable region: dense buffer + SMCS row/column counts.

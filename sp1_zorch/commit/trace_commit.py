@@ -18,7 +18,9 @@ pin picks up CompositeOp (jax#164) — tracked on fractalyze/sp1-zorch#17.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import partial
 
+import jax
 import jax.numpy as jnp
 from jax import Array, lax
 
@@ -27,15 +29,33 @@ from sp1_zorch.commit.smcs import SingleMatrixCommitmentScheme
 from zorch.coding.reed_solomon import ReedSolomon
 
 
+@partial(
+    jax.tree_util.register_dataclass,
+    data_fields=[
+        "dense",
+        "mle",
+        "codeword",
+        "digest_layers",
+        "row_counts",
+        "column_counts",
+        "smcs_commitment",
+    ],
+    meta_fields=[],
+)
 @dataclass(frozen=True)
 class TraceCommitData:
     """Prover-side retained state for the opening stage.
 
     The row/column count arrays live here because the structure hash bound
-    them; the verifier-side rebind needs the exact device values.
+    them; the verifier-side rebind needs the exact device values. ``mle`` and
+    ``codeword`` are the stacked open's per-region witness — the ``[S, K]``
+    message matrix and the committed ``[S*blowup, K]`` bit-reversed leaves —
+    so the opening stage reproves at the eval point without recommitting.
     """
 
     dense: Array
+    mle: Array
+    codeword: Array
     digest_layers: list[Array]
     row_counts: Array
     column_counts: Array
@@ -76,6 +96,11 @@ def commit_region(
     bound = smcs.bind_structure(commitment, row_counts, column_counts)
     return bound, TraceCommitData(
         dense=dense,
+        # Column k of the [S, K] message matrix is dense block k (the open
+        # evaluates each column at the stack point); the leaves are the
+        # committed [S*blowup, K] codeword Merkle-bound just above.
+        mle=dense.reshape(K, S).T,
+        codeword=codeword.T,
         digest_layers=digest_layers,
         row_counts=row_counts,
         column_counts=column_counts,

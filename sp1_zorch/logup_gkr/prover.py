@@ -18,8 +18,10 @@ until then ``witness`` is required when ``pow_bits > 0``.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import partial
 from typing import Mapping, Sequence
 
+import jax
 import jax.numpy as jnp
 from jax import Array, lax
 from rw_constraints import Chip
@@ -49,6 +51,13 @@ from zorch.utils.bits import log2_ceil_usize, log2_strict_usize
 _EF_LIMBS = 4
 
 
+# Pytree: both evals are array leaves (preprocessed is None for prep-less
+# chips), so a carry holding these openings stays an arrays-only pytree.
+@partial(
+    jax.tree_util.register_dataclass,
+    data_fields=["main", "preprocessed"],
+    meta_fields=[],
+)
 @dataclass(frozen=True)
 class ChipEvaluation:
     """One chip's trace openings at the final GKR point."""

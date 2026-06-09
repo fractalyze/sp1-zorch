@@ -47,6 +47,7 @@ _MAX_LOG_ROW_COUNT = 5
 _NUM_ROW_VARIABLES = _MAX_LOG_ROW_COUNT - 1
 _NUM_BETAS = 3
 _LOG_BLOWUP = 1
+_OPEN_NUM_QUERIES = 2
 
 
 class _WitnessChip:
@@ -181,18 +182,42 @@ class ProveShardChainTest(absltest.TestCase):
             num_betas=_NUM_BETAS,
             num_row_variables=_NUM_ROW_VARIABLES,
             max_log_row_count=_MAX_LOG_ROW_COUNT,
+            open_num_queries=_OPEN_NUM_QUERIES,
         )
-        cls.carry, cls.got_transcript, cls.msgs = chain(
-            ShardCarry(main_region, prep_region, public_values),
-            cheap_transcript(BF),
-        )
+        # The full four-stage chain runs eagerly on CPU: the jagged-eval
+        # stage's base->extension embeds keep its EF->PF converts off the CPU
+        # path (jax#168), so the open executes. The hand replay stops at
+        # zerocheck, so snapshot the transcript there for the in-sync check;
+        # the open's SP1 byte-match is the GPU verify_prove_shard harness's job.
+        carry = ShardCarry(main_region, prep_region, public_values)
+        transcript = cheap_transcript(BF)
+        msgs = []
+        for i, stage in enumerate(chain.rounds):
+            carry, transcript, msg = stage(carry, transcript)
+            msgs.append(msg)
+            if i == 2:  # after zerocheck, where the hand replay stops
+                cls.got_transcript = transcript
+        cls.carry, cls.msgs, cls.jagged = carry, msgs, msgs[-1]
         cls.chain = chain
         cls.main_region = main_region
         cls.prep_region = prep_region
         cls.public_values = public_values
 
     def test_chain_emits_one_message_per_stage(self) -> None:
-        self.assertLen(self.msgs, 3)
+        self.assertLen(self.msgs, 4)  # commit, LogUp-GKR, zerocheck, jagged eval
+
+    def test_jagged_eval_stage_opens_each_committed_round(self) -> None:
+        """The fourth stage runs the outer/inner jagged sumcheck to D(z_final)
+        and the stacked BaseFold open over the [prep, main] committed rounds.
+        The open exposes one batch-eval set and one component opening per
+        committed round; SP1 byte-correctness is the GPU verify_prove_shard
+        harness's job, so here we pin the executed shape."""
+        msg = self.jagged
+        self.assertEqual(msg.eval.dense_eval.shape, ())  # scalar D(z_final)
+        n_rounds = len(self.carry.commit_rounds)
+        self.assertLen(msg.open.batch_evals, n_rounds)
+        self.assertLen(msg.open.component_openings, n_rounds)
+        self.assertNotEmpty(msg.open.query_openings)  # one per FRI fold layer
 
     def test_commitment_message_matches(self) -> None:
         _assert_bytes_equal(self.msgs[0], self.want_commitment, "commitment")
@@ -240,6 +265,84 @@ class ProveShardChainTest(absltest.TestCase):
             self.main_region.dense, self.public_values, cheap_transcript(BF)
         )
         self.assertIn("func", lowered.as_text())
+
+    def test_jaggedregion_is_a_pytree_with_only_dense_as_leaf(self) -> None:
+        """JaggedRegion registers ``dense`` as its sole array leaf; the layout
+        counts are static aux data, so a region crosses a ``@jit`` boundary
+        without leaking the count tuples into the traced graph."""
+        leaves, treedef = jax.tree_util.tree_flatten(self.main_region)
+        self.assertLen(leaves, 1)
+        self.assertIs(leaves[0], self.main_region.dense)
+        # The layout counts ride in the treedef as static aux, not as leaves.
+        rebuilt = jax.tree_util.tree_unflatten(treedef, leaves)
+        self.assertIs(rebuilt.dense, self.main_region.dense)
+        self.assertEqual(rebuilt.row_counts, self.main_region.row_counts)
+
+    def test_shardcarry_flattens_to_its_array_buffers(self) -> None:
+        """ShardCarry is a pytree: its leaves are exactly the region dense
+        buffers and the public values — the ``None`` stage-output fields
+        contribute no leaves — so the whole carry crosses a ``@jit`` boundary
+        as one argument."""
+        carry = ShardCarry(self.main_region, self.prep_region, self.public_values)
+        leaves = jax.tree_util.tree_leaves(carry)
+        self.assertEqual(
+            [id(x) for x in leaves],
+            [
+                id(self.main_region.dense),
+                id(self.prep_region.dense),
+                id(self.public_values),
+            ],
+        )
+
+    def test_carry_crosses_jit_as_a_donated_argument(self) -> None:
+        """With ShardCarry a pytree, the chain runs under a single ``@jit``
+        that takes the carry as a *donated* argument (vs the closed-over carry
+        in ``test_chain_lowers_under_single_jit``), letting XLA reuse its input
+        buffers. Stops at StableHLO lowering: CPU can't execute field dots
+        (fractalyze/jax#168), GPU owns backend compile."""
+
+        def run(carry, transcript):
+            _, out_transcript, _ = self.chain(carry, transcript)
+            return out_transcript
+
+        carry = ShardCarry(self.main_region, self.prep_region, self.public_values)
+        lowered = jax.jit(run, donate_argnums=0).lower(carry, cheap_transcript(BF))
+        self.assertIn("func", lowered.as_text())
+
+    def test_populated_carry_flattens_to_array_leaves_only(self) -> None:
+        """The carry threaded out of the chain holds the GKR stage outputs —
+        the evaluation point and the per-chip ChipEvaluation openings — yet
+        still flattens to array leaves only. Every carry-component type
+        (region, opening) is a pytree, so a mid-chain populated carry can
+        cross a ``@jit`` boundary too, not just the initial one."""
+        self.assertIsNotNone(self.carry.gkr_chip_openings)
+        leaves = jax.tree_util.tree_leaves(self.carry)
+        self.assertNotEmpty(leaves)
+        for leaf in leaves:
+            self.assertIsInstance(leaf, jax.Array)
+
+    def test_trace_commit_round_carries_stacked_open_witness(self) -> None:
+        """TraceCommitRound retains each region's stacked witness — the
+        ``[S, K]`` message matrix and the committed ``[S*blowup, K]``
+        bit-reversed codeword — on the carry as ``[prep, main]``, so the
+        jagged-eval open stage reproves them without recommitting."""
+        rounds = self.carry.commit_rounds
+        self.assertIsNotNone(rounds)
+        self.assertLen(rounds, 2)  # prep, then main
+        S = 1 << self.main_region.log_stacking_height
+        blowup = 1 << _LOG_BLOWUP
+        for rd in rounds:
+            self.assertEqual(rd.mle.shape[0], S)
+            self.assertEqual(rd.codeword.shape[0], S * blowup)
+            self.assertEqual(rd.mle.shape[1], rd.codeword.shape[1])
+
+    def test_zerocheck_round_carries_the_eval_point(self) -> None:
+        """ShardZerocheckRound threads its sumcheck point onto the carry as the
+        jagged-eval open's z_row (the accumulated per-round challenges, not the
+        GKR zeta), so the eval stage opens the trace at the right point."""
+        _assert_bytes_equal(
+            self.carry.zc_sumcheck_point, self.want_zc.msgs.challenge, "z_row"
+        )
 
     def test_carry_threads_stage_outputs(self) -> None:
         _assert_bytes_equal(

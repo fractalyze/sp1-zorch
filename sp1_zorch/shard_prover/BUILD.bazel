@@ -49,12 +49,17 @@ py_library(
         "//sp1_zorch/commit:region",
         "//sp1_zorch/commit:smcs",
         "//sp1_zorch/commit:trace_commit",
+        "//sp1_zorch/jagged:open",
+        "//sp1_zorch/jagged:prover",
         "//sp1_zorch/logup_gkr",
         "//sp1_zorch/zerocheck",
         "@zorch//zorch:round",
         "@zorch//zorch:transcript",
+        "@zorch//zorch/coding:reed_solomon",
+        "@zorch//zorch/utils:bits",
         requirement("jax"),
         requirement("rw_constraints"),
+        requirement("zk_dtypes"),
     ],
 )
 
