@@ -51,6 +51,7 @@ from zorch.transcript import Transcript
         "commit_rounds",
         "gkr_eval_point",
         "gkr_chip_openings",
+        "zc_sumcheck_point",
     ],
     meta_fields=[],
 )
@@ -69,6 +70,9 @@ class ShardCarry:
     # Written by LogupGkrRound; read by ShardZerocheckRound.
     gkr_eval_point: Array | None = None
     gkr_chip_openings: Mapping[str, ChipEvaluation] | None = None
+    # Written by ShardZerocheckRound; read by the jagged-eval open stage as its
+    # z_row — the accumulated per-round sumcheck challenges, not the GKR zeta.
+    zc_sumcheck_point: Array | None = None
 
 
 def preamble_chip_metadata(
@@ -202,6 +206,7 @@ class ShardZerocheckRound(Round):
             transcript,
             max_log_row_count=self._max_log_row_count,
         )
+        carry = replace(carry, zc_sumcheck_point=proof.msgs.challenge)
         return carry, transcript, proof
 
 

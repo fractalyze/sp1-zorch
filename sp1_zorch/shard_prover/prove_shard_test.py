@@ -311,6 +311,14 @@ class ProveShardChainTest(absltest.TestCase):
             self.assertEqual(rd.codeword.shape[0], S * blowup)
             self.assertEqual(rd.mle.shape[1], rd.codeword.shape[1])
 
+    def test_zerocheck_round_carries_the_eval_point(self) -> None:
+        """ShardZerocheckRound threads its sumcheck point onto the carry as the
+        jagged-eval open's z_row (the accumulated per-round challenges, not the
+        GKR zeta), so the eval stage opens the trace at the right point."""
+        _assert_bytes_equal(
+            self.carry.zc_sumcheck_point, self.want_zc.msgs.challenge, "z_row"
+        )
+
     def test_carry_threads_stage_outputs(self) -> None:
         _assert_bytes_equal(
             self.carry.gkr_eval_point, self.want_gkr.eval_point, "gkr_eval_point"
