@@ -74,6 +74,12 @@ _SHARD_DIR = flags.DEFINE_string(
 _GKR_POW_BITS = flags.DEFINE_integer(
     "gkr_pow_bits", 12, "GKR grind bits (SP1 hardcodes GKR_GRINDING_BITS = 12)."
 )
+_OPEN_NUM_QUERIES = flags.DEFINE_integer(
+    "open_num_queries", 100, "BaseFold FRI query count (open phase)."
+)
+_OPEN_POW_BITS = flags.DEFINE_integer(
+    "open_pow_bits", 0, "BaseFold FRI query-phase grind bits (open phase)."
+)
 
 
 def main(argv) -> None:
@@ -105,6 +111,8 @@ def main(argv) -> None:
         num_row_variables=MAX_LOG_ROW_COUNT - 1,
         max_log_row_count=MAX_LOG_ROW_COUNT,
         pow_bits=_GKR_POW_BITS.value,
+        open_num_queries=_OPEN_NUM_QUERIES.value,
+        open_pow_bits=_OPEN_POW_BITS.value,
         witness=jnp.array(int(gkr_state["witness"]), F),
     )
 
@@ -112,7 +120,7 @@ def main(argv) -> None:
     _, _, msgs = chain(
         ShardCarry(main_region, prep_region, main.public_values), fresh_transcript()
     )
-    commitment, _, zc = msgs
+    commitment, _, zc, jagged = msgs
     print(f"chain run: {time.monotonic() - t0:.1f}s")
 
     # The trace commit the chain computed must equal SP1's dumped commitment;
@@ -137,6 +145,17 @@ def main(argv) -> None:
         "final_eval",
         eval_coeffs(zc.msgs.round_poly[-1], zc.msgs.challenge[-1]),
         _parse_ef_list(state["final_eval"])[0],
+    )
+
+    # The jagged eval's outer sumcheck claim seals z_col + the column-claim
+    # assembly: claim = Sum_c eq(z_col, c) * column_claim[c].
+    phase4_claim = _parse_ef_list(
+        (shard_dir / "phase4_sumcheck_claim.txt").read_text()
+    )[0]
+    ok &= check_match(
+        "phase4 outer sumcheck claim",
+        jagged.eval.outer_sumcheck_claim,
+        phase4_claim,
     )
 
     if not ok:
