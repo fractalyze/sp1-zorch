@@ -1,0 +1,241 @@
+# Copyright 2026 The sp1-zorch Authors. SPDX-License-Identifier: Apache-2.0
+"""SP1-schedule stacked BaseFold open — the second half of the stage-5 eval proof.
+
+The sumcheck half (``JaggedEvalRound``) reduces the trace opening to a single
+claim ``D(z_final)`` over the committed dense buffer. This module opens that
+claim: it batch-opens the separately committed regions (preprocessed + main) at
+the trailing ``log_stacking_height`` coordinates of ``z_final`` via one shared
+FRI, the BaseFold batch open SP1's ``StackedPcsProver::prove_trusted_evaluation``
+performs.
+
+The wire is SP1's, not zorch's generic ``BasefoldProver.open_batch``: every fold
+layer is committed through the SP1 single-matrix commitment (``smcs``), so its
+**separator-bound** root is what the transcript observes (zorch's open observes
+the raw Merkle root); the per-round component roots were already bound upstream
+at commit time, so they are not re-observed here; the scalar ``D(z_final)`` is
+observed before the open (SP1's ``prove_untrusted_evaluation``); the FRI query
+phase runs a proof-of-work grind before sampling query positions; and the final
+poly the transcript binds is the folded codeword's first element, not the whole
+residual codeword. Extension challenges use zorch's ``sample_challenge`` (degree
+base squeezes reinterpreted as one extension element — SP1's ``sample_ext_element``
+convention), and query positions take the canonical low bits of a base squeeze
+(SP1's ``sample_bits``).
+
+The fold geometry is zorch's bit-reversed Reed-Solomon foldable code, which pairs
+conjugates adjacently — the order ``trace_commit`` already writes its codeword in.
+
+References (whir-zorch ``basefold/prover.py::_basefold_fri_commit_phase`` is the
+byte-match reference pipeline):
+- batch RLC weights — ``partial_lagrange`` over ``log2_ceil(total_width)`` EF
+  challenges, allocated staggered across rounds.
+- per-round message ``(s(0), s(1))`` — derived from the running MLE under the
+  running claim, identical to the interleaved BaseFold sumcheck.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+from dataclasses import dataclass
+
+import jax
+import jax.numpy as jnp
+from jax import Array
+from zk_dtypes import efinfo
+
+from sp1_zorch.commit.smcs import SingleMatrixCommitmentScheme
+from zorch.coding.reed_solomon import BitReversedReedSolomon
+from zorch.pcs.basefold.batching import batch_staggered, partial_lagrange
+from zorch.poly.multilinear import eval_mle, mle_fold
+from zorch.transcript import GrindingTranscript, sample_challenge
+from zorch.utils.bits import log2_ceil_usize, log2_strict_usize
+
+
+@dataclass(frozen=True)
+class StackedRound:
+    """One committed region's retained witness for the stacked open.
+
+    ``mle`` is the stacked ``[S, K]`` message-domain matrix (column ``k`` is the
+    dense block stacked to height ``S = 2^log_stacking_height``); the open
+    evaluates each column at ``stack_point`` and folds their RLC. ``codeword`` is
+    the committed ``[S * blowup, K]`` RS codeword in bit-reversed row order (the
+    matrix ``trace_commit`` Merkle-commits — its rows are the leaves), opened at
+    the query positions and RLC-combined into the batched FRI codeword.
+    ``digest_layers`` is that SMCS commit's layered digest tree.
+    """
+
+    mle: Array
+    codeword: Array
+    digest_layers: list[Array]
+
+
+# (rows, sibling_paths) — one SMCS batch opening, the shape the SP1 heap proof
+# serializes. ``rows`` is (Q, width); ``paths`` is one (Q, digest) per tree level.
+Opening = tuple[Array, list[Array]]
+
+
+@dataclass(frozen=True)
+class StackedOpenProof:
+    """The stacked BaseFold open proof, byte-matched field-for-field against the
+    SP1 reference dump.
+
+    fri_raw_roots / fri_commitments: per fold layer, the raw Merkle root and the
+        SP1 separator-bound root (the transcript observes the bound one).
+    final_poly: the folded codeword's first element (the residual constant).
+    pow_witness: the FRI query-phase proof-of-work witness.
+    batch_evals: per round, the ``(K,)`` column evaluations at ``stack_point``.
+    component_openings: per round, the codeword rows + paths at the query
+        positions.
+    query_openings: per fold layer, the pair-leaf rows + paths at the halved
+        query positions.
+    """
+
+    fri_raw_roots: Array
+    fri_commitments: Array
+    final_poly: Array
+    pow_witness: Array
+    batch_evals: list[Array]
+    component_openings: list[Opening]
+    query_openings: list[Opening]
+
+
+def stacked_basefold_open(
+    smcs: SingleMatrixCommitmentScheme,
+    code: BitReversedReedSolomon,
+    rounds: Sequence[StackedRound],
+    z_final: Array,
+    dense_eval: Array,
+    log_stacking_height: int,
+    *,
+    num_queries: int,
+    pow_bits: int,
+    transcript: GrindingTranscript,
+) -> tuple[StackedOpenProof, GrindingTranscript]:
+    """Open the stacked dense at ``z_final`` via one batched FRI over ``rounds``.
+
+    ``transcript`` must be a real grinding transcript at the state SP1 enters the
+    open with (the component roots already bound upstream) — the open observes
+    ``dense_eval`` and the batch evals, samples the RLC + fold challenges, grinds,
+    then samples query positions, so a scripted replay cannot drive it. Returns
+    ``(proof, transcript)``.
+    """
+    if not rounds:
+        raise ValueError("the stacked open needs at least one committed round")
+    ef_dtype = dense_eval.dtype
+    bf_dtype = code.dtype
+    ef_degree = efinfo(ef_dtype).degree
+
+    stack_point = z_final[-log_stacking_height:]
+    num_vars = stack_point.shape[0]
+
+    # Each round's per-column evaluation at the stacking point — SP1's batch
+    # evaluations, observed into the transcript by the open. Evaluated one column
+    # at a time: the batched 2-D ``(mle * eq).sum(axis=0)`` over a 2^log_s-row
+    # extension-field matrix faults the XLA CPU backend, while the 1-D per-column
+    # reduce (the outer-sumcheck idiom) lowers cleanly.
+    batch_evals = [
+        jnp.stack([eval_mle(rd.mle[:, k], stack_point) for k in range(rd.mle.shape[1])])
+        for rd in rounds
+    ]
+
+    t: GrindingTranscript = transcript
+    # SP1's prove_untrusted_evaluation observes the scalar D(z_final) first.
+    t = t.observe(dense_eval)
+    for evals in batch_evals:
+        t = t.observe(evals)
+
+    # Staggered partial-Lagrange RLC weights over the total column width:
+    # log2_ceil(total_width) extension challenges expanded to the eq-basis,
+    # allocated staggered across the rounds (round r consumes its K_r weights).
+    total_width = sum(int(rd.mle.shape[1]) for rd in rounds)
+    nbv = log2_ceil_usize(total_width)
+    if nbv == 0:
+        coeffs = jnp.ones(1, ef_dtype)
+    else:
+        samples = []
+        for _ in range(nbv):
+            t, challenge = sample_challenge(t, ef_dtype, ef_degree)
+            samples.append(challenge)
+        coeffs = partial_lagrange(jnp.stack(samples))
+    mle = batch_staggered([rd.mle for rd in rounds], coeffs)
+    codeword = batch_staggered([rd.codeword for rd in rounds], coeffs)
+    claim = batch_staggered(batch_evals, coeffs)
+
+    # Domain separation: bind the fold-round count (mirrors the reference).
+    t = t.observe(jnp.asarray(num_vars, bf_dtype))
+
+    # Interleaved sumcheck + pre-fold pair-leaf FRI fold, one variable per round.
+    raw_roots: list[Array] = []
+    bound_roots: list[Array] = []
+    fold_layers: list[Opening] = []
+    zero = jnp.zeros((), ef_dtype)
+    for i in range(num_vars):
+        # The sumcheck message (s(0), s(1)) for the variable bound this round
+        # (stack_point[-(i+1)]), from the running MLE under the running claim.
+        unbound = stack_point[: num_vars - i]
+        zero_mle = mle_fold(mle, zero)
+        rest = unbound[:-1]
+        zero_val = eval_mle(zero_mle, rest) if rest.shape[0] > 0 else zero_mle[0]
+        one_val = (claim - zero_val) / unbound[-1] + zero_val
+
+        # Commit the codeword's conjugate-pair leaves through the SP1 SMCS so the
+        # transcript binds the separator-bound root. Bit-reversed order pairs
+        # conjugates adjacently, so reshaping the base-field view into [n//2, *]
+        # rows lands each pair in one leaf.
+        n = codeword.shape[0]
+        leaves = jax.lax.bitcast_convert_type(codeword, bf_dtype).reshape(n // 2, -1)
+        bound_root, digest_layers = smcs.commit(leaves)
+        raw_roots.append(digest_layers[-1][0])
+        bound_roots.append(bound_root)
+        fold_layers.append((leaves, digest_layers))
+
+        t = t.observe(jnp.stack([zero_val, one_val]))
+        t = t.observe(bound_root)
+        t, beta = sample_challenge(t, ef_dtype, ef_degree)
+
+        codeword = code.fold(codeword, beta)
+        mle = mle_fold(mle, beta)
+        claim = zero_val + beta * one_val
+
+    # The residual codeword is the base-code encoding of the final claim (a
+    # constant); SP1 binds only its first element as the cleartext final poly.
+    final_poly = codeword[0]
+    t = t.observe(jnp.atleast_1d(final_poly))
+
+    # FRI query-phase proof-of-work grind (zorch#170). Even at pow_bits == 0 the
+    # canonical-zero witness advances the transcript (observe + squeeze), so the
+    # query positions depend on it.
+    t, pow_witness = t.grind(pow_bits)
+
+    # Query positions: one base challenge per query, masked to log2(block_len)
+    # canonical bits (SP1's sample_bits — the canonical value, not the Mont
+    # bitpattern).
+    block_len = code.block_len
+    log_n = log2_strict_usize(block_len)
+    t, raw = t.sample(num_queries)
+    mask = jnp.uint32((1 << log_n) - 1)
+    positions = (raw.astype(jnp.uint32) & mask).astype(jnp.int32)
+
+    # Each component matrix opened at the full positions; each fold layer's
+    # pair-leaf opened at the cumulatively halved positions.
+    component_openings = [
+        smcs.open_batch(positions, rd.codeword, rd.digest_layers) for rd in rounds
+    ]
+    layer_positions = code.layer_positions(positions, num_vars)
+    query_openings = [
+        smcs.open_batch(layer_positions[i], leaves, digest_layers)
+        for i, (leaves, digest_layers) in enumerate(fold_layers)
+    ]
+
+    proof = StackedOpenProof(
+        fri_raw_roots=jnp.stack(raw_roots),
+        fri_commitments=jnp.stack(bound_roots),
+        final_poly=final_poly,
+        pow_witness=pow_witness,
+        batch_evals=batch_evals,
+        component_openings=component_openings,
+        query_openings=query_openings,
+    )
+    return proof, t
+
+
+__all__ = ["StackedRound", "StackedOpenProof", "stacked_basefold_open"]

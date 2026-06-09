@@ -36,3 +36,57 @@ py_test(
         requirement("zk_dtypes"),
     ],
 )
+
+# SP1-schedule stacked BaseFold open (the open half of stage 5).
+py_library(
+    name = "open",
+    srcs = [
+        "__init__.py",
+        "open.py",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//sp1_zorch/commit:smcs",
+        "@zorch//zorch:transcript",
+        "@zorch//zorch/coding:reed_solomon",
+        "@zorch//zorch/pcs/basefold",
+        "@zorch//zorch/poly",
+        "@zorch//zorch/utils:bits",
+        requirement("jax"),
+        requirement("zk_dtypes"),
+    ],
+)
+
+py_test(
+    name = "open_test",
+    # enormous + manual: byte-matches the real fibonacci-scale open — RS-encode
+    # (2^23 FFT) plus per-round + 21 FRI fold-layer SMCS commits over millions of
+    # leaves. ~25 min on CPU because the open runs eagerly (no enclosing @jit, the
+    # same deferral as trace_commit), so the poseidon2/merkle commits pay eager
+    # dispatch. The fast path — wrap the commit phase in one @jit so CompositeOp
+    # fuses it — is gated on the jax pin carrying CompositeOp (jax#164), same as
+    # trace_commit; until then jit-wrapping it would blow the compile past the
+    # timeout. Tagged `manual` to stay out of the `//...` CI sweep — run on demand:
+    #   bazel test //sp1_zorch/jagged:open_test
+    # The sibling sumcheck half (prover_test) is the fast in-CI byte-match.
+    size = "enormous",
+    tags = ["manual"],
+    srcs = ["open_test.py"],
+    data = glob(["testdata/gpu_fibonacci/**"]) + [
+        "//sp1_zorch/zerocheck:shard_dense_fixture",
+    ],
+    deps = [
+        ":open",
+        "//sp1_zorch/commit:smcs",
+        "//sp1_zorch/poseidon2:koalabear16",
+        "@zorch//zorch:transcript",
+        "@zorch//zorch/coding:reed_solomon",
+        "@zorch//zorch/hash:compression",
+        "@zorch//zorch/hash:sponge",
+        "@zorch//zorch/hash/poseidon2",
+        requirement("absl_py"),
+        requirement("jax"),
+        requirement("numpy"),
+        requirement("zk_dtypes"),
+    ],
+)

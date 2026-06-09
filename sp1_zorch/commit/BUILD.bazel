@@ -18,9 +18,12 @@ py_library(
 
 py_test(
     name = "smcs_test",
-    # medium: merkle_commit composite runs the slow no-CompositeOp fallback
-    # under the pinned jax (>60s); back to small once jax#164 lands in the pin.
-    size = "medium",
+    # large: merkle_commit composite runs the slow no-CompositeOp fallback under
+    # the pinned jax. The b2a1582 pin's rolled Merkle reconstruct
+    # (fractalyze/zorch#182/#184) enlarges the cold-compile graph, tipping the CI
+    # runner past the medium (300s) ceiling (warm-local is ~136s). Back to small
+    # once jax#164 lands in the pin.
+    size = "large",
     srcs = ["smcs_test.py"],
     deps = [
         ":smcs",
