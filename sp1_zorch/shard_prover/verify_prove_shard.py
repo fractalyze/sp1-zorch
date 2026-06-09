@@ -2,8 +2,8 @@
 """rsp byte-match harness for the assembled prove_shard chain -- a runnable.
 
 Runs ``prove_shard_chain`` (the ``ProveChain`` of trace commit -> LogUp-GKR
--> zerocheck) over a real rsp dump and seals the composition against the
-reference:
+-> zerocheck -> jagged evaluation proof) over a real rsp dump and seals the
+composition against the reference:
 
 - the commitment the chain's ``TraceCommitRound`` computes must equal the
   dump's ``main_commit`` (``gpu_commitment.txt``);
@@ -12,12 +12,16 @@ reference:
   this one match transitively pins the whole composed stream -- preamble (vk,
   public values, commitment, chip metadata), the GKR leg, and the zerocheck
   rounds -- proving the Round wiring reproduces SP1's transcript.
+- the jagged eval's outer sumcheck claim must equal
+  ``phase4_sumcheck_claim``, sealing the eval stage's z_col sampling and
+  per-column claim assembly.
 
 Each stage's internals are gated by its own runnable
 (``commit:verify_trace_commit``, ``logup_gkr:verify_gkr_prove``,
-``zerocheck:verify_zerocheck``); this tool checks the composition, not each
-stage's math. The chain wiring itself is unit-tested against a synthetic
-reference in ``prove_shard_test``.
+``zerocheck:verify_zerocheck``, plus the eval stage's ``jagged:prover_test``
+/ ``jagged:open_test``); this tool checks the composition, not each stage's
+math. The chain wiring itself is unit-tested against a synthetic reference in
+``prove_shard_test``.
 
 Real-block data (~1.5 GB/shard) plus the GPU trace commit keep this a
 runnable, not a unit test. Needs a CUDA GPU and the same pins as

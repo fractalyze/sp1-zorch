@@ -192,12 +192,12 @@ class ProveShardChainTest(absltest.TestCase):
         carry = ShardCarry(main_region, prep_region, public_values)
         transcript = cheap_transcript(BF)
         msgs = []
-        for stage in list(chain.rounds):
+        for i, stage in enumerate(chain.rounds):
             carry, transcript, msg = stage(carry, transcript)
             msgs.append(msg)
-            if len(msgs) == 3:
+            if i == 2:  # after zerocheck, where the hand replay stops
                 cls.got_transcript = transcript
-        cls.carry, cls.msgs, cls.jagged = carry, msgs, msgs[3]
+        cls.carry, cls.msgs, cls.jagged = carry, msgs, msgs[-1]
         cls.chain = chain
         cls.main_region = main_region
         cls.prep_region = prep_region

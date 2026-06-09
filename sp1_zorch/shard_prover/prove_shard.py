@@ -20,7 +20,7 @@ import jax
 import jax.numpy as jnp
 from jax import Array
 from rw_constraints import Chip
-from zk_dtypes import efinfo
+from zk_dtypes import efinfo, koalabearx4_mont
 
 from sp1_zorch.commit.region import JaggedRegion
 from sp1_zorch.commit.smcs import SingleMatrixCommitmentScheme
@@ -258,7 +258,6 @@ class ShardJaggedEvalRound(Round):
             carry.zc_sumcheck_point is None
             or carry.commit_rounds is None
             or carry.gkr_chip_openings is None
-            or carry.gkr_eval_point is None
         ):
             raise ValueError(
                 "the jagged-eval stage needs the zerocheck point, committed "
@@ -267,32 +266,31 @@ class ShardJaggedEvalRound(Round):
             )
         main = carry.main_region
         openings = carry.gkr_chip_openings
-        # The jagged eval runs in the extension field — the per-chip GKR
-        # openings are EF — while the sumcheck points (z_row) are base-field
-        # per-round challenge lists, embedded up to EF where the eval needs it.
-        ef = next(iter(openings.values())).main.dtype
+        # The jagged eval runs in the extension field; the sumcheck points
+        # (z_row) are base-field per-round challenge lists, embedded up to EF
+        # where the eval needs them.
+        ef = koalabearx4_mont
 
         # Per-round (row/column counts, real per-column claims) in [prep, main]
-        # order — each chip's GKR opening is its columns' claims — plus each
-        # region's raw (unpadded) dense for the combined committed buffer D.
+        # order — each chip's GKR opening field is its columns' claims — plus
+        # each region's raw (unpadded) dense for the combined committed D.
         rc_rounds: list[Sequence[int]] = []
         cc_rounds: list[Sequence[int]] = []
         claims_rounds: list[Array] = []
         denses: list[Array] = []
-        if carry.prep_region is not None:
-            prep = carry.prep_region
-            rc_rounds.append(prep.row_counts)
-            cc_rounds.append(prep.column_counts)
+        prep = carry.prep_region
+        regions = ([(prep, "preprocessed")] if prep is not None else []) + [
+            (main, "main")
+        ]
+        for region, claim_field in regions:
+            rc_rounds.append(region.row_counts)
+            cc_rounds.append(region.column_counts)
             claims_rounds.append(
-                jnp.concatenate([openings[n].preprocessed for n in prep.chip_names])
+                jnp.concatenate(
+                    [getattr(openings[n], claim_field) for n in region.chip_names]
+                )
             )
-            denses.append(prep.dense[: prep.raw_size])
-        rc_rounds.append(main.row_counts)
-        cc_rounds.append(main.column_counts)
-        claims_rounds.append(
-            jnp.concatenate([openings[n].main for n in main.chip_names])
-        )
-        denses.append(main.dense[: main.raw_size])
+            denses.append(region.dense[: region.raw_size])
 
         col_heights, all_claims = assemble_columns(
             rc_rounds, cc_rounds, claims_rounds, dtype=ef
@@ -302,10 +300,7 @@ class ShardJaggedEvalRound(Round):
         # combined dense pads to a power of two.
         dense = jnp.concatenate(denses)
         target = 1 << log2_ceil_usize(dense.shape[0])
-        if target > dense.shape[0]:
-            dense = jnp.concatenate(
-                [dense, jnp.zeros((target - dense.shape[0],), dense.dtype)]
-            )
+        dense = jnp.pad(dense, (0, target - dense.shape[0]))
 
         # z_col is one EF challenge per column variable (SP1 samples it as
         # extension elements, not stacked base squeezes).
