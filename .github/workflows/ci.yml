@@ -48,11 +48,8 @@ jobs:
     runs-on: ${{ matrix.runs_on }}
     steps:
       - uses: actions/checkout@v4
-      - uses: bazel-contrib/setup-bazel@0.9.1
-        with:
-          bazelisk-cache: true
-          disk-cache: ${{ github.workflow }}-${{ matrix.backend }}
-          repository-cache: true
+      # No setup-bazel: it's for ephemeral runners and clobbers the box's
+      # ~/.bazelrc; on self-hosted runners bazel/caches already persist.
       # --test_env selects the backend per leg, overriding the repo default
       # (.bazelrc pins JAX_PLATFORMS=cpu). The GPU leg pins cuda — needed for the
       # SP1 FFI byte-match tests, which require a CUDA GPU.
