@@ -14,8 +14,10 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
+from functools import partial
 from typing import Any
 
+import jax
 import jax.numpy as jnp
 from jax import Array
 from rw_constraints import Chip
@@ -35,6 +37,21 @@ from zorch.round import ProveChain, Round
 from zorch.transcript import Transcript
 
 
+# Pytree: the two regions (themselves pytrees), public values, and written
+# stage outputs are array leaves; unwritten Optional fields are None (an empty
+# subtree). Lets the carry cross the chain's @jit boundary as one donatable
+# argument.
+@partial(
+    jax.tree_util.register_dataclass,
+    data_fields=[
+        "main_region",
+        "prep_region",
+        "public_values",
+        "gkr_eval_point",
+        "gkr_chip_openings",
+    ],
+    meta_fields=[],
+)
 @dataclass(frozen=True)
 class ShardCarry:
     """What flows between stages: the committed regions plus each stage's

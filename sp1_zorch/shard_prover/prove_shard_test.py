@@ -241,6 +241,61 @@ class ProveShardChainTest(absltest.TestCase):
         )
         self.assertIn("func", lowered.as_text())
 
+    def test_jaggedregion_is_a_pytree_with_only_dense_as_leaf(self) -> None:
+        """JaggedRegion registers ``dense`` as its sole array leaf; the layout
+        counts are static aux data, so a region crosses a ``@jit`` boundary
+        without leaking the count tuples into the traced graph."""
+        leaves, treedef = jax.tree_util.tree_flatten(self.main_region)
+        self.assertLen(leaves, 1)
+        self.assertIs(leaves[0], self.main_region.dense)
+        # The layout counts ride in the treedef as static aux, not as leaves.
+        rebuilt = jax.tree_util.tree_unflatten(treedef, leaves)
+        self.assertIs(rebuilt.dense, self.main_region.dense)
+        self.assertEqual(rebuilt.row_counts, self.main_region.row_counts)
+
+    def test_shardcarry_flattens_to_its_array_buffers(self) -> None:
+        """ShardCarry is a pytree: its leaves are exactly the region dense
+        buffers and the public values — the ``None`` stage-output fields
+        contribute no leaves — so the whole carry crosses a ``@jit`` boundary
+        as one argument."""
+        carry = ShardCarry(self.main_region, self.prep_region, self.public_values)
+        leaves = jax.tree_util.tree_leaves(carry)
+        self.assertEqual(
+            [id(x) for x in leaves],
+            [
+                id(self.main_region.dense),
+                id(self.prep_region.dense),
+                id(self.public_values),
+            ],
+        )
+
+    def test_carry_crosses_jit_as_a_donated_argument(self) -> None:
+        """With ShardCarry a pytree, the chain runs under a single ``@jit``
+        that takes the carry as a *donated* argument (vs the closed-over carry
+        in ``test_chain_lowers_under_single_jit``), letting XLA reuse its input
+        buffers. Stops at StableHLO lowering: CPU can't execute field dots
+        (fractalyze/jax#168), GPU owns backend compile."""
+
+        def run(carry, transcript):
+            _, out_transcript, _ = self.chain(carry, transcript)
+            return out_transcript
+
+        carry = ShardCarry(self.main_region, self.prep_region, self.public_values)
+        lowered = jax.jit(run, donate_argnums=0).lower(carry, cheap_transcript(BF))
+        self.assertIn("func", lowered.as_text())
+
+    def test_populated_carry_flattens_to_array_leaves_only(self) -> None:
+        """The carry threaded out of the chain holds the GKR stage outputs —
+        the evaluation point and the per-chip ChipEvaluation openings — yet
+        still flattens to array leaves only. Every carry-component type
+        (region, opening) is a pytree, so a mid-chain populated carry can
+        cross a ``@jit`` boundary too, not just the initial one."""
+        self.assertIsNotNone(self.carry.gkr_chip_openings)
+        leaves = jax.tree_util.tree_leaves(self.carry)
+        self.assertNotEmpty(leaves)
+        for leaf in leaves:
+            self.assertIsInstance(leaf, jax.Array)
+
     def test_carry_threads_stage_outputs(self) -> None:
         _assert_bytes_equal(
             self.carry.gkr_eval_point, self.want_gkr.eval_point, "gkr_eval_point"
