@@ -12,14 +12,23 @@ prover by ``(num_interaction_variables, num_row_variables)``. The bridge:
 two) and ``rv = row_variables``.
 
 Times the whole dense prove (trace gen + the per-layer sumcheck chain) traced
-into one fused ``@jit`` program via ``prove_gkr_jitted`` — the same fused path
-zorch's ``bench_logup_gkr`` measures, so the launch-bound eager dispatch wall
+into one fused ``@jit`` program, so the launch-bound eager dispatch wall
 collapses to a single compilation. Not eager op-by-op, not a single layer
 reduction. The ``lower`` thunk lets zkbench split the phase grid: compile
 (``compile_time`` / ``compile_memory``) vs runtime (``latency`` / ``memory``).
 
+The Fiat-Shamir / MLE field is koalabearx4 — the production workload: real
+logup denominators are extension-field, which is where the "XLA materializes
+EF intermediates to HBM" register pressure this bench exists to measure
+actually lives. The fused prove is built here rather than reusing ``zorch``'s
+``prove_gkr_jitted``, which hardcodes a base-field transcript; parameterizing
+that upstream (and moving this bench onto the marked poseidon2 transcript) is
+the follow-up.
+
 A ``py_binary`` (manual ``bazel run``), not a ``py_test``: the blocks segfault
-under ``@jit`` on the ZKX CPU backend, so the bench is GPU-only.
+under ``@jit`` on the ZKX CPU backend, so the bench is GPU-only. It also needs
+a ZKX plugin that round-trips >int64 field constants through HLO text
+(fractalyze/zkx#569).
 
     bazel run //sp1_zorch/logup_gkr:bench_sp1_logup_gkr -- --row-variables 16 18 20
 """
@@ -27,47 +36,56 @@ under ``@jit`` on the ZKX CPU backend, so the bench is GPU-only.
 import argparse
 import functools
 from collections.abc import Iterable, Sequence
-from typing import Any
 
+import jax
 import jax.numpy as jnp
 import numpy as np
+import zk_dtypes
 from jax import Array
-from zk_dtypes import koalabear_mont as F
 from zkbench import BenchmarkConfig, BenchmarkOp, JaxBenchmark
 
-from zorch.logup_gkr.testing import prove_gkr_jitted
+from zorch.logup_gkr.circuit import GkrLayer
+from zorch.logup_gkr.testing import prove_gkr_with_transcript
+from zorch.testkit.transcript import cheap_transcript
+
+# The production Fiat-Shamir / MLE field: real logup denominators are
+# extension-field (koalabearx4).
+EF = zk_dtypes.koalabearx4_mont
 
 
-def _rand_field(seed: int, shape: Sequence[int], dtype: Any) -> Array:
+def _rand_field(seed: int, shape: Sequence[int]) -> Array:
     """Inlined copy of zorch's ``testkit.random_field.rand_field`` — that target
     is visible only to ``//zorch:__subpackages__``, so an external consumer can't
     dep it. Draw canonical ints in ``[0, 2**30)`` (< every supported prime); the
-    field dtype Montgomery-encodes them on cast."""
+    field dtype Montgomery-encodes them on cast (extension fields fill the
+    leading limb, the rest stay zero — enough to exercise EF arithmetic)."""
     ints = np.random.default_rng(seed).integers(0, 1 << 30, size=shape, dtype=np.int64)
-    return jnp.array(ints, dtype=dtype)
+    return jnp.array(ints, dtype=EF)
 
 
-def _first_layer_mles(
-    seed: int, iv: int, rv: int
-) -> tuple[Array, Array, Array, Array]:
+def _first_layer_mles(seed: int, iv: int, rv: int) -> tuple[Array, Array, Array, Array]:
     """The four random dense first-layer MLEs (n0, n1, d0, d1), ``2**(iv + rv)``
-    wide; four distinct seeds so they don't alias. Montgomery field to match
-    zorch's ``bench_logup_gkr``. Fixed-length so the arity flowing into
-    ``prove_gkr_jitted`` is checkable, not a star-tuple."""
+    wide; four distinct seeds so they don't alias. Fixed-length so the arity
+    flowing into the prove is checkable, not a star-tuple."""
     width = 1 << (iv + rv)
     return (
-        _rand_field(seed, (width,), F),
-        _rand_field(seed + 1, (width,), F),
-        _rand_field(seed + 2, (width,), F),
-        _rand_field(seed + 3, (width,), F),
+        _rand_field(seed, (width,)),
+        _rand_field(seed + 1, (width,)),
+        _rand_field(seed + 2, (width,)),
+        _rand_field(seed + 3, (width,)),
     )
 
 
-def _num_challenges(iv: int, rv: int) -> int:
-    """Upper bound on Fiat-Shamir draws: ``iv + 1`` for the output point, then per
-    proved layer at most ``lam + (iv + rv) sumcheck rounds + 1`` reduction.
-    StubTranscript reads only the prefix it needs, so over-estimating is free."""
-    return (iv + 1) + rv * (iv + rv + 2)
+@functools.partial(jax.jit, static_argnums=(4,))
+def _prove(n0: Array, n1: Array, d0: Array, d1: Array, iv: int) -> Array:
+    """The whole dense GKR prove fused into one program. The four first-layer
+    MLEs are the traced inputs; `iv` (static) fixes the pyramid height, hence
+    the unrolled layer count. Returns the last proved layer's round
+    polynomials — the tail of the sequential carry, so it transitively forces
+    the whole prove."""
+    first = GkrLayer(n0, n1, d0, d1, num_interaction_variables=iv)
+    proofs = prove_gkr_with_transcript(first, cheap_transcript(EF))[2]
+    return proofs[-1].round_polys
 
 
 class Sp1LogupGkrBenchmark(JaxBenchmark):
@@ -105,18 +123,16 @@ class Sp1LogupGkrBenchmark(JaxBenchmark):
         # SP1 pads interactions to a power of two before counting interaction vars.
         iv = (args.num_interactions - 1).bit_length()
         for rv in args.row_variables:
-            mles = _first_layer_mles(args.seed, iv, rv)
-            challenges = _rand_field(args.seed + 99, (_num_challenges(iv, rv),), F)
-            # iv is static (fixes the pyramid height); the four MLEs + challenges
-            # are the traced inputs, matching prove_gkr_jitted's signature.
-            op_args = (*mles, challenges, iv)
+            # iv is static (fixes the pyramid height); the four MLEs are the
+            # traced inputs.
+            op_args = (*_first_layer_mles(args.seed, iv, rv), iv)
             yield BenchmarkOp(
                 # Op id matches SP1's logup_gkr_zkbench so the dashboard joins them.
                 name=f"logup_gkr_r{rv}_i{args.num_interactions}_total",
-                fn=functools.partial(prove_gkr_jitted, *op_args),
-                lower=functools.partial(prove_gkr_jitted.lower, *op_args),
+                fn=functools.partial(_prove, *op_args),
+                lower=functools.partial(_prove.lower, *op_args),
                 metadata={
-                    "field": "koalabear",
+                    "field": "koalabearx4",
                     "interaction_variables": str(iv),
                     "row_variables": str(rv),
                     "num_interactions": str(args.num_interactions),
