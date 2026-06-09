@@ -24,11 +24,15 @@ bazel_dep(name = "zorch", version = "0.0.0")
 git_override(
     module_name = "zorch",
     remote = "https://github.com/fractalyze/zorch.git",
-    # main @ traced-threshold VirtualGeq (fractalyze/zorch#183) — lets the
-    # zerocheck round indicator thread a lax.scan carry. Also carries the
-    # runtime live-width bound on constraint_eval (#175) and the
-    # scalar-explicit combine seam (#172).
-    commit = "82ad9c6d726354626894067b9571c5d71d81b6f7",
+    # main @ BaseFold batch open + transcript PoW grind. The jagged eval
+    # proof's stacked BaseFold open (sp1_zorch/jagged) needs:
+    #   - BasefoldProver.open_batch over the pre-fold pair-leaf schedule
+    #     (fractalyze/zorch#191) — prep+main reduced to one batched FRI.
+    #   - GrindingTranscript.grind / check_witness for the FRI query-phase
+    #     proof-of-work (fractalyze/zorch#198, closing #170).
+    # Built on the bit-reversed foldable code (#173) and the traced-threshold
+    # VirtualGeq scan carry (#183).
+    commit = "b2a15826abc5036517415a8dd8b5ffc700dee75f",
 )
 
 python = use_extension("@rules_python//python/extensions:python.bzl", "python")
