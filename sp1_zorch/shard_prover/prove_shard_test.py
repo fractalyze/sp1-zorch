@@ -184,28 +184,40 @@ class ProveShardChainTest(absltest.TestCase):
             max_log_row_count=_MAX_LOG_ROW_COUNT,
             open_num_queries=_OPEN_NUM_QUERIES,
         )
-        # The jagged-eval stage can't execute eagerly on CPU (its EF->PF
-        # convert hits jax#168), so run only the CPU-executable prefix — trace
-        # commit, LogUp-GKR, zerocheck — for the byte-match tests. The full
-        # four-stage chain is covered by the lowering smoke below, and the
-        # open's byte-match is the GPU verify_prove_shard harness's job.
+        # The full four-stage chain runs eagerly on CPU: the jagged-eval
+        # stage's base->extension embeds keep its EF->PF converts off the CPU
+        # path (jax#168), so the open executes. The hand replay stops at
+        # zerocheck, so snapshot the transcript there for the in-sync check;
+        # the open's SP1 byte-match is the GPU verify_prove_shard harness's job.
         carry = ShardCarry(main_region, prep_region, public_values)
         transcript = cheap_transcript(BF)
         msgs = []
-        for stage in list(chain.rounds)[:3]:
+        for stage in list(chain.rounds):
             carry, transcript, msg = stage(carry, transcript)
             msgs.append(msg)
-        cls.carry, cls.got_transcript, cls.msgs = carry, transcript, msgs
+            if len(msgs) == 3:
+                cls.got_transcript = transcript
+        cls.carry, cls.msgs, cls.jagged = carry, msgs, msgs[3]
         cls.chain = chain
         cls.main_region = main_region
         cls.prep_region = prep_region
         cls.public_values = public_values
 
-    def test_full_chain_has_four_stages(self) -> None:
-        self.assertLen(list(self.chain.rounds), 4)
+    def test_chain_emits_one_message_per_stage(self) -> None:
+        self.assertLen(self.msgs, 4)  # commit, LogUp-GKR, zerocheck, jagged eval
 
-    def test_cpu_executable_prefix_emits_one_message_per_stage(self) -> None:
-        self.assertLen(self.msgs, 3)  # commit, LogUp-GKR, zerocheck
+    def test_jagged_eval_stage_opens_each_committed_round(self) -> None:
+        """The fourth stage runs the outer/inner jagged sumcheck to D(z_final)
+        and the stacked BaseFold open over the [prep, main] committed rounds.
+        The open exposes one batch-eval set and one component opening per
+        committed round; SP1 byte-correctness is the GPU verify_prove_shard
+        harness's job, so here we pin the executed shape."""
+        msg = self.jagged
+        self.assertEqual(msg.eval.dense_eval.shape, ())  # scalar D(z_final)
+        n_rounds = len(self.carry.commit_rounds)
+        self.assertLen(msg.open.batch_evals, n_rounds)
+        self.assertLen(msg.open.component_openings, n_rounds)
+        self.assertNotEmpty(msg.open.query_openings)  # one per FRI fold layer
 
     def test_commitment_message_matches(self) -> None:
         _assert_bytes_equal(self.msgs[0], self.want_commitment, "commitment")
