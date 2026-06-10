@@ -129,7 +129,9 @@ py_binary(
         "@zorch//zorch/hash/poseidon2",
         requirement("absl_py"),
         requirement("jax"),
+        requirement("jax_cuda12_plugin"),
         requirement("zk_dtypes"),
+        requirement("zkx_cuda_pjrt"),
     ],
 )
 
