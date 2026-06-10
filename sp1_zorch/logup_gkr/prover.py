@@ -182,12 +182,19 @@ def prove_logup_gkr(
     num_row_variables: int,
     pow_bits: int = 0,
     witness: Array | None = None,
+    jit: bool = False,
 ) -> tuple[Transcript, LogupGkrProof]:
     """Run the LogUp-GKR stage on a transcript positioned after the shard
     preamble (vk, public values, main commitment, chip metadata).
 
     Returns the advanced transcript and the proof; the caller opens the
     traces at ``proof.eval_point``.
+
+    ``jit`` wraps each layer's prove in ``jax.jit`` (see
+    ``JaggedGkrLayerRound``). Beyond caching, the jit boundary is what keeps
+    the ``zorch.sumcheck`` composite intact for the vendor's register-resident
+    emitter -- eager dispatch decomposes it. Output is byte-identical either
+    way.
     """
     bf_dtype = main_region.dense.dtype
 
@@ -240,7 +247,8 @@ def prove_logup_gkr(
     # each round on demand and releases it once proved, so at most one layer
     # of the pyramid stays live -- the planes sum to gigabytes at shard scale.
     chain = ProveChain(
-        JaggedGkrLayerRound(layers.pop(), _EF_LIMBS) for _ in range(len(layers))
+        JaggedGkrLayerRound(layers.pop(), _EF_LIMBS, jit=jit)
+        for _ in range(len(layers))
     )
     (_, _, eval_point), transcript, round_proofs = chain(
         (num_eval, den_eval, z1), transcript

@@ -8,6 +8,7 @@ zorch jagged verifier dual replays -- plus the SP1 floor handling and the
 beta-count rule.
 """
 
+from dataclasses import fields
 from types import SimpleNamespace
 
 import jax.numpy as jnp
@@ -125,7 +126,7 @@ class ExtractSp1OutputsTest(absltest.TestCase):
 
 
 class ProveLogupGkrTest(absltest.TestCase):
-    def _prove(self):
+    def _prove(self, *, jit: bool = False):
         main_a, main_b = _main(24), _main(4, offset=100)
         gkr_chips = [
             GkrChip("A", (_interaction(0, 1),)),
@@ -140,6 +141,7 @@ class ProveLogupGkrTest(absltest.TestCase):
             transcript,
             num_betas=3,
             num_row_variables=4,
+            jit=jit,
         )
         return proof
 
@@ -181,6 +183,35 @@ class ProveLogupGkrTest(absltest.TestCase):
         self.assertTrue(bool(ok))
         self.assertTrue(bool(jnp.all(point == proof.eval_point)))
         del num_eval, den_eval
+
+    def test_jit_prove_matches_eager(self) -> None:
+        # jit=True must be a pure dispatch change: the whole proof stream
+        # byte-identical to the eager prove. The cheap transcript keeps the
+        # layers unmarked -- compiling the marked `zorch.sumcheck` composite
+        # is a multi-minute XLA CPU compile, and jit(marked) parity already
+        # follows from zorch's JaggedGkrLayerRoundJitTest composed with its
+        # marked-vs-plain coverage.
+        eager = self._prove()
+        jitted = self._prove(jit=True)
+        self.assertTrue(bool(jnp.all(eager.eval_point == jitted.eval_point)))
+        self.assertTrue(
+            bool(
+                jnp.all(
+                    eager.circuit_output.numerator == jitted.circuit_output.numerator
+                )
+            )
+        )
+        self.assertEqual(len(eager.round_proofs), len(jitted.round_proofs))
+        for i, (e, j) in enumerate(zip(eager.round_proofs, jitted.round_proofs)):
+            for f in fields(e):
+                self.assertTrue(
+                    bool(jnp.all(getattr(e, f.name) == getattr(j, f.name))),
+                    f"round_proofs[{i}].{f.name} diverged under jit",
+                )
+        for name, ev in eager.chip_openings.items():
+            self.assertTrue(
+                bool(jnp.all(ev.main == jitted.chip_openings[name].main))
+            )
 
     def test_round_claims_recorded_per_layer(self) -> None:
         proof = self._prove()
