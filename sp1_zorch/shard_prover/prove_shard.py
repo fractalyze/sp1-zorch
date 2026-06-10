@@ -116,17 +116,19 @@ class TraceCommitRound(Round):
         log_blowup: int,
         vk: MachineVerifyingKey,
         chip_metadata: Array,
+        jit: bool = False,
     ) -> None:
         self._smcs = smcs
         self._log_blowup = log_blowup
         self._vk = vk
         self._chip_metadata = chip_metadata
+        self._jit = jit
 
     def __call__(
         self, carry: ShardCarry, transcript: Transcript
     ) -> tuple[ShardCarry, Transcript, Array]:
         bound, main_data = commit_region(
-            carry.main_region, self._smcs, log_blowup=self._log_blowup
+            carry.main_region, self._smcs, log_blowup=self._log_blowup, jit=self._jit
         )
         transcript = self._vk.observe_into(transcript)
         transcript = transcript.observe(carry.public_values)
@@ -138,6 +140,9 @@ class TraceCommitRound(Round):
         # is [prep, main], matching SP1's round_evaluation_claims.
         commit_data = []
         if carry.prep_region is not None:
+            # The prep region stays eager regardless of the knob: it is far
+            # below the main region's memory scale, and its different shape
+            # would cost a second full-pipeline compile for no benefit.
             _, prep_data = commit_region(
                 carry.prep_region, self._smcs, log_blowup=self._log_blowup
             )
@@ -360,14 +365,22 @@ def prove_shard_chain(
     open_pow_bits: int = 0,
     pow_bits: int = 0,
     witness: Array | None = None,
+    commit_jit: bool = False,
 ) -> ProveChain:
     """The SP1 shard chain. One definition for the stage wiring so the
     benchmark, the byte-match runnables, and proof assembly cannot drift
-    on it."""
+    on it.
+
+    ``commit_jit`` runs the main-region trace commit as one @jit zone —
+    required at rsp scale (see ``sp1_zorch.commit.trace_commit``)."""
     return ProveChain(
         [
             TraceCommitRound(
-                smcs, log_blowup=log_blowup, vk=vk, chip_metadata=chip_metadata
+                smcs,
+                log_blowup=log_blowup,
+                vk=vk,
+                chip_metadata=chip_metadata,
+                jit=commit_jit,
             ),
             LogupGkrRound(
                 gkr_chips,

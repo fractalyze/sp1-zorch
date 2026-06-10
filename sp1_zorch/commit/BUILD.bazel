@@ -93,8 +93,8 @@ py_test(
 
 py_test(
     name = "trace_commit_test",
-    # medium: poseidon2/merkle composites run the slow no-CompositeOp fallback
-    # under the pinned jax (same reason as smcs_test).
+    # medium: poseidon2/merkle composite hashing dominates (same reason as
+    # smcs_test), plus the jit-vs-eager test compiles the fused pipeline.
     size = "medium",
     srcs = ["trace_commit_test.py"],
     deps = [

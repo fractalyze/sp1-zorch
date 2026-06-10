@@ -131,6 +131,8 @@ def main(argv) -> None:
         open_num_queries=_OPEN_NUM_QUERIES.value,
         open_pow_bits=_OPEN_POW_BITS.value,
         witness=jnp.array(int(gkr_state["witness"]), F),
+        # Required at rsp scale (see sp1_zorch.commit.trace_commit).
+        commit_jit=True,
     )
 
     t0 = time.monotonic()
