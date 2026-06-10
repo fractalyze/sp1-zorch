@@ -126,6 +126,13 @@ py_test(
     ],
 )
 
+# Host-bytes ctypes binding for SP1's shard verifier (no JAX involvement).
+py_library(
+    name = "sp1_ffi",
+    srcs = ["sp1_ffi.py"],
+    visibility = ["//visibility:public"],
+)
+
 py_binary(
     name = "verify_prove_shard",
     srcs = ["verify_prove_shard.py"],
@@ -137,6 +144,7 @@ py_binary(
         ":prove_shard",
         ":replay",
         ":shard_prover",
+        ":sp1_ffi",
         "//sp1_zorch/commit:smcs",
         "//sp1_zorch/logup_gkr",
         "//sp1_zorch/poseidon2:koalabear16",
