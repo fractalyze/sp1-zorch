@@ -179,6 +179,13 @@ class StackedOpenByteMatchTest(absltest.TestCase):
     def test_fri_commitments(self):
         self._assert_match(self.proof.fri_commitments, _out("fri_commitments.npy"), "fri_commitments")
 
+    def test_univariate_messages(self):
+        self._assert_match(
+            self.proof.univariate_messages,
+            _out("univariate_messages.npy"),
+            "univariate_messages",
+        )
+
     def test_final_poly(self):
         self._assert_match(self.proof.final_poly, _out("final_poly.npy"), "final_poly")
 

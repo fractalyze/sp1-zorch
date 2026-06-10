@@ -16,6 +16,12 @@ composition against the reference:
   ``phase4_sumcheck_claim``, sealing the eval stage's z_col sampling and
   per-column claim assembly.
 
+With ``--ffi_verify`` the tool additionally assembles the bincode wire
+(``encode_vk`` + ``encode_shard_proof``) and runs SP1's own verifier over it
+via the ``sp1_verify_shard`` FFI (``SP1_JAX_FFI_LIB`` must point at
+``libsp1_gpu_jax_ffi.so``) — the end-to-end acceptance gate of
+fractalyze/sp1-zorch#21.
+
 Each stage's internals are gated by its own runnable
 (``commit:verify_trace_commit``, ``logup_gkr:verify_gkr_prove``,
 ``zerocheck:verify_zerocheck``, plus the eval stage's ``jagged:prover_test``
@@ -64,6 +70,8 @@ from sp1_zorch.shard_prover.replay import (
     fresh_transcript,
     shard_regions,
 )
+from sp1_zorch.shard_prover.serialize import encode_shard_proof, encode_vk
+from sp1_zorch.shard_prover.sp1_ffi import sp1_verify_shard
 from zorch.hash.compression import Compression, CompressionParams
 from zorch.hash.poseidon2.poseidon2 import Poseidon2
 from zorch.hash.sponge import Sponge, SpongeParams
@@ -83,6 +91,11 @@ _OPEN_NUM_QUERIES = flags.DEFINE_integer(
 )
 _OPEN_POW_BITS = flags.DEFINE_integer(
     "open_pow_bits", 0, "BaseFold FRI query-phase grind bits (open phase)."
+)
+_FFI_VERIFY = flags.DEFINE_bool(
+    "ffi_verify",
+    False,
+    "Assemble the bincode wire and verify it with SP1's sp1_verify_shard FFI.",
 )
 
 
@@ -121,10 +134,10 @@ def main(argv) -> None:
     )
 
     t0 = time.monotonic()
-    _, _, msgs = chain(
+    carry, _, msgs = chain(
         ShardCarry(main_region, prep_region, main.public_values), fresh_transcript()
     )
-    commitment, _, zc, jagged = msgs
+    commitment, gkr, zc, jagged = msgs
     print(f"chain run: {time.monotonic() - t0:.1f}s")
 
     # The trace commit the chain computed must equal SP1's dumped commitment;
@@ -165,6 +178,31 @@ def main(argv) -> None:
     if not ok:
         sys.exit(1)
     print("prove_shard chain byte-match: ALL OK")
+
+    if _FFI_VERIFY.value:
+        t0 = time.monotonic()
+        vk_bytes = encode_vk(shard.vk)
+        proof_bytes = encode_shard_proof(
+            carry,
+            commitment,
+            gkr,
+            zc,
+            jagged,
+            max_log_row_count=MAX_LOG_ROW_COUNT,
+        )
+        print(
+            f"bincode: vk {len(vk_bytes)} B, proof {len(proof_bytes)} B "
+            f"({time.monotonic() - t0:.1f}s)"
+        )
+        sp1_verify_shard(
+            vk_bytes,
+            proof_bytes,
+            log_blowup=_LOG_BLOWUP,
+            num_queries=_OPEN_NUM_QUERIES.value,
+            pow_bits=_OPEN_POW_BITS.value,
+            gkr_pow_bits=_GKR_POW_BITS.value,
+        )
+        print("sp1_verify_shard: ACCEPTED")
 
 
 if __name__ == "__main__":
