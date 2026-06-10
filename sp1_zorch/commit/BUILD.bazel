@@ -155,3 +155,25 @@ py_binary(
         requirement("zkx_cuda_pjrt"),
     ],
 )
+
+# GPU-only manual tool (bazel run), not a CI test — see the module docstring.
+#   bazel run //sp1_zorch/commit:bench_trace_commit -- --shard_dir=.../shard1
+py_binary(
+    name = "bench_trace_commit",
+    srcs = ["bench_trace_commit.py"],
+    deps = [
+        ":region",
+        ":smcs",
+        ":trace_commit",
+        "//sp1_zorch/poseidon2:koalabear16",
+        "//sp1_zorch/shard_prover",
+        "@zorch//zorch/coding:reed_solomon",
+        "@zorch//zorch/hash:compression",
+        "@zorch//zorch/hash:sponge",
+        "@zorch//zorch/hash/poseidon2",
+        requirement("jax"),
+        requirement("jax_cuda12_plugin"),
+        requirement("zkbench"),
+        requirement("zkx_cuda_pjrt"),
+    ],
+)
