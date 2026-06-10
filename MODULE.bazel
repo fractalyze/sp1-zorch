@@ -24,15 +24,13 @@ bazel_dep(name = "zorch", version = "0.0.0")
 git_override(
     module_name = "zorch",
     remote = "https://github.com/fractalyze/zorch.git",
-    # main @ BaseFold batch open + transcript PoW grind. The jagged eval
-    # proof's stacked BaseFold open (sp1_zorch/jagged) needs:
-    #   - BasefoldProver.open_batch over the pre-fold pair-leaf schedule
-    #     (fractalyze/zorch#191) — prep+main reduced to one batched FRI.
-    #   - GrindingTranscript.grind / check_witness for the FRI query-phase
-    #     proof-of-work (fractalyze/zorch#198, closing #170).
-    # Built on the bit-reversed foldable code (#173) and the traced-threshold
-    # VirtualGeq scan carry (#183).
-    commit = "b2a15826abc5036517415a8dd8b5ffc700dee75f",
+    # main @ jagged GKR per-layer jit + marker result-tuple contract. The
+    # logup-gkr bench's jit'd round chain (sp1_zorch/logup_gkr) needs:
+    #   - opt-in per-layer jit on JaggedGkrLayerRound (fractalyze/zorch#206)
+    #     so each layer compiles once and is reused across iterations.
+    #   - the jagged zorch.sumcheck marker's result tuple aligned with the
+    #     zkx recognizer contract (fractalyze/zorch#210).
+    commit = "76ea58ca54d880930d117ca1e1d60c2b6c2d3bf9",
 )
 
 python = use_extension("@rules_python//python/extensions:python.bzl", "python")

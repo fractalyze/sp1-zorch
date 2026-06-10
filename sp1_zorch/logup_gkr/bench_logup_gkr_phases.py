@@ -192,13 +192,18 @@ class LogupGkrPhasesBenchmark(JaxBenchmark):
             carry = (eval_mle(output.numerator, z1), eval_mle(output.denominator, z1))
             chain_entry = transcript
 
-            def _rounds_fn():
-                stack = list(layers)
-                chain = ProveChain(
-                    JaggedGkrLayerRound(stack.pop(), _EF_LIMBS)
-                    for _ in range(len(stack))
-                )
-                return chain((*carry, z1), chain_entry)
+            # Build the jitted rounds once (a ProveChain over a list is
+            # re-callable): warm calls dispatch each round's cached per-layer
+            # executable, and eager dispatch would decompose the
+            # `zorch.sumcheck` composite, bypassing the vendor emitter. The
+            # pyramid stays resident either way (see module docstring).
+            chain = ProveChain(
+                [
+                    JaggedGkrLayerRound(layer, _EF_LIMBS, jit=True)
+                    for layer in reversed(layers)
+                ]
+            )
+            _rounds_fn = functools.partial(chain, (*carry, z1), chain_entry)
 
         if need_chain:
             (_, _, eval_point), open_entry, round_proofs = _rounds_fn()
@@ -287,6 +292,11 @@ class LogupGkrPhasesBenchmark(JaxBenchmark):
                     num_row_variables=num_row_variables,
                     pow_bits=_GKR_POW_BITS,
                     witness=witness,
+                    # The real prove rebuilds its rounds per call (lazy layer
+                    # release is load-bearing), so unlike `gkr_rounds` above,
+                    # warm `total` iterations re-trace each layer; jit still
+                    # keeps the composite intact for the vendor emitter.
+                    jit=True,
                 ),
             )
 
