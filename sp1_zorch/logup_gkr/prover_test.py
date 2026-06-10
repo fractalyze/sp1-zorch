@@ -174,9 +174,7 @@ class ProveLogupGkrTest(absltest.TestCase):
         eq_z1 = expand_eq_to_hypercube(z1, jnp.ones((), EF))
         carry = (jnp.sum(num * eq_z1), jnp.sum(den * eq_z1), z1)
 
-        chain = VerifyChain(
-            [VerifierRound(_EF_LIMBS) for _ in proof.round_proofs]
-        )
+        chain = VerifyChain([VerifierRound(_EF_LIMBS) for _ in proof.round_proofs])
         (num_eval, den_eval, point), _, ok = chain(
             carry, proof.round_proofs, transcript
         )
@@ -209,9 +207,18 @@ class ProveLogupGkrTest(absltest.TestCase):
                     f"round_proofs[{i}].{f.name} diverged under jit",
                 )
         for name, ev in eager.chip_openings.items():
-            self.assertTrue(
-                bool(jnp.all(ev.main == jitted.chip_openings[name].main))
-            )
+            self.assertTrue(bool(jnp.all(ev.main == jitted.chip_openings[name].main)))
+
+    def test_layer_points_retained_per_layer(self) -> None:
+        proof = self._prove()
+        n = len(proof.round_proofs)
+        self.assertEqual(len(proof.layer_points), n)
+        # Each layer binds one more variable than the one before, and the
+        # carry's eval point appends the child-selector bit to the layer
+        # point — so the last retained point is the final point's prefix.
+        for i, point in enumerate(proof.layer_points):
+            self.assertEqual(point.shape[0], proof.eval_point.shape[0] - n + i)
+        self.assertTrue(bool(jnp.all(proof.layer_points[-1] == proof.eval_point[:-1])))
 
     def test_round_claims_recorded_per_layer(self) -> None:
         proof = self._prove()

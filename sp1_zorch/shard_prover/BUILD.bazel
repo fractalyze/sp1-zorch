@@ -11,6 +11,9 @@ py_library(
         "types.py",
     ],
     visibility = ["//visibility:public"],
+    # serialize.py's jagged imports are TYPE_CHECKING-only by design — adding
+    # //sp1_zorch/jagged deps here swaps consumers' jax wheel via pip-hub
+    # sys.path shadowing (#60).
     deps = [
         requirement("jax"),
         requirement("numpy"),
@@ -108,9 +111,15 @@ py_test(
     size = "small",
     srcs = ["serialize_test.py"],
     deps = [
+        ":prove_shard",
         ":shard_prover",
+        "//sp1_zorch/commit:region",
+        "//sp1_zorch/jagged:open",
+        "//sp1_zorch/jagged:prover",
         "//sp1_zorch/logup_gkr",
+        "//sp1_zorch/zerocheck",
         "@zorch//zorch/logup_gkr",
+        "@zorch//zorch/sumcheck",
         requirement("absl_py"),
         requirement("jax"),
         requirement("zk_dtypes"),
