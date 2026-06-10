@@ -2,21 +2,17 @@
 """SP1 trace commit: stacked RS-encode of a jagged region + SMCS commit.
 
 The dense buffer becomes one ``[S, K]`` stacked MLE whose columns are
-RS-encoded (zorch ``ReedSolomon``) into a ``[S * blowup, K]`` codeword in
-SP1's bit-reversed row order, Merkle-committed via the SMCS, then bound to
-the region's row/column structure. Mirrors sp1-hypercube's jagged commit
-(the prover half of the basefold commitment SP1 core uses).
+RS-encoded (zorch ``BitReversedReedSolomon``) into a ``[S * blowup, K]``
+codeword in SP1's bit-reversed row order, Merkle-committed via the SMCS,
+then bound to the region's row/column structure. Mirrors sp1-hypercube's
+jagged commit (the prover half of the basefold commitment SP1 core uses).
 
-``jit=True`` runs the bit-reverse -> Merkle pipeline as one @jit zone: the
+``jit=True`` runs the RS-encode -> Merkle pipeline as one @jit zone: the
 eager form keeps every intermediate (~6 GB codeword copies at rsp scale)
 live at once and OOMs a 32 GB device, while one fused graph lets XLA
-release each buffer after its last use. The RS encode stays eager on BOTH
-paths: inside a jit module the zkx GPU NTT emitter returns wrong codewords
-at >= 2^21 codeword length (fractalyze/zkx#624), while the standalone
-eager op is correct — and the encode's two live buffers are not the
-memory cliff. No input is donated — the dense buffer outlives the commit
-(the jagged-eval stage reads it again), so there is nothing safe to
-donate. Output is byte-identical either way.
+release each buffer after its last use. No input is donated — the dense
+buffer outlives the commit (the jagged-eval stage reads it again), so
+there is nothing safe to donate. Output is byte-identical either way.
 """
 
 from __future__ import annotations
@@ -26,11 +22,11 @@ from functools import partial
 
 import jax
 import jax.numpy as jnp
-from jax import Array, lax
+from jax import Array
 
 from sp1_zorch.commit.region import JaggedRegion
 from sp1_zorch.commit.smcs import SingleMatrixCommitmentScheme
-from zorch.coding.reed_solomon import ReedSolomon
+from zorch.coding.reed_solomon import BitReversedReedSolomon
 
 
 @partial(
@@ -67,20 +63,24 @@ class TraceCommitData:
 
 
 def _leaf_commit(
-    codeword: Array, *, smcs: SingleMatrixCommitmentScheme
+    message: Array, *, smcs: SingleMatrixCommitmentScheme, log_blowup: int
 ) -> tuple[Array, list[Array], Array]:
-    """The codeword-scale commit tail, shared by the eager and @jit paths.
+    """The codeword-scale commit chain, shared by the eager and @jit paths.
 
     Only the big-buffer chain lives here; the small tails (structure binding,
     the mle transpose) stay in ``commit_region`` so the zone's outputs are
-    exactly the buffers it exists to manage.
+    exactly the buffers it exists to manage. The code is rebuilt per call
+    rather than passed in: ``BitReversedReedSolomon`` is identity-hashed (no
+    __eq__/__hash__), so a per-call instance as a static arg would recompile
+    the zone every call, and construction without a coset shift is
+    attribute-only — free under trace.
     """
-    # SP1's codeword layout is bit-reversed (FRI fold pairs adjacent). zkx's
-    # fft cannot emit bit-reversed output (its bit-reverse is input-side
-    # DIT), so this is a separate permutation today; the zorch-level order
-    # convention is settled with the opening machinery
-    # (fractalyze/sp1-zorch#20).
-    codeword = lax.bit_reverse(codeword, dimensions=(1,))
+    # SP1's codeword layout is bit-reversed (FRI fold pairs adjacent) — the
+    # same code object the opening stage folds with.
+    code = BitReversedReedSolomon(
+        message_len=message.shape[-1], blowup=1 << log_blowup, dtype=message.dtype
+    )
+    codeword = code.encode(message)
 
     # Codeword rows are the Merkle leaves; SMCS binds (log_height, width).
     commitment, digest_layers = smcs.commit(codeword.T)
@@ -90,7 +90,7 @@ def _leaf_commit(
 # ``smcs`` is a static arg keyed by object identity (the scheme defines no
 # __eq__/__hash__): every call site must reuse one instance per process, or
 # each fresh instance silently recompiles the full poseidon2/Merkle pipeline.
-_leaf_commit_jit = jax.jit(_leaf_commit, static_argnames=("smcs",))
+_leaf_commit_jit = jax.jit(_leaf_commit, static_argnames=("smcs", "log_blowup"))
 
 
 def commit_region(
@@ -114,14 +114,12 @@ def commit_region(
         )
     K = dense.shape[0] // S
 
-    # Row k of [K, S] is stacked column k of the dense MLE; RS-encode each.
-    # Eager on purpose, never inside the jit zone — fractalyze/zkx#624 (see
-    # the module docstring).
-    rs = ReedSolomon(message_len=S, blowup=1 << log_blowup, dtype=dense.dtype)
-    codeword = rs.encode(dense.reshape(K, S))
-
+    # Row k of [K, S] is stacked column k of the dense MLE.
+    message = dense.reshape(K, S)
     tail = _leaf_commit_jit if jit else _leaf_commit
-    codeword_t, digest_layers, commitment = tail(codeword, smcs=smcs)
+    codeword_t, digest_layers, commitment = tail(
+        message, smcs=smcs, log_blowup=log_blowup
+    )
     row_counts = jnp.array(region.row_counts, dtype=dense.dtype)
     column_counts = jnp.array(region.column_counts, dtype=dense.dtype)
     bound = smcs.bind_structure(commitment, row_counts, column_counts)
@@ -130,7 +128,7 @@ def commit_region(
         # Column k of the [S, K] message matrix is dense block k (the open
         # evaluates each column at the stack point); the leaves are the
         # committed [S*blowup, K] codeword Merkle-bound just above.
-        mle=dense.reshape(K, S).T,
+        mle=message.T,
         codeword=codeword_t,
         digest_layers=digest_layers,
         row_counts=row_counts,
