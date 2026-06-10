@@ -86,6 +86,10 @@ class StackedOpenProof:
 
     fri_raw_roots / fri_commitments: per fold layer, the raw Merkle root and the
         SP1 separator-bound root (the transcript observes the bound one).
+    univariate_messages: per fold round, the ``(s(0), s(1))`` sumcheck message
+        pair, ``(num_vars, 2)``. The transcript observes them and the shard
+        wire serializes them, so the open retains them rather than making the
+        serializer replay the fold.
     final_poly: the folded codeword's first element (the residual constant).
     pow_witness: the FRI query-phase proof-of-work witness.
     batch_evals: per round, the ``(K,)`` column evaluations at ``stack_point``.
@@ -97,6 +101,7 @@ class StackedOpenProof:
 
     fri_raw_roots: Array
     fri_commitments: Array
+    univariate_messages: Array
     final_poly: Array
     pow_witness: Array
     batch_evals: list[Array]
@@ -172,6 +177,7 @@ def stacked_basefold_open(
     # Interleaved sumcheck + pre-fold pair-leaf FRI fold, one variable per round.
     raw_roots: list[Array] = []
     bound_roots: list[Array] = []
+    messages: list[Array] = []
     fold_layers: list[Opening] = []
     zero = jnp.zeros((), ef_dtype)
     for i in range(num_vars):
@@ -194,7 +200,9 @@ def stacked_basefold_open(
         bound_roots.append(bound_root)
         fold_layers.append((leaves, digest_layers))
 
-        t = t.observe(jnp.stack([zero_val, one_val]))
+        message = jnp.stack([zero_val, one_val])
+        messages.append(message)
+        t = t.observe(message)
         t = t.observe(bound_root)
         t, beta = sample_challenge(t, ef_dtype, ef_degree)
 
@@ -235,6 +243,7 @@ def stacked_basefold_open(
     proof = StackedOpenProof(
         fri_raw_roots=jnp.stack(raw_roots),
         fri_commitments=jnp.stack(bound_roots),
+        univariate_messages=jnp.stack(messages),
         final_poly=final_poly,
         pow_witness=pow_witness,
         batch_evals=batch_evals,
