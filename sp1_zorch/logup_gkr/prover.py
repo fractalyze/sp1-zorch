@@ -72,17 +72,14 @@ class LogupGkrProof:
     proof per layer (output to input), the final evaluation point, and the
     per-chip trace openings at it.
 
-    ``layer_points`` is each layer's sumcheck point, aligned with
-    ``round_proofs``. The shard wire serializes it per layer
-    (``point_and_eval``), and recovering it later would take a transcript
-    replay, so the prover retains it — the same rationale as zorch's
-    ``RoundMsg.challenge``.
+    Each layer's sumcheck point rides on its ``JaggedLayerProof.point``
+    (zorch retains it at prove time); the shard wire serializes it per layer
+    (``point_and_eval``).
     """
 
     witness: Array
     circuit_output: LogUpGkrOutput
     round_proofs: list[JaggedLayerProof]
-    layer_points: list[Array]
     eval_point: Array
     chip_openings: dict[str, ChipEvaluation]
 
@@ -189,24 +186,6 @@ def extract_sp1_outputs(floor: JaggedGkrLayer) -> LogUpGkrOutput:
     return extract_jagged_outputs(floor)
 
 
-class _PointRetainingLayerRound(JaggedGkrLayerRound):
-    """``JaggedGkrLayerRound`` whose message also carries the layer's
-    sumcheck point. The round's carry appends the child-selector bit to
-    exactly that point, so it is recoverable here for free — while after the
-    chain runs only a transcript replay could rebuild it.
-
-    Interim until fractalyze/zorch#209 retains the point on
-    ``JaggedLayerProof`` itself; drop this subclass on that pin bump.
-    """
-
-    def __call__(
-        self, carry, transcript: Transcript
-    ) -> tuple[tuple, Transcript, tuple[JaggedLayerProof, Array]]:
-        carry, transcript, proof = super().__call__(carry, transcript)
-        _, _, eval_point = carry
-        return carry, transcript, (proof, eval_point[:-1])
-
-
 def prove_logup_gkr(
     gkr_chips: Sequence[GkrChip],
     main_region: JaggedRegion,
@@ -282,14 +261,12 @@ def prove_logup_gkr(
     # each round on demand and releases it once proved, so at most one layer
     # of the pyramid stays live -- the planes sum to gigabytes at shard scale.
     chain = ProveChain(
-        _PointRetainingLayerRound(layers.pop(), _EF_LIMBS, jit=jit)
+        JaggedGkrLayerRound(layers.pop(), _EF_LIMBS, jit=jit)
         for _ in range(len(layers))
     )
-    (_, _, eval_point), transcript, messages = chain(
+    (_, _, eval_point), transcript, round_proofs = chain(
         (num_eval, den_eval, z1), transcript
     )
-    round_proofs = [proof for proof, _ in messages]
-    layer_points = [point for _, point in messages]
 
     transcript, chip_openings = open_traces(
         main_region,
@@ -302,7 +279,6 @@ def prove_logup_gkr(
         witness=witness,
         circuit_output=output,
         round_proofs=round_proofs,
-        layer_points=layer_points,
         eval_point=eval_point,
         chip_openings=chip_openings,
     )

@@ -24,13 +24,15 @@ bazel_dep(name = "zorch", version = "0.0.0")
 git_override(
     module_name = "zorch",
     remote = "https://github.com/fractalyze/zorch.git",
-    # main @ jagged GKR per-layer jit + marker result-tuple contract. The
-    # logup-gkr bench's jit'd round chain (sp1_zorch/logup_gkr) needs:
-    #   - opt-in per-layer jit on JaggedGkrLayerRound (fractalyze/zorch#206)
-    #     so each layer compiles once and is reused across iterations.
-    #   - the jagged zorch.sumcheck marker's result tuple aligned with the
-    #     zkx recognizer contract (fractalyze/zorch#210).
-    commit = "76ea58ca54d880930d117ca1e1d60c2b6c2d3bf9",
+    # main @ layer-proof point retention + namespaced poseidon2 marker:
+    #   - JaggedLayerProof carries the bound sumcheck point
+    #     (fractalyze/zorch#213), so the wire serializer reads it off the
+    #     proof instead of peeking the chain carry.
+    #   - the poseidon2 marker is zorch.poseidon2 + composite.attributes
+    #     (fractalyze/zorch#212). This is a hard cut on the zkx side, so the
+    #     pip wheel set (requirements.in) must stay >= 0.0.5.dev20260610045259
+    #     in lockstep with this pin.
+    commit = "997d4e841ab005bfaf8156a7ff453464f07bf274",
 )
 
 python = use_extension("@rules_python//python/extensions:python.bzl", "python")
