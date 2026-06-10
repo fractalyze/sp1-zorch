@@ -7,12 +7,15 @@ codeword in SP1's bit-reversed row order, Merkle-committed via the SMCS,
 then bound to the region's row/column structure. Mirrors sp1-hypercube's
 jagged commit (the prover half of the basefold commitment SP1 core uses).
 
-``jit=True`` runs the RS-encode -> Merkle pipeline as one @jit zone: the
-eager form keeps every intermediate (~6 GB codeword copies at rsp scale)
-live at once and OOMs a 32 GB device, while one fused graph lets XLA
-release each buffer after its last use. No input is donated — the dense
-buffer outlives the commit (the jagged-eval stage reads it again), so
-there is nothing safe to donate. Output is byte-identical either way.
+``jit=True`` runs the whole commit -- RS-encode -> Merkle -> structure bind
+-- as one @jit zone. Two reasons: the eager form keeps every codeword-scale
+intermediate (~6 GB at rsp scale) live at once and OOMs a 32 GB device,
+while one fused graph lets XLA release each buffer after its last use; and
+the structure-bind's poseidon2 hash recompiles its composite on every eager
+call (seconds at rsp scale for trivial arithmetic), which folding it into
+the zone removes. No input is donated -- the dense buffer outlives the
+commit (the jagged-eval stage reads it again), so there is nothing safe to
+donate. Output is byte-identical either way.
 """
 
 from __future__ import annotations
@@ -62,18 +65,25 @@ class TraceCommitData:
     smcs_commitment: Array  # shape-bound SMCS root, before structure binding
 
 
-def _leaf_commit(
-    message: Array, *, smcs: SingleMatrixCommitmentScheme, log_blowup: int
-) -> tuple[Array, list[Array], Array]:
-    """The codeword-scale commit chain, shared by the eager and @jit paths.
+def _commit(
+    message: Array,
+    row_counts: Array,
+    column_counts: Array,
+    *,
+    smcs: SingleMatrixCommitmentScheme,
+    log_blowup: int,
+) -> tuple[Array, Array, Array, list[Array], Array]:
+    """The whole device-side commit, shared by the eager and @jit paths.
 
-    Only the big-buffer chain lives here; the small tails (structure binding,
-    the mle transpose) stay in ``commit_region`` so the zone's outputs are
-    exactly the buffers it exists to manage. The code is rebuilt per call
-    rather than passed in: ``BitReversedReedSolomon`` is identity-hashed (no
-    __eq__/__hash__), so a per-call instance as a static arg would recompile
-    the zone every call, and construction without a coset shift is
-    attribute-only — free under trace.
+    Everything that touches poseidon2 lives in one program: the structure bind
+    is folded in next to the Merkle commit, not run eagerly afterward. Eager
+    poseidon2 recompiles its composite per call, so the ~10-permutation
+    structure hash costs seconds outside @jit even though its arithmetic is
+    trivial — under @jit it compiles once with the Merkle tree and executes in
+    microseconds. The ``BitReversedReedSolomon`` is rebuilt per call rather than
+    passed in: it is identity-hashed (no __eq__/__hash__), so a per-call
+    instance as a static arg would recompile the zone every call, and
+    construction without a coset shift is attribute-only — free under trace.
     """
     # SP1's codeword layout is bit-reversed (FRI fold pairs adjacent) — the
     # same code object the opening stage folds with.
@@ -82,15 +92,19 @@ def _leaf_commit(
     )
     codeword = code.encode(message)
 
-    # Codeword rows are the Merkle leaves; SMCS binds (log_height, width).
+    # Codeword rows are the Merkle leaves; SMCS binds (log_height, width), then
+    # the structure hash pins the jagged chip layout into the commitment.
     commitment, digest_layers = smcs.commit(codeword.T)
-    return codeword.T, digest_layers, commitment
+    bound = smcs.bind_structure(commitment, row_counts, column_counts)
+    # Column k of the [S, K] message matrix is dense block k (the open
+    # evaluates each column at the stack point).
+    return bound, message.T, codeword.T, digest_layers, commitment
 
 
 # ``smcs`` is a static arg keyed by object identity (the scheme defines no
 # __eq__/__hash__): every call site must reuse one instance per process, or
 # each fresh instance silently recompiles the full poseidon2/Merkle pipeline.
-_leaf_commit_jit = jax.jit(_leaf_commit, static_argnames=("smcs", "log_blowup"))
+_commit_jit = jax.jit(_commit, static_argnames=("smcs", "log_blowup"))
 
 
 def commit_region(
@@ -116,19 +130,15 @@ def commit_region(
 
     # Row k of [K, S] is stacked column k of the dense MLE.
     message = dense.reshape(K, S)
-    tail = _leaf_commit_jit if jit else _leaf_commit
-    codeword_t, digest_layers, commitment = tail(
-        message, smcs=smcs, log_blowup=log_blowup
-    )
     row_counts = jnp.array(region.row_counts, dtype=dense.dtype)
     column_counts = jnp.array(region.column_counts, dtype=dense.dtype)
-    bound = smcs.bind_structure(commitment, row_counts, column_counts)
+    tail = _commit_jit if jit else _commit
+    bound, mle, codeword_t, digest_layers, commitment = tail(
+        message, row_counts, column_counts, smcs=smcs, log_blowup=log_blowup
+    )
     return bound, TraceCommitData(
         dense=dense,
-        # Column k of the [S, K] message matrix is dense block k (the open
-        # evaluates each column at the stack point); the leaves are the
-        # committed [S*blowup, K] codeword Merkle-bound just above.
-        mle=message.T,
+        mle=mle,
         codeword=codeword_t,
         digest_layers=digest_layers,
         row_counts=row_counts,
