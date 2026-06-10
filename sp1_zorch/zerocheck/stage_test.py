@@ -177,9 +177,16 @@ class ProveZerocheckTest(absltest.TestCase):
             claims=claims,
         )
         cls.zeta = zeta
+        cls.want_claims = claims
 
     def test_round_polys_byte_match_hand_replay(self):
         _assert_bytes_equal(self.proof.msgs.round_poly, self.want_msgs.round_poly)
+
+    def test_claimed_sum_is_lambda_horner_fold_of_chip_claims(self):
+        _assert_bytes_equal(
+            self.proof.claimed_sum,
+            self.want_claims[0] * self.lambda_ + self.want_claims[1],
+        )
 
     def test_finals_byte_match_hand_replay(self):
         self.assertEqual(len(self.proof.finals), len(self.want_finals))

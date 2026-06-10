@@ -38,14 +38,17 @@ _EF_LIMBS = 4
 class ZerocheckProof:
     """The zerocheck stage's proof: the three stage challenges and the eq
     point (the byte-match harness and the jagged-opening stage consume them,
-    and neither holds the pre-stage transcript to re-sample), the per-chip
-    final folded traces, and the stacked round messages whose ``challenge``
-    is the sumcheck point."""
+    and neither holds the pre-stage transcript to re-sample), the wire's
+    claimed sum (the lambda-Horner fold of the per-chip GKR opening claims,
+    SP1's zerocheck RLC — retained because only this stage holds the claims),
+    the per-chip final folded traces, and the stacked round messages whose
+    ``challenge`` is the sumcheck point."""
 
     batching_challenge: Array
     gkr_opening_batch_challenge: Array
     lambda_: Array
     zeta: Array
+    claimed_sum: Array
     finals: list[Array]
     msgs: RoundMsg
 
@@ -169,11 +172,17 @@ def prove_shard_zerocheck(
         beta=gkr_batch,
         claims=claims,
     )
+
+    # The wire's claimed_sum: the per-chip claims under the same chip RLC
+    # weights the round engine applies.
+    claimed_sum = jnp.sum(jnp.stack(claims) * lambdas)
+
     return transcript, ZerocheckProof(
         batching_challenge=batching_challenge,
         gkr_opening_batch_challenge=gkr_batch,
         lambda_=lambda_,
         zeta=zeta,
+        claimed_sum=claimed_sum,
         finals=finals,
         msgs=msgs,
     )
