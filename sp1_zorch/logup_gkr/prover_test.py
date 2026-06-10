@@ -209,16 +209,14 @@ class ProveLogupGkrTest(absltest.TestCase):
         for name, ev in eager.chip_openings.items():
             self.assertTrue(bool(jnp.all(ev.main == jitted.chip_openings[name].main)))
 
-    def test_layer_points_retained_per_layer(self) -> None:
+    def test_round_proofs_carry_layer_points(self) -> None:
+        # The wire's per-layer point_and_eval reads rp.point; pin its coherence
+        # with the carry-produced eval_point this proof also carries. The
+        # per-round point invariant itself is zorch's contract, tested there.
         proof = self._prove()
-        n = len(proof.round_proofs)
-        self.assertEqual(len(proof.layer_points), n)
-        # Each layer binds one more variable than the one before, and the
-        # carry's eval point appends the child-selector bit to the layer
-        # point — so the last retained point is the final point's prefix.
-        for i, point in enumerate(proof.layer_points):
-            self.assertEqual(point.shape[0], proof.eval_point.shape[0] - n + i)
-        self.assertTrue(bool(jnp.all(proof.layer_points[-1] == proof.eval_point[:-1])))
+        self.assertTrue(
+            bool(jnp.all(proof.round_proofs[-1].point == proof.eval_point[:-1]))
+        )
 
     def test_round_claims_recorded_per_layer(self) -> None:
         proof = self._prove()

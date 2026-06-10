@@ -135,6 +135,7 @@ def _gkr_proof() -> LogupGkrProof:
         lam=jnp.array(5, dtype=F),
         claim=jnp.array(6, dtype=F),
         round_polys=jnp.array([[1, 2, 3]], dtype=F),
+        point=jnp.array([16], dtype=F),
         numerator_0=jnp.array(7, dtype=F),
         numerator_1=jnp.array(8, dtype=F),
         denominator_0=jnp.array(9, dtype=F),
@@ -147,7 +148,6 @@ def _gkr_proof() -> LogupGkrProof:
             denominator=jnp.array([3, 4], dtype=F),
         ),
         round_proofs=[rp],
-        layer_points=[jnp.array([16], dtype=F)],
         eval_point=jnp.array([11, 12], dtype=F),
         chip_openings={
             # Two chips deliberately out of order: the wire is a BTreeMap,

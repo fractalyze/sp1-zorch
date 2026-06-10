@@ -105,8 +105,8 @@ def _encode_logup_gkr_proof(proof, max_log_row_count: int) -> bytes:
     round_proofs, logup_evaluations, witness).
 
     ``proof`` is ``sp1_zorch.logup_gkr.prover.LogupGkrProof``; the wire's
-    per-layer ``point_and_eval`` reads ``proof.layer_points``, retained at
-    prove time.
+    per-layer ``point_and_eval`` reads each round proof's ``point``, retained
+    by zorch at prove time.
     """
     parts = []
 
@@ -116,12 +116,12 @@ def _encode_logup_gkr_proof(proof, max_log_row_count: int) -> bytes:
     parts.append(_encode_tensor(proof.circuit_output.denominator, [n_den, 1]))
 
     parts.append(_vec_prefix(len(proof.round_proofs)))
-    for rp, point in zip(proof.round_proofs, proof.layer_points, strict=True):
+    for rp in proof.round_proofs:
         parts.append(_field_bytes(rp.numerator_0))
         parts.append(_field_bytes(rp.numerator_1))
         parts.append(_field_bytes(rp.denominator_0))
         parts.append(_field_bytes(rp.denominator_1))
-        parts.append(_encode_partial_sumcheck_proof(rp.round_polys, rp.claim, point))
+        parts.append(_encode_partial_sumcheck_proof(rp.round_polys, rp.claim, rp.point))
 
     # SP1's eval_point has exactly max_log_row_count dims after all GKR
     # rounds. The prover-side point may overshoot — trim to the tail.
