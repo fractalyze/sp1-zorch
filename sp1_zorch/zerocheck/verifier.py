@@ -40,15 +40,21 @@ import jax.numpy as jnp
 from jax import Array
 from rw_constraints import Chip
 
-from sp1_zorch.logup_gkr.head import EF_LIMBS
 from sp1_zorch.logup_gkr.prover import ChipEvaluation, select_openings
-from sp1_zorch.logup_gkr.verifier import virtual_padding_geq
+from sp1_zorch.logup_gkr.verifier import padding_geqs
 from sp1_zorch.zerocheck.jagged import DEGREE
 from sp1_zorch.zerocheck.prover import constraint_rlc, gkr_powers, rlc_coeffs
-from sp1_zorch.zerocheck.stage import OpenedValuesRound, ZerocheckProof, _bind_pv
+from sp1_zorch.zerocheck.stage import (
+    OpenedValuesRound,
+    ZerocheckProof,
+    bind_pv,
+    gkr_opening_claims,
+    sample_stage_challenges,
+)
+from zorch.poly.eq import eval_eq
 from zorch.poly.univariate import eval_coeffs
 from zorch.round import Round
-from zorch.transcript import Transcript, sample_challenge
+from zorch.transcript import Transcript
 from zorch.verify import verify
 
 
@@ -66,14 +72,6 @@ class ZerocheckSumcheckRound(Round):
         ok = claim == msg[0] + jnp.sum(msg)
         transcript, r = transcript.observe_and_sample(msg, 1)
         return eval_coeffs(msg, r[0]), transcript, r[0], ok
-
-
-def _all_evals(opening: ChipEvaluation) -> Array:
-    """A chip's ``[main | prep]`` evaluation vector — the beta-power batching
-    order shared by the GKR claims and the zerocheck column batch."""
-    if opening.preprocessed is not None:
-        return jnp.concatenate([opening.main, opening.preprocessed])
-    return opening.main
 
 
 def verify_shard_zerocheck(
@@ -113,19 +111,17 @@ def verify_shard_zerocheck(
             f"{proof.msgs.round_poly.shape}"
         )
     opened = select_openings(proof.opened_values, chip_names)
-    opened_rows = [_all_evals(ev) for ev in opened]
+    opened_rows = [ev.all_evals() for ev in opened]
 
-    # SP1 samples lambda inside zerocheck, after the two batch challenges.
-    transcript, batching = sample_challenge(transcript, ef, EF_LIMBS)
-    transcript, gkr_batch = sample_challenge(transcript, ef, EF_LIMBS)
-    transcript, lambda_ = sample_challenge(transcript, ef, EF_LIMBS)
+    transcript, batching, gkr_batch, lambda_ = sample_stage_challenges(
+        transcript, ef
+    )
 
     zeta = eval_point[-max_log_row_count:]
 
-    gkr_evals = [_all_evals(chip_openings[name]) for name in chip_names]
-    max_cols = max(e.shape[0] for e in gkr_evals + opened_rows)
-    gkr_all = gkr_powers(gkr_batch, max_cols) if max_cols else jnp.zeros(0, ef)
-    claims = jnp.stack([jnp.sum(gkr_all[: e.shape[0]] * e) for e in gkr_evals])
+    claims = gkr_opening_claims(
+        [chip_openings[name] for name in chip_names], gkr_batch
+    )
     lambdas = rlc_coeffs(lambda_, len(chip_names))
     claimed_sum = jnp.sum(claims * lambdas)
 
@@ -149,31 +145,30 @@ def verify_shard_zerocheck(
     # for the virtual padding rows, whose constant constraint value the
     # prover's summand subtracts — plus its beta-weighted column batch,
     # scaled by the bound eq factor, must reproduce the replay's final claim.
-    one = jnp.ones((), ef)
     z_row = point[::-1].astype(ef)
-    eq_val = jnp.prod(zeta * z_row + (one - zeta) * (one - z_row))
-    # The threshold domain is one variable wider than the point so a
-    # full-height chip stays representable (SP1's ``point_extended``).
-    point_extended = jnp.pad(z_row, (1, 0))
-    geq_by_height: dict[int, Array] = {}
+    eq_val = eval_eq(zeta, z_row)
+    geq_by_height = padding_geqs((chip_heights[n] for n in chip_names), z_row)
+    max_cols = max(row.shape[0] for row in opened_rows)
+    gkr_all = gkr_powers(gkr_batch, max_cols) if max_cols else jnp.zeros(0, ef)
     terms = []
     for name, opened_row in zip(chip_names, opened_rows):
-        height = chip_heights[name]
-        if height not in geq_by_height:
-            geq_by_height[height] = virtual_padding_geq(height, point_extended)
-        geq = geq_by_height[height]
-        eval_fn = _bind_pv(chips[name], public_values)
+        geq = geq_by_height[chip_heights[name]]
+        eval_fn = bind_pv(chips[name], public_values)
         # Constraint counts come from a one-row probe, as in the prover — a
-        # chip's constraint functions may emit several columns each.
+        # chip's constraint functions may emit several columns each. Row 0 is
+        # the opening, row 1 a zero row: one batched fold yields the opened
+        # evaluation and the padded-row adjustment together (the same move as
+        # the GKR leaf check), instead of tracing the circuit twice more.
         zero_row = jnp.zeros((1, opened_row.shape[0]), dtype=ef)
         num_constraints = eval_fn(zero_row).shape[-1]
         if num_constraints:
-            constraint_term = constraint_rlc(
-                eval_fn, opened_row[None, :], batching, num_constraints
-            )[0]
-            padded_row_adj = constraint_rlc(
-                eval_fn, zero_row, batching, num_constraints
-            )[0]
+            both = constraint_rlc(
+                eval_fn,
+                jnp.stack([opened_row, zero_row[0]]),
+                batching,
+                num_constraints,
+            )
+            constraint_term, padded_row_adj = both[0], both[1]
         else:
             constraint_term = jnp.zeros((), ef)
             padded_row_adj = jnp.zeros((), ef)

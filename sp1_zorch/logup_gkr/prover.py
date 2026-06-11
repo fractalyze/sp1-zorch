@@ -66,6 +66,14 @@ class ChipEvaluation:
     main: Array  # (width,) EF, one eval per main column
     preprocessed: Array | None  # (prep width,) EF, when the chip has prep
 
+    def all_evals(self) -> Array:
+        """The ``[main | prep]`` evaluation vector — the column order of the
+        beta-power batching shared by the GKR opening claims and the
+        zerocheck column batch."""
+        if self.preprocessed is not None:
+            return jnp.concatenate([self.main, self.preprocessed])
+        return self.main
+
 
 @dataclass(frozen=True)
 class LogupGkrProof:
