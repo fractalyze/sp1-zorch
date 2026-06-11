@@ -98,6 +98,25 @@ class EvalPublicValuesTest(absltest.TestCase):
         folder.send(values, main[0, 0] * jnp.ones((), EF), kind)
         self.assertTrue(bool(folder.local_interaction_digest == want))
 
+    def test_pv_tamper_shifts_the_digest(self) -> None:
+        # The bus-balance leg rejects an unbalanced re-prove because the
+        # public-values digest is sensitive to the public values: a re-prove
+        # that ships a different global interaction count (index 129) produces
+        # a different digest, so a circuit output that cancelled the honest
+        # digest no longer balances. Pin that sensitivity directly.
+        pv_u32 = np.load(_PV_NPY)
+        public_values = jax.lax.bitcast_convert_type(
+            jnp.asarray(pv_u32, dtype=jnp.uint32), F
+        )
+        pv_challenge, alpha, betas = _ef(1, 1)[0], _ef(2, 1)[0], _ef(3, 16)
+        _, digest = eval_public_values(public_values, pv_challenge, alpha, betas)
+
+        tampered = public_values.at[129].add(jnp.ones((), F))  # global_count
+        _, tampered_digest = eval_public_values(
+            tampered, pv_challenge, alpha, betas
+        )
+        self.assertFalse(bool(digest == tampered_digest))
+
     def test_send_then_receive_cancels(self) -> None:
         alpha = _ef(11, 1)[0]
         betas = _ef(12, 16)
