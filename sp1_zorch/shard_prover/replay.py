@@ -26,7 +26,7 @@ from sp1_zorch.logup_gkr.circuit import build_gkr_chips
 from sp1_zorch.logup_gkr.prover import LogupGkrProof, num_beta_values, prove_logup_gkr
 from sp1_zorch.poseidon2.koalabear16 import koalabear16_params
 from sp1_zorch.shard_prover.fixture_loader import _parse_int_list, _parse_kv_lines
-from sp1_zorch.shard_prover.prove_shard import preamble_chip_metadata
+from sp1_zorch.shard_prover.prove_shard import PreambleRound, preamble_chip_metadata
 from sp1_zorch.shard_prover.types import ShardData
 from zorch.hash.poseidon2.poseidon2 import Poseidon2
 from zorch.transcript import DuplexTranscript, Transcript
@@ -72,25 +72,26 @@ def fresh_transcript() -> DuplexTranscript:
 
 
 def preamble_transcript(shard: ShardData, shard_dir: Path) -> Transcript:
-    """The challenger state SP1 enters GKR with: fresh duplex sponge, then
-    vk -> public values -> main commitment -> chip metadata. The commitment is
-    the dump's value -- our own main-commit byte-match is the trace-commit
-    stage's concern; the metadata stream is ``preamble_chip_metadata``, the
-    same encoding the chain's ``TraceCommitRound`` observes."""
+    """The challenger state SP1 enters GKR with: a fresh duplex sponge run
+    through ``PreambleRound`` — the prover's own absorb schedule — with the
+    dump's commitment. The commitment is the dump's value -- our own
+    main-commit byte-match is the trace-commit stage's concern."""
     commit_kv = _parse_kv_lines((shard_dir / "gpu_commitment.txt").read_text())
     # gpu_commitment.txt carries canonical integers (the same convention
     # verify_trace_commit reads it with), so encode rather than view.
     commitment = jnp.array(_parse_int_list(commit_kv["main_commit"]), F)
 
-    transcript: Transcript = fresh_transcript()
-    transcript = shard.vk.observe_into(transcript)
-    transcript = transcript.observe(shard.main_trace_data.public_values)
-    transcript = transcript.observe(commitment)
-
     traces = shard.main_trace_data.traces
     names = traces.chip_order
     num_reals = [traces.per_chip[name].num_real for name in names]
-    return transcript.observe(preamble_chip_metadata(names, num_reals, dtype=F))
+    preamble = PreambleRound(
+        vk=shard.vk,
+        public_values=shard.main_trace_data.public_values,
+        commitment=commitment,
+        chip_metadata=preamble_chip_metadata(names, num_reals, dtype=F),
+    )
+    _, transcript, _ = preamble(None, fresh_transcript())
+    return transcript
 
 
 def clone_diag(transcript: Transcript) -> int:

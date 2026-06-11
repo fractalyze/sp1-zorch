@@ -102,12 +102,44 @@ def preamble_chip_metadata(
     return jnp.array(metadata, dtype)
 
 
+class PreambleRound(Round):
+    """SP1's shard preamble absorb stream: vk, public values, the main
+    commitment, chip metadata. The schedule lives here once — the prover's
+    ``TraceCommitRound`` and the byte-match replay's ``preamble_transcript``
+    drive this one Round, so an ordering edit cannot land in one Fiat-Shamir
+    stream and not the other (the GKR head schedule got the same treatment in
+    ``logup_gkr.head``). Carry-agnostic; the message is the observed
+    commitment, the stream's one structure-bound value."""
+
+    def __init__(
+        self,
+        *,
+        vk: MachineVerifyingKey,
+        public_values: Array,
+        commitment: Array,
+        chip_metadata: Array,
+    ) -> None:
+        self._vk = vk
+        self._public_values = public_values
+        self._commitment = commitment
+        self._chip_metadata = chip_metadata
+
+    def __call__(
+        self, carry: Any, transcript: Transcript
+    ) -> tuple[Any, Transcript, Array]:
+        transcript = self._vk.observe_into(transcript)
+        transcript = transcript.observe(self._public_values)
+        transcript = transcript.observe(self._commitment)
+        transcript = transcript.observe(self._chip_metadata)
+        return carry, transcript, self._commitment
+
+
 class TraceCommitRound(Round):
     """Trace commit plus the shard preamble: commit the main region, then
-    absorb SP1's preamble stream (vk, public values, the bound commitment,
-    chip metadata). The message is the structure-bound main commitment; the
-    prover-side commit data joins the carry once the opening stage that
-    reads it lands (fractalyze/sp1-zorch#20)."""
+    absorb SP1's preamble stream via ``PreambleRound``. The message is the
+    structure-bound main commitment; the prover-side commit data joins the
+    carry once the opening stage that reads it lands
+    (fractalyze/sp1-zorch#20)."""
 
     def __init__(
         self,
@@ -130,10 +162,12 @@ class TraceCommitRound(Round):
         bound, main_data = commit_region(
             carry.main_region, self._smcs, log_blowup=self._log_blowup, jit=self._jit
         )
-        transcript = self._vk.observe_into(transcript)
-        transcript = transcript.observe(carry.public_values)
-        transcript = transcript.observe(bound)
-        transcript = transcript.observe(self._chip_metadata)
+        _, transcript, _ = PreambleRound(
+            vk=self._vk,
+            public_values=carry.public_values,
+            commitment=bound,
+            chip_metadata=self._chip_metadata,
+        )(carry, transcript)
         # Retain each region's stacked witness for the jagged-eval open. The
         # prep region is bound into the vk at setup, not re-observed here, but
         # the open still reproves it, so commit it for its codeword too. Order

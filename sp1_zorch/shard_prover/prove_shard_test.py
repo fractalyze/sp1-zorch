@@ -32,6 +32,7 @@ from sp1_zorch.logup_gkr.circuit import GkrChip
 from sp1_zorch.logup_gkr.prover import prove_logup_gkr
 from sp1_zorch.poseidon2.koalabear16 import koalabear16_params
 from sp1_zorch.shard_prover.prove_shard import (
+    PreambleRound,
     ShardCarry,
     ShardZerocheckRound,
     preamble_chip_metadata,
@@ -372,6 +373,44 @@ class ProveShardChainTest(absltest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "LogUp-GKR"):
             round_(carry, cheap_transcript(BF))
+
+
+class PreambleRoundTest(absltest.TestCase):
+    """Pins ``PreambleRound`` against a raw transcript walk — the one
+    deliberate second writing of the preamble schedule, so an accidental
+    reorder in the Round fails here instead of two tools later in a
+    byte-match hunt."""
+
+    def test_matches_raw_walk(self) -> None:
+        vk = MachineVerifyingKey(
+            preprocessed_commit=_rand_bf(20, (8,)),
+            pc_start=_rand_bf(21, (3,)),
+            cum_sum_x=_rand_bf(22, (7,)),
+            cum_sum_y=_rand_bf(23, (7,)),
+            enable_untrusted=0,
+        )
+        public_values = _rand_bf(24, (8,))
+        commitment = _rand_bf(25, (8,))
+        metadata = preamble_chip_metadata(("ab", "c"), (6, 4), dtype=BF)
+
+        sentinel = object()
+        carry, got_t, msg = PreambleRound(
+            vk=vk,
+            public_values=public_values,
+            commitment=commitment,
+            chip_metadata=metadata,
+        )(sentinel, cheap_transcript(BF))
+
+        self.assertIs(carry, sentinel)  # carry-agnostic pass-through
+        _assert_bytes_equal(msg, commitment, "message")
+
+        want_t = vk.observe_into(cheap_transcript(BF))
+        want_t = want_t.observe(public_values)
+        want_t = want_t.observe(commitment)
+        want_t = want_t.observe(metadata)
+        _, got = got_t.sample(1)
+        _, want = want_t.sample(1)
+        _assert_bytes_equal(got, want, "post-preamble sample")
 
 
 class PreambleChipMetadataTest(absltest.TestCase):
