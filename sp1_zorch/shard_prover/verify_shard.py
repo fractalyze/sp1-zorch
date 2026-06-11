@@ -13,8 +13,9 @@ instances and per-shard values flow on the carry, mirroring the prover's
 split; ``ShardVerifierCarry`` threads what a later dual reads from an
 earlier one — the witness-free dual of ``ShardCarry``.
 
-The trace-commit and LogUp-GKR duals are real; the remaining stage duals are
-accept-all placeholders, replaced stage by stage (fractalyze/sp1-zorch#75).
+The trace-commit, LogUp-GKR, and zerocheck duals are real; the jagged-eval
+dual is an accept-all placeholder, replaced the same way
+(fractalyze/sp1-zorch#75).
 """
 
 from __future__ import annotations
@@ -27,12 +28,15 @@ from typing import Any
 import jax
 import jax.numpy as jnp
 from jax import Array
+from rw_constraints import Chip
 
 from sp1_zorch.logup_gkr.circuit import GkrChip
 from sp1_zorch.logup_gkr.prover import ChipEvaluation, LogupGkrProof
 from sp1_zorch.logup_gkr.verifier import verify_logup_gkr
 from sp1_zorch.shard_prover.prove_shard import PreambleRound
 from sp1_zorch.shard_prover.types import MachineVerifyingKey
+from sp1_zorch.zerocheck.stage import ZerocheckProof
+from sp1_zorch.zerocheck.verifier import verify_shard_zerocheck
 from zorch.round import Round, VerifyChain
 from zorch.transcript import GrindingTranscript, Transcript
 
@@ -47,6 +51,8 @@ from zorch.transcript import GrindingTranscript, Transcript
         "commitment_roots",
         "gkr_eval_point",
         "gkr_chip_openings",
+        "zc_sumcheck_point",
+        "zc_opened_values",
     ],
     meta_fields=[],
 )
@@ -68,6 +74,11 @@ class ShardVerifierCarry:
     # the openings are the proof's leaf-checked values.
     gkr_eval_point: Array | None = None
     gkr_chip_openings: Mapping[str, ChipEvaluation] | None = None
+    # Written by ShardZerocheckVerifierRound; read by the jagged-eval dual as
+    # its z_row (the dual's own sampled challenges) and its per-column claims
+    # (the proof's opened values, oracle-checked by the zerocheck dual).
+    zc_sumcheck_point: Array | None = None
+    zc_opened_values: Mapping[str, ChipEvaluation] | None = None
 
 
 class TraceCommitVerifierRound(Round):
@@ -145,6 +156,54 @@ class LogupGkrVerifierRound(Round):
         return carry, transcript, ok
 
 
+class ShardZerocheckVerifierRound(Round):
+    """Stage-3 dual of ``ShardZerocheckRound``: verifies the zerocheck proof
+    via ``verify_shard_zerocheck``, consuming the GKR point and openings off
+    the carry, and writes the dual's own sumcheck point plus the proof's
+    oracle-checked opened values onto the carry — the same seams the prover
+    Round writes on ``ShardCarry`` for the jagged-eval stage."""
+
+    def __init__(
+        self,
+        chips: Mapping[str, Chip],
+        *,
+        chip_names: Sequence[str],
+        chip_heights: Mapping[str, int],
+        max_log_row_count: int,
+    ) -> None:
+        self._chips = chips
+        self._chip_names = chip_names
+        self._chip_heights = chip_heights
+        self._max_log_row_count = max_log_row_count
+
+    def __call__(
+        self,
+        carry: ShardVerifierCarry,
+        msg: ZerocheckProof,
+        transcript: Transcript,
+    ) -> tuple[ShardVerifierCarry, Transcript, Array]:
+        if carry.gkr_eval_point is None or carry.gkr_chip_openings is None:
+            raise ValueError(
+                "the zerocheck dual needs the LogUp-GKR stage's outputs on "
+                "the carry; sequence a LogupGkrVerifierRound before this Round"
+            )
+        transcript, point, ok = verify_shard_zerocheck(
+            self._chips,
+            self._chip_names,
+            self._chip_heights,
+            carry.public_values,
+            carry.gkr_eval_point,
+            carry.gkr_chip_openings,
+            msg,
+            transcript,
+            max_log_row_count=self._max_log_row_count,
+        )
+        carry = replace(
+            carry, zc_sumcheck_point=point, zc_opened_values=msg.opened_values
+        )
+        return carry, transcript, ok
+
+
 class _AcceptAllRound(Round):
     """Placeholder stage dual: passes the carry and transcript through and
     accepts its message unconditionally. Holds the stage's slot so the
@@ -162,10 +221,12 @@ def verify_shard_chain(
     vk: MachineVerifyingKey,
     chip_metadata: Array,
     gkr_chips: Sequence[GkrChip],
+    chips: Mapping[str, Chip],
     chip_names: Sequence[str],
     chip_heights: Mapping[str, int],
     num_betas: int,
     num_row_variables: int,
+    max_log_row_count: int,
     pow_bits: int = 0,
 ) -> VerifyChain:
     """The ``VerifyChain`` dual of ``prove_shard_chain``: one verifier Round
@@ -173,9 +234,9 @@ def verify_shard_chain(
     aligns slot for slot or fails the chain's one-message-per-round check.
 
     ``chip_names`` and ``chip_heights`` cover every shard chip (the openings
-    absorb order and the leaf check's geq thresholds) — the verifier-side
-    statement counterpart of the regions the prover Rounds read off the
-    carry."""
+    absorb order, the leaf and oracle checks' geq thresholds) — the
+    verifier-side statement counterpart of the regions the prover Rounds
+    read off the carry."""
     return VerifyChain(
         [
             TraceCommitVerifierRound(vk=vk, chip_metadata=chip_metadata),
@@ -187,7 +248,12 @@ def verify_shard_chain(
                 num_row_variables=num_row_variables,
                 pow_bits=pow_bits,
             ),
-            _AcceptAllRound(),  # zerocheck dual
+            ShardZerocheckVerifierRound(
+                chips,
+                chip_names=chip_names,
+                chip_heights=chip_heights,
+                max_log_row_count=max_log_row_count,
+            ),
             _AcceptAllRound(),  # jagged eval + stacked open dual
         ]
     )

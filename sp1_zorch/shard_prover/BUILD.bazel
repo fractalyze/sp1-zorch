@@ -76,9 +76,11 @@ py_library(
         ":prove_shard",
         ":shard_prover",
         "//sp1_zorch/logup_gkr",
+        "//sp1_zorch/zerocheck",
         "@zorch//zorch:round",
         "@zorch//zorch:transcript",
         requirement("jax"),
+        requirement("rw_constraints"),
     ],
 )
 
