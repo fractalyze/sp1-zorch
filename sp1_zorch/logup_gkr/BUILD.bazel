@@ -11,6 +11,7 @@ py_library(
         "circuit.py",
         "head.py",
         "prover.py",
+        "public_values.py",
         "verifier.py",
     ],
     visibility = ["//visibility:public"],
@@ -72,6 +73,21 @@ py_test(
         "@zorch//zorch/testkit:transcript",
         requirement("absl_py"),
         requirement("jax"),
+        requirement("rw_constraints"),
+        requirement("zk_dtypes"),
+    ],
+)
+
+py_test(
+    name = "public_values_test",
+    size = "small",
+    srcs = ["public_values_test.py"],
+    data = ["//sp1_zorch/zerocheck:shard_public_values_fixture"],
+    deps = [
+        ":logup_gkr",
+        requirement("absl_py"),
+        requirement("jax"),
+        requirement("numpy"),
         requirement("rw_constraints"),
         requirement("zk_dtypes"),
     ],
