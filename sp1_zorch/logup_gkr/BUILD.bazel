@@ -61,7 +61,7 @@ py_test(
 
 py_test(
     name = "prover_test",
-    size = "medium",
+    size = "large",
     srcs = ["prover_test.py"],
     deps = [
         ":logup_gkr",
@@ -79,7 +79,7 @@ py_test(
 
 py_test(
     name = "verifier_test",
-    size = "medium",
+    size = "large",
     srcs = ["verifier_test.py"],
     deps = [
         ":logup_gkr",
