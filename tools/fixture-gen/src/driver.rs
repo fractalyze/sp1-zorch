@@ -2,39 +2,49 @@
 //! fixtures need: the `ShardProof`, the recorder log (host-sampled challenges),
 //! the packed dense `D` buffer, and the public values.
 //!
-//! This mirrors the fork's `test_prove_shard_fibonacci` (`sp1-gpu shard_prover`)
-//! but from a downstream crate. Two seams differ from the in-crate test:
+//! Mirrors the fork's `test_prove_shard_fibonacci` but from a downstream crate:
+//!  * The prover is built via the pub `CudaShardProver::new` with `GC =
+//!    RecordingGC` and a `pow_bits = 0` basefold prover (deterministic witness).
+//!  * The prove goes through the pub `AirProver::setup_and_prove_shard`, which
+//!    builds the challenger via `RecordingGC::default_challenger()`; we recover
+//!    its log from [`crate::recorder::last_log`] (the caller-supplied-challenger
+//!    entry `prove_shard_with_data` is `pub(crate)` and unreachable downstream).
+//!  * `setup_and_prove_shard` consumes the trace data, so the dense `D` buffer is
+//!    read back from a separate, deterministic `full_tracegen` (same fork pin →
+//!    identical bytes) on a clone of the record.
 //!
-//!  1. **Prove invocation (open).** The test builds a `pub(crate)`
-//!     `CudaShardProverInner` and calls `inner.prove_shard_with_data(data,
-//!     challenger)` — also the only entry that accepts a caller-supplied
-//!     challenger. Neither is reachable downstream. Plan: build the `pub`
-//!     `CudaShardProver` with a pow_bits=0 basefold prover and drive its `pub`
-//!     high-level prove API, which constructs the challenger via
-//!     `RecordingGC::default_challenger()`; recover its log from
-//!     [`crate::recorder::last_log`]. Fallback: add a 3-line `pub` forwarder to
-//!     `CudaShardProver` in the Phase-4 fork commit and pass the challenger
-//!     explicitly. Settle in the build window.
-//!  2. **Dense readback.** `full_tracegen` returns the trace data holding the
-//!     dense `D` buffer; copy it to host (`copy_into_host_vec`) before setup
-//!     consumes it, instead of reading a `.bin` dump.
-//!
-//! The body below is the intended flow as a recipe; the concrete prover/tracegen
-//! signatures are wired once the crate compiles (build window). Heavy + GPU-bound
-//! (one cold CUDA build of `sp1-gpu-shard-prover` + one prove on the RTX 5090) —
-//! run off-peak.
+//! Heavy + GPU-bound — runs one fibonacci shard prove (plus one extra tracegen
+//! for the dense). Off-peak only.
 
-use slop_basefold::FriConfig;
-use sp1_gpu_utils::{Ext, Felt};
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
 
-use crate::recorder::RecorderLog;
+use slop_basefold::{BasefoldVerifier, FriConfig};
+use slop_futures::queue::WorkerQueue;
+use sp1_core_machine::io::SP1Stdin;
+use sp1_gpu_air::codegen_cuda_eval;
+use sp1_gpu_basefold::FriCudaProver;
+use sp1_gpu_cudart::{run_in_place, PinnedBuffer};
+use sp1_gpu_jagged_tracegen::test_utils::tracegen_setup;
+use sp1_gpu_jagged_tracegen::{full_tracegen, CORE_MAX_TRACE_SIZE};
+use sp1_gpu_logup_gkr::Interactions;
+use sp1_gpu_merkle_tree::CudaTcsProver; // brings `RecordingMerkleProver::new` into scope
+use sp1_gpu_shard_prover::CudaShardProver;
+use sp1_gpu_utils::Felt;
+use sp1_hypercube::air::MachineAir; // brings `chip.name()` into scope
+use sp1_hypercube::prover::{AirProver, ProverSemaphore};
+use sp1_hypercube::{SP1PcsProof, ShardProof};
+
+use crate::components::{RecordingComponents, RecordingMerkleProver};
+use crate::recorder::{last_log, RecorderLog, RecordingGC};
+
+/// The concrete shard proof this generator produces.
+pub type RecordingShardProof = ShardProof<RecordingGC, SP1PcsProof<RecordingGC>>;
 
 /// Everything one prove yields that the fixture emitters consume.
 pub struct Captured {
-    /// The full shard proof. Concrete type:
-    /// `ShardProof<RecordingGC, <SP1InnerPcs as MultilinearPcsVerifier<RecordingGC>>::Proof>`.
-    /// Boxed-opaque until the prove call is wired.
-    pub proof: ShardProofOpaque,
+    /// The full shard proof (zerocheck / jagged / basefold sub-proofs).
+    pub proof: RecordingShardProof,
     /// Captured host transcript (raw): the emitter reads it positionally for the
     /// EF challenges; `bit_samples` → FRI query indices, `grind_witnesses` → PoW
     /// witness.
@@ -44,15 +54,9 @@ pub struct Captured {
     pub host_dense: Vec<Felt>,
     /// Shard public values, raw Montgomery `Felt`.
     pub public_values: Vec<Felt>,
-    /// Chip schedule / names, for `meta.json` + region dicts.
+    /// Chip names (schedule order), for `meta.json` + region dicts.
     pub chip_names: Vec<String>,
 }
-
-/// Placeholder for the concrete `ShardProof<…>` until the prove call is wired.
-pub type ShardProofOpaque = ();
-
-/// Convenience EF/Felt re-exports for the emit modules.
-pub type CapturedEf = Ext;
 
 /// FRI parameters for deterministic fixtures: 52 queries, log_blowup 2,
 /// **pow_bits = 0** — identical to the fork test under SP1_DUMP_PHASES.
@@ -61,31 +65,103 @@ pub fn deterministic_fri_config() -> FriConfig<Felt> {
 }
 
 /// Run the fibonacci shard prove and capture the fixture inputs/outputs.
-///
-/// Intended flow (wired in the build window):
-/// ```text
-/// let (machine, record, program) =
-///     tracegen_setup::setup(&FIBONACCI_ELF, SP1Stdin::new()).await;          // pub
-/// run_in_place(|scope| async move {
-///     let (public_values, jagged_trace_data, shard_chips, permit) =
-///         full_tracegen(&machine, program.clone(), Arc::new(record), &buffer,
-///             CORE_MAX_TRACE_SIZE, LOG_STACKING_HEIGHT, CORE_MAX_LOG_ROW_COUNT,
-///             &scope, ProverSemaphore::new(1), true).await;
-///     let host_dense = unsafe { jagged_trace_data.dense().dense.copy_into_host_vec() };
-///     // per-chip Interactions::copy_to_device + codegen_cuda_eval cache ...
-///     let fri = deterministic_fri_config();
-///     let verifier = BasefoldVerifier::<RecordingGC>::new(fri, 2);
-///     let basefold_prover = FriCudaProver::<RecordingGC, _, Felt>::new(
-///         Poseidon2SP1Field16CudaProver::new(&scope), verifier.fri_config, LOG_STACKING_HEIGHT);
-///     let prover = CudaShardProver::<RecordingGC, RecordingComponents>::new(
-///         trace_buffers, CORE_MAX_LOG_ROW_COUNT, basefold_prover, machine.clone(),
-///         CORE_MAX_TRACE_SIZE, scope.clone(), all_interactions, cache, false, false);
-///     let proof = prover./*pub high-level prove*/(program, jagged_trace_data,
-///         public_values.clone(), ...).await;        // builds RecordingGC::default_challenger()
-///     let log = last_log().map(|h| std::mem::take(&mut *h.lock().unwrap())).unwrap_or_default();
-///     Captured { proof, log, host_dense, public_values, chip_names }
-/// }).await
-/// ```
 pub async fn prove_and_capture() -> Captured {
-    todo!("wire the fibonacci prove (build window) — see the module + flow doc above")
+    let (machine, record, program) =
+        tracegen_setup::setup(&test_artifacts::FIBONACCI_ELF, SP1Stdin::new()).await;
+    let record_for_dense = record.clone();
+    // `run_in_place` returns a `TaskHandle<T>` whose owned value needs a parent
+    // scope to extract; capture the result into a slot instead.
+    let slot: Arc<Mutex<Option<Captured>>> = Arc::new(Mutex::new(None));
+    let slot_w = slot.clone();
+
+    run_in_place(|scope| async move {
+        // Per-chip interactions + zerocheck codegen cache (as in the fork test).
+        let mut all_interactions = BTreeMap::new();
+        for chip in machine.chips().iter() {
+            let host = Interactions::new(chip.sends(), chip.receives());
+            let device = host.copy_to_device(&scope).unwrap();
+            all_interactions.insert(chip.name().to_string(), Arc::new(device));
+        }
+        let mut cache = BTreeMap::new();
+        for chip in machine.chips().iter() {
+            cache.insert(
+                chip.name().to_string(),
+                codegen_cuda_eval(chip.air.as_ref()),
+            );
+        }
+
+        // pow_bits = 0 basefold prover (deterministic PoW witness).
+        let verifier = BasefoldVerifier::<RecordingGC>::new(deterministic_fri_config(), 2);
+        let basefold_prover = FriCudaProver::<RecordingGC, _, Felt>::new(
+            RecordingMerkleProver::new(&scope),
+            verifier.fri_config,
+            tracegen_setup::LOG_STACKING_HEIGHT,
+        );
+
+        let trace_buffers = Arc::new(WorkerQueue::new(vec![PinnedBuffer::<Felt>::with_capacity(
+            CORE_MAX_TRACE_SIZE as usize,
+        )]));
+
+        let prover = CudaShardProver::<RecordingGC, RecordingComponents>::new(
+            trace_buffers,
+            tracegen_setup::CORE_MAX_LOG_ROW_COUNT,
+            basefold_prover,
+            machine.clone(),
+            CORE_MAX_TRACE_SIZE as usize,
+            scope.clone(),
+            all_interactions,
+            cache,
+            false,
+            false,
+        );
+
+        // Dense readback: a standalone, deterministic tracegen (identical bytes to
+        // what the prove regenerates internally).
+        let dense_queue = Arc::new(WorkerQueue::new(vec![PinnedBuffer::<Felt>::with_capacity(
+            CORE_MAX_TRACE_SIZE as usize,
+        )]));
+        let dense_buffer = dense_queue.pop().await.unwrap();
+        let (public_values, trace_data, _chips, _permit) = full_tracegen(
+            &machine,
+            program.clone(),
+            Arc::new(record_for_dense),
+            &dense_buffer,
+            CORE_MAX_TRACE_SIZE as usize,
+            tracegen_setup::LOG_STACKING_HEIGHT,
+            tracegen_setup::CORE_MAX_LOG_ROW_COUNT,
+            &scope,
+            ProverSemaphore::new(1),
+            true,
+        )
+        .await;
+        // SAFETY: device→host copy of the packed dense `D` buffer (Montgomery Felt).
+        let host_dense: Vec<Felt> = unsafe { trace_data.0.dense().dense.copy_into_host_vec() };
+
+        // Prove: builds `RecordingGC::default_challenger()` internally, which
+        // registers its log handle for `last_log()`.
+        let (_vk, shard_proof, _permit) = prover
+            .setup_and_prove_shard(program, record, None, ProverSemaphore::new(1))
+            .await;
+
+        let log = last_log()
+            .map(|h| std::mem::take(&mut *h.lock().unwrap()))
+            .unwrap_or_default();
+        let chip_names = machine
+            .chips()
+            .iter()
+            .map(|c| c.name().to_string())
+            .collect();
+
+        *slot_w.lock().unwrap() = Some(Captured {
+            proof: shard_proof,
+            log,
+            host_dense,
+            public_values,
+            chip_names,
+        });
+    })
+    .await;
+
+    let captured = slot.lock().unwrap().take();
+    captured.expect("prove_and_capture produced no result")
 }

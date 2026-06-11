@@ -59,6 +59,23 @@ async fn main() {
     // One prove feeds both fixture dirs (the dense `D` is shared).
     let captured = driver::prove_and_capture().await;
 
+    let n_samples = captured.log.is_sample.iter().filter(|b| **b).count();
+    eprintln!("=== capture summary ===");
+    eprintln!(
+        "log: values={} (base samples={}, => ~{} EF), bit_samples={}, grind_witnesses={}",
+        captured.log.values.len(),
+        n_samples,
+        n_samples / 4,
+        captured.log.bit_samples.len(),
+        captured.log.grind_witnesses.len(),
+    );
+    eprintln!(
+        "host_dense={}, public_values={}, chips={}",
+        captured.host_dense.len(),
+        captured.public_values.len(),
+        captured.chip_names.len(),
+    );
+
     if let Some(dir) = &args.zerocheck_out {
         emit::zerocheck(&captured, dir).expect("emit zerocheck fixtures");
         println!("zerocheck fixtures written to {}", dir.display());

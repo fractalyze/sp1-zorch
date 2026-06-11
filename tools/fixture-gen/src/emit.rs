@@ -20,7 +20,10 @@
 
 use std::path::Path;
 
+use sp1_gpu_utils::Ext;
+
 use crate::driver::Captured;
+use crate::npy::{ext_mont_limbs, ext_rows_mont, felt_row_mont, write_npy_u32};
 
 type Result = std::io::Result<()>;
 
@@ -43,8 +46,69 @@ type Result = std::io::Result<()>;
 /// point from `proof.zerocheck_proof`; chip openings from
 /// `proof.logup_gkr_proof.logup_evaluations`; dense + public_values from
 /// `captured`.
-pub fn zerocheck(_c: &Captured, _dir: &Path) -> Result {
-    todo!("Task 4 — port convert_zerocheck; byte-match zerocheck/testdata/gpu_fibonacci")
+pub fn zerocheck(c: &Captured, dir: &Path) -> Result {
+    let inputs = dir.join("inputs");
+    let outputs = dir.join("outputs");
+    std::fs::create_dir_all(&inputs)?;
+    std::fs::create_dir_all(&outputs)?;
+
+    // inputs/public_values.npy — raw Montgomery passthrough.
+    write_npy_u32(
+        &inputs.join("public_values.npy"),
+        &[c.public_values.len()],
+        &felt_row_mont(&c.public_values),
+    )?;
+
+    // inputs/{prep,main}_dense.npy — split the packed dense `D` at the round-0
+    // boundary. TODO(derive): raw0 = Σ_{round 0} row_count·col_count from
+    // `proof.evaluation_proof.row_counts_and_column_counts.rounds[0]`; for
+    // gpu_fibonacci the prep block is 2_097_152 elements.
+    const RAW0: usize = 2_097_152;
+    write_npy_u32(
+        &inputs.join("prep_dense.npy"),
+        &[RAW0],
+        &felt_row_mont(&c.host_dense[..RAW0]),
+    )?;
+    write_npy_u32(
+        &inputs.join("main_dense.npy"),
+        &[c.host_dense.len() - RAW0],
+        &felt_row_mont(&c.host_dense[RAW0..]),
+    )?;
+
+    // outputs/round_polys.npy (rounds, degree+1, 4) — zerocheck univariate polys.
+    let zc = &c.proof.zerocheck_proof;
+    let rounds = zc.univariate_polys.len();
+    let deg_plus_1 = zc
+        .univariate_polys
+        .first()
+        .map_or(0, |p| p.coefficients.len());
+    let mut round_polys = Vec::with_capacity(rounds * deg_plus_1 * 4);
+    for poly in &zc.univariate_polys {
+        for &coeff in &poly.coefficients {
+            round_polys.extend_from_slice(&ext_mont_limbs(coeff));
+        }
+    }
+    write_npy_u32(
+        &outputs.join("round_polys.npy"),
+        &[rounds, deg_plus_1, 4],
+        &round_polys,
+    )?;
+
+    // outputs/zc_sumcheck_point.npy (rounds, 4) — point_and_eval[0] (stored
+    // reversed vs the round feed order — the golden keeps the stored order).
+    let point: Vec<Ext> = zc.point_and_eval.0.values().iter().copied().collect();
+    write_npy_u32(
+        &outputs.join("zc_sumcheck_point.npy"),
+        &[point.len(), 4],
+        &ext_rows_mont(&point),
+    )?;
+
+    // TODO(next session): the challenge inputs (zeta / lambda / batching_challenge /
+    // gkr_opening_batch_challenge) via positional reading of `c.log`; chip_claims
+    // (β-power weighting of `logup_gkr_proof.logup_evaluations.chip_openings`);
+    // chip_final_states/lens ([prep,main,eq] reorder + eq tail); main/prep regions;
+    // meta.json (chip_names + num_reals). See the module doc + convert.py.
+    Ok(())
 }
 
 /// `sp1_zorch/jagged/testdata/gpu_fibonacci/` (jagged-eval pieces) — from `convert`.
