@@ -189,11 +189,7 @@ class ChallengeRuleTest(absltest.TestCase):
         # message: observe each round poly, take one extension sample, and
         # match the point entry it bound (points are the challenge lists
         # reversed — SP1's insert-at-front).
-        t = cheap_transcript(BF)
-        for polys, point, label in [
-            (msg.outer_sumcheck_polys, msg.outer_sumcheck_point, "outer"),
-            (msg.inner_sumcheck_polys, msg.inner_point, "inner"),
-        ]:
+        def replay_rounds(t, polys, point, label):
             self.assertEqual(point.dtype, EF, label)
             for r in range(polys.shape[0]):
                 t = t.observe(polys[r])
@@ -201,6 +197,16 @@ class ChallengeRuleTest(absltest.TestCase):
                 self.assertTrue(
                     bool(jnp.array_equal(want, point[-1 - r])), f"{label} round {r}"
                 )
+            return t
+
+        t = cheap_transcript(BF)
+        t = replay_rounds(
+            t, msg.outer_sumcheck_polys, msg.outer_sumcheck_point, "outer"
+        )
+        # SP1 absorbs the claimed J̃ value before the inner rounds
+        # (fractalyze/sp1-zorch#90).
+        t = t.observe(msg.inner_claimed_sum)
+        replay_rounds(t, msg.inner_sumcheck_polys, msg.inner_point, "inner")
 
 
 if __name__ == "__main__":

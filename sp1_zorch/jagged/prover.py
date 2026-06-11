@@ -254,6 +254,10 @@ def inner_sumcheck(
     # 1726-deep unroll, which compiles abysmally.
     claimed_sum = jnp.sum(weights * bp_all(merged))
 
+    # SP1's prove_jagged_evaluation absorbs the claimed J̃ value before the
+    # rounds; its verifier re-absorbs it the same way (fractalyze/sp1-zorch#90).
+    transcript = transcript.observe(claimed_sum)
+
     buf = merged
     claim = claimed_sum
     polys: list[Array] = []
