@@ -473,7 +473,20 @@ def _carry() -> ShardCarry:
         prep_region=prep_region,
         public_values=jnp.arange(1, 6, dtype=F),
         commit_rounds=(_stacked_round(100), _stacked_round(400)),
+        zc_opened_values=_opened_values(),
     )
+
+
+def _opened_values() -> dict[str, ChipEvaluation]:
+    # The stage's split of _zerocheck_proof's finals ([main | prep] stacks,
+    # evaluation at position 0).
+    return {
+        "alpha": ChipEvaluation(
+            main=jnp.array([31, 32], dtype=F),
+            preprocessed=jnp.array([33], dtype=F),
+        ),
+        "lookup": ChipEvaluation(main=jnp.array([41], dtype=F), preprocessed=None),
+    }
 
 
 def _zerocheck_proof() -> ZerocheckProof:
@@ -488,6 +501,7 @@ def _zerocheck_proof() -> ZerocheckProof:
             jnp.array([[31, 0], [32, 0], [33, 0]], dtype=F),
             jnp.array([[41, 0]], dtype=F),
         ],
+        opened_values=_opened_values(),
         msgs=RoundMsg(
             round_poly=jnp.array([[1, 2, 3], [4, 5, 6]], dtype=F),
             challenge=jnp.array([7, 8], dtype=F),
@@ -496,8 +510,11 @@ def _zerocheck_proof() -> ZerocheckProof:
 
 
 class ChipOpenedValuesTest(absltest.TestCase):
-    def test_finals_split_main_then_prep_with_live_row_degree(self) -> None:
-        values = chip_opened_values(_zerocheck_proof(), _carry())
+    def test_bridges_carry_openings_with_live_row_degree(self) -> None:
+        # The split itself is the zerocheck stage's
+        # (zerocheck.stage.split_opened_values, pinned in stage_test); this
+        # bridge adds the wire's degree off the chip heights.
+        values = chip_opened_values(_carry())
         self.assertLen(values, 2)
 
         alpha, lookup = values
@@ -508,6 +525,15 @@ class ChipOpenedValuesTest(absltest.TestCase):
         self.assertEqual(lookup.main_evals.tolist(), [41])
         self.assertIsNone(lookup.preprocessed_evals)
         self.assertEqual(lookup.degree, 2)
+
+    def test_rejects_a_carry_without_opened_values(self) -> None:
+        carry = ShardCarry(
+            main_region=_carry().main_region,
+            prep_region=None,
+            public_values=jnp.arange(1, 6, dtype=F),
+        )
+        with self.assertRaisesRegex(ValueError, "opened values"):
+            chip_opened_values(carry)
 
 
 class EncodeShardProofTest(absltest.TestCase):

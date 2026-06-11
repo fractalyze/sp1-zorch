@@ -359,6 +359,23 @@ class ProveShardChainTest(absltest.TestCase):
             self.carry.gkr_eval_point, self.want_gkr.eval_point, "gkr_eval_point"
         )
 
+    def test_zerocheck_round_carries_opened_values(self) -> None:
+        """ShardZerocheckRound threads the stage's per-chip opened values onto
+        the carry — the jagged-eval stage's per-column claims (SP1's
+        round_evaluation_claims, the trace evaluations at the zerocheck point,
+        NOT the GKR-point openings) and the wire's ShardOpenedValues read
+        them there."""
+        got = self.carry.zc_opened_values
+        self.assertIsNotNone(got)
+        for name, want in self.want_zc.opened_values.items():
+            _assert_bytes_equal(got[name].main, want.main, f"{name} main")
+            if want.preprocessed is None:
+                self.assertIsNone(got[name].preprocessed, name)
+            else:
+                _assert_bytes_equal(
+                    got[name].preprocessed, want.preprocessed, f"{name} prep"
+                )
+
     def test_transcript_streams_stay_in_sync(self) -> None:
         _, got = self.got_transcript.sample(1)
         _, want = self.want_transcript.sample(1)

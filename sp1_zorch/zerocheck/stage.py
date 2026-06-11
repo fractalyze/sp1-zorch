@@ -5,8 +5,10 @@ Everything here is derivation, not proving: the three stage challenges in
 SP1's order (constraint batching -> GKR opening batch -> chip-RLC lambda),
 zeta as the row tail of the GKR evaluation point, each chip's GKR opening
 claim as the beta-power weighting of its ``[main | prep]`` column openings,
-and the per-chip column-major traces sliced out of the committed regions. The
-round engine (`prove_jagged_zerocheck`) owns the sumcheck itself.
+the per-chip column-major traces sliced out of the committed regions, and the
+stage's transcript tail — the per-chip opened values absorbed via
+``OpenedValuesRound`` before any evaluation-stage sampling. The round engine
+(`prove_jagged_zerocheck`) owns the sumcheck itself.
 
 Reference: whir-zorch ``sp1/shard_prover/prover.py``, its zerocheck (SP1
 "phase 3") block, mirroring SP1's schedule —
@@ -17,16 +19,18 @@ Stage / dump vocabulary: ``docs/shard-pipeline.md``.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 import jax.numpy as jnp
-from jax import Array
+from jax import Array, lax
 from rw_constraints import Chip
+from zk_dtypes import efinfo
 
 from sp1_zorch.commit.region import JaggedRegion
 from sp1_zorch.logup_gkr.prover import ChipEvaluation
 from sp1_zorch.zerocheck.jagged import prove_jagged_zerocheck
 from sp1_zorch.zerocheck.prover import gkr_powers, rlc_coeffs
+from zorch.round import Round
 from zorch.sumcheck.prover import RoundMsg
 from zorch.transcript import Transcript, sample_challenge
 
@@ -41,8 +45,10 @@ class ZerocheckProof:
     and neither holds the pre-stage transcript to re-sample), the wire's
     claimed sum (the lambda-Horner fold of the per-chip GKR opening claims,
     SP1's zerocheck RLC — retained because only this stage holds the claims),
-    the per-chip final folded traces, and the stacked round messages whose
-    ``challenge`` is the sumcheck point."""
+    the per-chip final folded traces with their split ``opened_values`` view
+    (the evaluation stage's per-column claims and the wire's
+    ShardOpenedValues), and the stacked round messages whose ``challenge``
+    is the sumcheck point."""
 
     batching_challenge: Array
     gkr_opening_batch_challenge: Array
@@ -50,6 +56,7 @@ class ZerocheckProof:
     zeta: Array
     claimed_sum: Array
     finals: list[Array]
+    opened_values: dict[str, ChipEvaluation]
     msgs: RoundMsg
 
 
@@ -103,6 +110,79 @@ def _bind_pv(chip: Chip, public_values: Array) -> Callable[[Array], Array]:
     """Bind the public-values vector; ``eval_constraints`` ignores it for
     constraints that declare no ``pv_arg``."""
     return lambda trace: chip.eval_constraints(trace, public_values)
+
+
+def split_opened_values(
+    finals: Sequence[Array],
+    main_region: JaggedRegion,
+    prep_region: JaggedRegion | None,
+) -> dict[str, ChipEvaluation]:
+    """Split the stage's final folded traces into per-chip opened values.
+
+    ``finals[c]`` stacks chip ``c``'s ``[main | prep]`` columns (the
+    ``chip_traces`` order) with each column's evaluation at the sumcheck
+    point in position 0. The split is the shared view of the openings: the
+    stage's transcript absorbs, the jagged-eval stage's per-column claims,
+    and the wire's ``ShardOpenedValues`` all read it."""
+    prep_widths = (
+        dict(zip(prep_region.chip_names, prep_region.chip_widths, strict=True))
+        if prep_region
+        else {}
+    )
+    opened = {}
+    for i, name in enumerate(main_region.chip_names):
+        final = finals[i]
+        # A zero-variable run folds nothing; position 0 only exists when the
+        # buffer kept its live pair.
+        evals = (
+            final[:, 0]
+            if final.shape[1] > 0
+            else jnp.zeros((final.shape[0],), dtype=final.dtype)
+        )
+        mw = int(main_region.chip_widths[i])
+        pw = prep_widths.get(name, 0)
+        opened[name] = ChipEvaluation(
+            main=evals[:mw],
+            preprocessed=evals[mw : mw + pw] if pw else None,
+        )
+    return opened
+
+
+class OpenedValuesRound(Round):
+    """SP1's post-zerocheck opened-values absorb stream: the chip count, then
+    per chip the length-prefixed ``[preprocessed | main]`` evaluations at the
+    sumcheck point. Every evaluation-stage challenge is sampled after these
+    absorbs, so the schedule lives here once (the same single-source rule as
+    the shard preamble and the GKR head): ``prove_shard_zerocheck`` drives it
+    for every stage consumer, and the verifier dual will absorb the proof's
+    opened values through the same Round. A chip with no preprocessed trace
+    absorbs a bare zero length, matching SP1's empty-Vec framing. The absorb
+    is one flat array in that exact element order (the ``open_traces``
+    precedent — per-eval transcript calls would re-trace the absorb scan per
+    chip). Carry-agnostic; the message is the opened values, the wire's
+    structure-bound payload."""
+
+    def __init__(self, opened_values: Mapping[str, ChipEvaluation]) -> None:
+        self._opened_values = opened_values
+
+    def __call__(
+        self, carry: Any, transcript: Transcript
+    ) -> tuple[Any, Transcript, Mapping[str, ChipEvaluation]]:
+        values = self._opened_values.values()
+        bf = efinfo(next(iter(values)).main.dtype).base_field_dtype
+        flat_parts = [jnp.array([len(self._opened_values)], bf)]
+        for ev in values:
+            if ev.preprocessed is not None:
+                flat_parts.append(jnp.array([ev.preprocessed.shape[0]], bf))
+                flat_parts.append(
+                    lax.bitcast_convert_type(ev.preprocessed, bf).reshape(-1)
+                )
+            else:
+                flat_parts.append(jnp.array([0], bf))
+            flat_parts.append(jnp.array([ev.main.shape[0]], bf))
+            flat_parts.append(lax.bitcast_convert_type(ev.main, bf).reshape(-1))
+        transcript = transcript.observe(jnp.concatenate(flat_parts))
+        return carry, transcript, self._opened_values
 
 
 def prove_shard_zerocheck(
@@ -173,6 +253,11 @@ def prove_shard_zerocheck(
         claims=claims,
     )
 
+    # The stage's transcript tail: absorb the opened values so every stage
+    # consumer samples the evaluation-stage challenges from SP1's stream.
+    opened_values = split_opened_values(finals, main_region, prep_region)
+    _, transcript, _ = OpenedValuesRound(opened_values)(None, transcript)
+
     # The wire's claimed_sum: the per-chip claims under the same chip RLC
     # weights the round engine applies.
     claimed_sum = jnp.sum(jnp.stack(claims) * lambdas)
@@ -184,5 +269,6 @@ def prove_shard_zerocheck(
         zeta=zeta,
         claimed_sum=claimed_sum,
         finals=finals,
+        opened_values=opened_values,
         msgs=msgs,
     )
