@@ -28,11 +28,13 @@ import jax.numpy as jnp
 import numpy as np
 from absl.testing import absltest
 from zk_dtypes import koalabear_mont as KB
+from zk_dtypes import koalabearx4_mont as EF
 
 from zorch._composite import _HAS_COMPOSITE_OP
 from zorch.poly.eq import expand_eq_to_hypercube
 from zorch.poly.univariate import compute_inv_vandermonde, eval_coeffs
 from zorch.testkit.transcript import cheap_transcript
+from zorch.transcript import sample_challenge
 
 from sp1_zorch.zerocheck.jagged import (
     DEGREE,
@@ -65,6 +67,10 @@ def _rand(seed: int, shape) -> jnp.ndarray:
     return jnp.array(ints, dtype=KB)
 
 
+def _rand_ef(seed: int, shape=()) -> jnp.ndarray:
+    return _rand(seed, tuple(shape) + (4,)).view(EF).reshape(shape)
+
+
 def _witness_trace(seed: int, nr: int) -> jnp.ndarray:
     if nr == 0:
         return jnp.zeros((_NUM_COLS, 0), dtype=KB)
@@ -78,10 +84,12 @@ def _witness_trace(seed: int, nr: int) -> jnp.ndarray:
 @dataclass(frozen=True)
 class _ScriptedTranscript:
     """Transcript stub returning preset challenges — the forced-challenge seam
-    for comparing the driver against the reference (the driver only calls
-    ``observe_and_sample``). A registered pytree with the cursor as a leaf so it
-    rides the round ``lax.scan`` carry; ``observe_and_sample`` advances it with
-    ``dynamic_slice`` (a Python ``list.pop`` cannot be a scan carry)."""
+    for comparing the driver against the reference. A registered pytree with
+    the cursor as a leaf so it rides the round ``lax.scan`` carry; ``sample``
+    advances it with ``dynamic_slice`` (a Python ``list.pop`` cannot be a scan
+    carry), ``observe`` is a no-op. Challenges are stored at the transcript's
+    own granularity — these synthetic cases use a base-field zeta, so the
+    round engine squeezes one element per round (``_challenge_limbs`` == 1)."""
 
     challenges: jnp.ndarray
     pos: jnp.ndarray
@@ -90,8 +98,11 @@ class _ScriptedTranscript:
     def replaying(cls, challenges) -> "_ScriptedTranscript":
         return cls(jnp.asarray(challenges), jnp.asarray(0, jnp.int32))
 
-    def observe_and_sample(self, values, n=1):
+    def observe(self, values):
         del values
+        return self
+
+    def sample(self, n=1):
         out = jax.lax.dynamic_slice_in_dim(self.challenges, self.pos, n, axis=0)
         return _ScriptedTranscript(self.challenges, self.pos + n), out
 
@@ -375,6 +386,57 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
                 self.assertTrue(
                     bool(jnp.all(finals[i][:, 0] == v[:, 0])), msg=f"chip {i}"
                 )
+
+    def test_round_engine_squeezes_one_extension_challenge_per_round(self) -> None:
+        # SP1 samples each per-round sumcheck challenge as ONE extension
+        # element (efinfo(ef).degree base squeezes — p3's sample_ext_element),
+        # not one base squeeze. On a real transcript with an extension-field
+        # zeta, replaying the produced round polys under that rule must
+        # reproduce the engine's post-state; one base squeeze per round must
+        # not. Constraint-free GKR chips so the pin needs no constraint_eval.
+        num_vars, num_reals = 3, [5, 8, 3]
+        nchips = len(num_reals)
+        traces = [_witness_trace(10 + i, nr) for i, nr in enumerate(num_reals)]
+        eval_fns = [_eval_fn_empty] * nchips
+        alphas = [rlc_coeffs(_rand(90 + i, ()), 0) for i in range(nchips)]
+        lambdas = _rand(50, (nchips,))
+        zeta = _rand_ef(3, (num_vars,))
+        beta = _rand_ef(77)
+        claims = [_rand_ef(80 + i) for i in range(nchips)]
+
+        t0 = cheap_transcript(KB)
+        _, t_engine, msgs = prove_jagged_zerocheck(
+            eval_fns,
+            traces,
+            num_reals,
+            alphas,
+            lambdas,
+            zeta,
+            t0,
+            beta=beta,
+            claims=claims,
+        )
+
+        degree = 4  # efinfo(koalabearx4_mont).degree
+        t = t0
+        for r in range(num_vars):
+            t = t.observe(msgs.round_poly[r])
+            t, _ = sample_challenge(t, EF, degree)
+        _, ef_next = t.sample(1)
+        _, engine_next = t_engine.sample(1)
+        self.assertTrue(
+            bool(jnp.array_equal(ef_next, engine_next)),
+            "each round must advance the transcript by one EF challenge",
+        )
+
+        t = t0
+        for r in range(num_vars):
+            t, _ = t.observe_and_sample(msgs.round_poly[r], 1)
+        _, base_next = t.sample(1)
+        self.assertFalse(
+            bool(jnp.array_equal(base_next, engine_next)),
+            "one base squeeze per round must not match the EF rule",
+        )
 
     def test_validation_rejects_mismatched_height(self) -> None:
         trace = _witness_trace(0, 4)

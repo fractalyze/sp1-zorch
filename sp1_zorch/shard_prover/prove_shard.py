@@ -383,9 +383,9 @@ class ShardJaggedEvalRound(Round):
             blowup=1 << self._log_blowup,
             dtype=main.dense.dtype,
         )
-        # The outer sumcheck folds in the base field; the BaseFold open works
-        # in the extension field, so embed its folded point and D(z_final)
-        # base->extension (exact).
+        # The outer sumcheck folds in the extension field from round 0, so its
+        # folded point and D(z_final) are already extension elements for the
+        # BaseFold open (`astype(ef)` is then the identity).
         open_proof, transcript = stacked_basefold_open(
             self._smcs,
             code,

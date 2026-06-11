@@ -23,6 +23,7 @@ from absl.testing import absltest
 from zk_dtypes import koalabear_mont, koalabearx4_mont
 
 from zorch.round import ProveChain
+from zorch.transcript import sample_challenge
 
 from sp1_zorch.jagged.prover import (
     JaggedEvalInputs,
@@ -59,14 +60,23 @@ class _ScriptedTranscript:
     """Replays the dumped per-round challenges — the byte-match reproduces the
     reference run's Fiat-Shamir outcomes rather than re-deriving them (the duplex
     encoding is the pipeline's concern, not this round's). Mirrors
-    ``zerocheck/jagged_byte_match_test``."""
+    ``zerocheck/jagged_byte_match_test``.
+
+    Stores the extension challenges as base-field limbs: the prover binds each
+    round via ``sample_challenge``, which squeezes ``degree`` base elements and
+    views them as one extension element, so the stub returns those limbs and
+    the reinterpret reassembles the dumped challenge."""
 
     def __init__(self, challenges):
-        self._next = list(challenges)
+        flat = jax.lax.bitcast_convert_type(jnp.stack(challenges), BF).reshape(-1)
+        self._next = list(flat)
 
-    def observe_and_sample(self, values, n=1):
-        out = jnp.stack([self._next.pop(0) for _ in range(n)])
-        return self, out
+    def observe(self, values):
+        del values
+        return self
+
+    def sample(self, n=1):
+        return self, jnp.stack([self._next.pop(0) for _ in range(n)])
 
 
 class JaggedEvalRoundByteMatchTest(absltest.TestCase):
@@ -148,6 +158,51 @@ class JaggedEvalRoundByteMatchTest(absltest.TestCase):
 
     def test_inner_point(self):
         self._assert_match(self.msg.inner_point, "inner_point.npy")
+
+
+class OuterSumcheckSqueezeRuleTest(absltest.TestCase):
+    """Pins SP1's per-round squeeze rule on a real transcript: each sumcheck
+    round binds ONE extension element (efinfo(ef).degree base squeezes —
+    p3's sample_ext_element), not one base squeeze. The scripted byte-match
+    above replays dumped challenges, so it is blind to this. ``inner_sumcheck``
+    binds its rounds through the identical ``observe`` + ``sample_challenge``
+    mechanic, so this also covers it."""
+
+    def test_outer_round_advances_one_extension_challenge(self):
+        from zorch.testkit.transcript import cheap_transcript
+
+        from sp1_zorch.jagged.prover import outer_sumcheck
+
+        n = 8
+        dense = _from_u32(np.arange(1, n + 1, dtype=np.uint32), BF)
+        indicator = _from_u32(
+            np.arange(1, 4 * n + 1, dtype=np.uint32).reshape(n, 4), EF
+        )
+        claim = _from_u32(np.array([5, 6, 7, 8], dtype=np.uint32), EF)
+
+        t0 = cheap_transcript(BF)
+        polys, _, _, t_engine = outer_sumcheck(dense, indicator, claim, t0)
+
+        degree = 4  # efinfo(koalabearx4_mont).degree
+        t = t0
+        for coef in polys:
+            t = t.observe(coef)
+            t, _ = sample_challenge(t, EF, degree)
+        _, ef_next = t.sample(1)
+        _, engine_next = t_engine.sample(1)
+        self.assertTrue(
+            bool(jnp.array_equal(ef_next, engine_next)),
+            "each round must advance the transcript by one EF challenge",
+        )
+
+        t = t0
+        for coef in polys:
+            t, _ = t.observe_and_sample(coef, 1)
+        _, base_next = t.sample(1)
+        self.assertFalse(
+            bool(jnp.array_equal(base_next, engine_next)),
+            "one base squeeze per round must not match the EF rule",
+        )
 
 
 if __name__ == "__main__":
