@@ -43,13 +43,18 @@ from typing import Iterable
 
 import jax.numpy as jnp
 from zk_dtypes import koalabear_mont as F
-from zk_dtypes import koalabearx4_mont as EF
 from zkbench import BenchmarkConfig, BenchmarkOp, JaxBenchmark
 
 from sp1_zorch.logup_gkr.circuit import (
     build_gkr_chips,
     generate_circuit_layers,
     generate_first_layer,
+)
+from sp1_zorch.logup_gkr.head import (
+    EF_LIMBS,
+    GrindRound,
+    HeadChallengesRound,
+    OutputBindRound,
 )
 from sp1_zorch.logup_gkr.prover import (
     extract_sp1_outputs,
@@ -69,13 +74,8 @@ from sp1_zorch.shard_prover.replay import (
     shard_regions,
 )
 from zorch.logup_gkr.jagged_prover import JaggedGkrLayerRound
-from zorch.poly.eq import expand_eq_to_hypercube
-from zorch.poly.multilinear import eval_mle
 from zorch.round import ProveChain
-from zorch.transcript import sample_challenge
-from zorch.utils.bits import log2_ceil_usize, log2_strict_usize
 
-_EF_LIMBS = 4
 # SP1 hardcodes GKR_GRINDING_BITS = 12; the witness is replayed from the
 # dump, so the grind search itself is outside every phase here.
 _GKR_POW_BITS = 12
@@ -143,53 +143,35 @@ class LogupGkrPhasesBenchmark(JaxBenchmark):
         preamble = preamble_transcript(shard, shard_dir)
         witness = jnp.array(int(state["witness"]), F)
 
-        # The head replicated from prove_logup_gkr, anchored to the dump so
-        # this copy cannot drift from the prover (see module docstring).
+        # The head threads the shared glue Rounds — the prover's own schedule
+        # (sp1_zorch.logup_gkr.head) — anchored to the dump so drifted phase
+        # inputs abort before any timing (see module docstring).
         ok = True
-        transcript = preamble.observe(witness)
-        transcript, pow_sample = transcript.sample(1)
-        if int(pow_sample[0]) & ((1 << _GKR_POW_BITS) - 1):
-            raise ValueError("recorded witness fails the proof of work")
-        transcript, alpha = sample_challenge(transcript, EF, _EF_LIMBS)
-        ok &= check_match("alpha", alpha, _parse_ef_list(state["alpha"])[0])
-        seeds = []
-        for i in range(log2_ceil_usize(num_betas)):
-            transcript, seed = sample_challenge(transcript, EF, _EF_LIMBS)
-            ok &= check_match(
-                f"beta_seed[{i}]", seed, _parse_ef_list(state[f"beta_seed[{i}]"])[0]
-            )
-            seeds.append(seed)
-        # SP1 samples one extra public-values challenge here and discards it.
-        transcript, _ = sample_challenge(transcript, EF, _EF_LIMBS)
-        one = jnp.ones((), dtype=EF)
-        betas = (
-            one[None] if not seeds else expand_eq_to_hypercube(jnp.stack(seeds), one)
+        _, transcript, _ = GrindRound(witness, pow_bits=_GKR_POW_BITS)(
+            None, preamble
         )
+        _, transcript, head = HeadChallengesRound(num_betas)(None, transcript)
+        ok &= check_match("alpha", head.alpha, _parse_ef_list(state["alpha"])[0])
+        for i in range(head.beta_seeds.shape[0]):
+            ok &= check_match(
+                f"beta_seed[{i}]",
+                head.beta_seeds[i],
+                _parse_ef_list(state[f"beta_seed[{i}]"])[0],
+            )
 
         if need_first:
             first_layer = generate_first_layer(
-                gkr_chips, main_region, prep_region, alpha, betas
+                gkr_chips, main_region, prep_region, head.alpha, head.betas
             )
 
         if need_layers:
             layers = generate_circuit_layers(first_layer, num_row_variables)
             output = extract_sp1_outputs(layers[-1])
-            bf_dtype = main_region.dense.dtype
-            transcript = transcript.observe(
-                jnp.array(output.numerator.shape[0], bf_dtype)
-            )
-            transcript = transcript.observe(output.numerator)
-            transcript = transcript.observe(
-                jnp.array(output.denominator.shape[0], bf_dtype)
-            )
-            transcript = transcript.observe(output.denominator)
-            coords = []
-            for i in range(log2_strict_usize(output.numerator.shape[0])):
-                transcript, c = sample_challenge(transcript, EF, _EF_LIMBS)
-                ok &= check_match(f"z1[{i}]", c, _parse_ef_list(state[f"z1[{i}]"])[0])
-                coords.append(c)
-            z1 = jnp.stack(coords)
-            carry = (eval_mle(output.numerator, z1), eval_mle(output.denominator, z1))
+            carry, transcript, z1 = OutputBindRound(output)(None, transcript)
+            for i in range(z1.shape[0]):
+                ok &= check_match(
+                    f"z1[{i}]", z1[i], _parse_ef_list(state[f"z1[{i}]"])[0]
+                )
             chain_entry = transcript
 
             # Build the jitted rounds once (a ProveChain over a list is
@@ -199,11 +181,11 @@ class LogupGkrPhasesBenchmark(JaxBenchmark):
             # pyramid stays resident either way (see module docstring).
             chain = ProveChain(
                 [
-                    JaggedGkrLayerRound(layer, _EF_LIMBS, jit=True)
+                    JaggedGkrLayerRound(layer, EF_LIMBS, jit=True)
                     for layer in reversed(layers)
                 ]
             )
-            _rounds_fn = functools.partial(chain, (*carry, z1), chain_entry)
+            _rounds_fn = functools.partial(chain, carry, chain_entry)
 
         if need_chain:
             (_, _, eval_point), open_entry, round_proofs = _rounds_fn()
@@ -252,7 +234,7 @@ class LogupGkrPhasesBenchmark(JaxBenchmark):
                 "logup_gkr_first_layer",
                 lambda: _layer_planes(
                     generate_first_layer(
-                        gkr_chips, main_region, prep_region, alpha, betas
+                        gkr_chips, main_region, prep_region, head.alpha, head.betas
                     )
                 ),
             )
