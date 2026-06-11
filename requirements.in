@@ -16,6 +16,9 @@ numpy
 # earlier dev20260610045259 wheel emits wrong codewords for lax.fft compiled
 # inside a jit module at >= 2^21 codeword length, which the trace-commit @jit
 # zone hits at rsp scale. Do not drop below this timestamp.
+# (Each dev<timestamp> wheel is a fractalyze/jax build that bakes in jax's zkx
+# pin as of that build, so to pull a specific zkx fix pick a wheel timestamped
+# after that zkx PR merged; CPU-only CI cannot catch a wrong GPU codeword.)
 jax==0.0.5.dev20260610144555
 jaxlib==0.0.5.dev20260610144555
 jax-cuda12-plugin==0.0.5.dev20260610144555

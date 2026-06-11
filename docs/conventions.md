@@ -6,7 +6,8 @@ sp1-zorch follows the team playbook and inherits zorch's conventions
 (`fractalyze/zorch:docs/conventions.md` — `@jit`, naming, type annotations).
 This file records the two rules that bite hardest in an SP1 *consumer* repo:
 how comments are scoped, and how we cite the SP1 reference we mirror. The
-repo-level "SP1-specific only" rule lives in [`../CLAUDE.md`](../CLAUDE.md).
+repo-level "SP1-specific only" rule lives in [`../CLAUDE.md`](../CLAUDE.md);
+test `size`/`timeout` and fixture conventions live in [`testing.md`](testing.md).
 
 ## Comments & documentation
 
