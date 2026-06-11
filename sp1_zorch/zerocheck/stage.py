@@ -25,8 +25,9 @@ import jax.numpy as jnp
 from jax import Array
 from rw_constraints import Chip
 
+from zk_dtypes import efinfo
+
 from sp1_zorch.commit.region import JaggedRegion
-from sp1_zorch.logup_gkr.head import EF_LIMBS
 from sp1_zorch.logup_gkr.prover import (
     ChipEvaluation,
     flat_openings_absorb,
@@ -115,6 +116,16 @@ def bind_pv(chip: Chip, public_values: Array) -> Callable[[Array], Array]:
     return lambda trace: chip.eval_constraints(trace, public_values)
 
 
+def probe_num_constraints(
+    eval_fn: Callable[[Array], Array], width: int, ef: Any
+) -> int:
+    """A chip's constraint count, from a one-row zero probe — the constraint
+    functions may emit several columns each, so the count is not readable
+    off the manifest. One definition: it sizes the constraint-RLC fold on
+    both the prover and the verifier dual."""
+    return eval_fn(jnp.zeros((1, width), dtype=ef)).shape[-1]
+
+
 def sample_stage_challenges(
     transcript: Transcript, ef: Any
 ) -> tuple[Transcript, Array, Array, Array]:
@@ -123,9 +134,10 @@ def sample_stage_challenges(
     after the GKR stage). One definition driven by the prover and the
     verifier dual, so the sampling schedule cannot drift between their
     Fiat-Shamir streams."""
-    transcript, batching = sample_challenge(transcript, ef, EF_LIMBS)
-    transcript, gkr_batch = sample_challenge(transcript, ef, EF_LIMBS)
-    transcript, lambda_ = sample_challenge(transcript, ef, EF_LIMBS)
+    limbs = efinfo(ef).degree
+    transcript, batching = sample_challenge(transcript, ef, limbs)
+    transcript, gkr_batch = sample_challenge(transcript, ef, limbs)
+    transcript, lambda_ = sample_challenge(transcript, ef, limbs)
     return transcript, batching, gkr_batch, lambda_
 
 
@@ -252,13 +264,8 @@ def prove_shard_zerocheck(
         [chip_openings[name] for name in chip_names], gkr_batch
     )
 
-    # Constraint counts come from a one-row probe — a chip's constraint
-    # functions may emit several columns each, so the count is not readable
-    # off the manifest.
     alphas = [
-        rlc_coeffs(
-            batching_challenge, fn(jnp.zeros((1, t.shape[0]), dtype=ef)).shape[-1]
-        )
+        rlc_coeffs(batching_challenge, probe_num_constraints(fn, t.shape[0], ef))
         for fn, t in zip(eval_fns, traces)
     ]
     lambdas = rlc_coeffs(lambda_, len(chip_names))

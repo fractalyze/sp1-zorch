@@ -26,6 +26,7 @@ py_library(
         "@zorch//zorch/poly:poly",
         requirement("jax"),
         requirement("rw_constraints"),
+        requirement("zk_dtypes"),
     ],
 )
 

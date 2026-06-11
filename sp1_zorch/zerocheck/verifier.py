@@ -43,12 +43,13 @@ from rw_constraints import Chip
 from sp1_zorch.logup_gkr.prover import ChipEvaluation, select_openings
 from sp1_zorch.logup_gkr.verifier import padding_geqs
 from sp1_zorch.zerocheck.jagged import DEGREE
-from sp1_zorch.zerocheck.prover import constraint_rlc, gkr_powers, rlc_coeffs
+from sp1_zorch.zerocheck.prover import constraint_rlc, rlc_coeffs
 from sp1_zorch.zerocheck.stage import (
     OpenedValuesRound,
     ZerocheckProof,
     bind_pv,
     gkr_opening_claims,
+    probe_num_constraints,
     sample_stage_challenges,
 )
 from zorch.poly.eq import eval_eq
@@ -148,23 +149,24 @@ def verify_shard_zerocheck(
     z_row = point[::-1].astype(ef)
     eq_val = eval_eq(zeta, z_row)
     geq_by_height = padding_geqs((chip_heights[n] for n in chip_names), z_row)
-    max_cols = max(row.shape[0] for row in opened_rows)
-    gkr_all = gkr_powers(gkr_batch, max_cols) if max_cols else jnp.zeros(0, ef)
+    # The same beta-power column batch as the claims derivation, on the
+    # zerocheck opened values instead of the GKR openings.
+    batch_terms = gkr_opening_claims(opened, gkr_batch)
     terms = []
     for name, opened_row in zip(chip_names, opened_rows):
         geq = geq_by_height[chip_heights[name]]
         eval_fn = bind_pv(chips[name], public_values)
-        # Constraint counts come from a one-row probe, as in the prover — a
-        # chip's constraint functions may emit several columns each. Row 0 is
-        # the opening, row 1 a zero row: one batched fold yields the opened
-        # evaluation and the padded-row adjustment together (the same move as
-        # the GKR leaf check), instead of tracing the circuit twice more.
-        zero_row = jnp.zeros((1, opened_row.shape[0]), dtype=ef)
-        num_constraints = eval_fn(zero_row).shape[-1]
+        num_constraints = probe_num_constraints(eval_fn, opened_row.shape[0], ef)
         if num_constraints:
+            # Row 0 is the opening, row 1 a zero row: one batched fold yields
+            # the opened evaluation and the padded-row adjustment together
+            # (the same move as the GKR leaf check), instead of tracing the
+            # circuit twice more. Indexed, not unpacked — iterating an
+            # extension-field array dispatches lax.sign (the expand_eq
+            # gotcha).
             both = constraint_rlc(
                 eval_fn,
-                jnp.stack([opened_row, zero_row[0]]),
+                jnp.stack([opened_row, jnp.zeros_like(opened_row)]),
                 batching,
                 num_constraints,
             )
@@ -172,9 +174,8 @@ def verify_shard_zerocheck(
         else:
             constraint_term = jnp.zeros((), ef)
             padded_row_adj = jnp.zeros((), ef)
-        batch_term = jnp.sum(gkr_all[: opened_row.shape[0]] * opened_row)
-        terms.append(constraint_term - padded_row_adj * geq + batch_term)
-    rlc_eval = eq_val * jnp.sum(jnp.stack(terms) * lambdas)
+        terms.append(constraint_term - padded_row_adj * geq)
+    rlc_eval = eq_val * jnp.sum((jnp.stack(terms) + batch_terms) * lambdas)
     ok_eval = jnp.array_equal(final_claim, rlc_eval)
 
     # The stage's transcript tail, through the same shared Round the prover
