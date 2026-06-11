@@ -11,6 +11,7 @@ py_library(
         "circuit.py",
         "head.py",
         "prover.py",
+        "verifier.py",
     ],
     visibility = ["//visibility:public"],
     deps = [
@@ -68,6 +69,23 @@ py_test(
         "//sp1_zorch/shard_prover",
         "@zorch//zorch:round",
         "@zorch//zorch/logup_gkr",
+        "@zorch//zorch/testkit:transcript",
+        requirement("absl_py"),
+        requirement("jax"),
+        requirement("rw_constraints"),
+        requirement("zk_dtypes"),
+    ],
+)
+
+py_test(
+    name = "verifier_test",
+    size = "medium",
+    srcs = ["verifier_test.py"],
+    deps = [
+        ":logup_gkr",
+        "//sp1_zorch/commit:region",
+        "@zorch//zorch/logup_gkr",
+        "@zorch//zorch/poly",
         "@zorch//zorch/testkit:transcript",
         requirement("absl_py"),
         requirement("jax"),
