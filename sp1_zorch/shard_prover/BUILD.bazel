@@ -66,6 +66,21 @@ py_library(
     ],
 )
 
+# The shard verifier as one zorch VerifyChain of stage duals, mirroring
+# prove_shard round for round (docs/shard-pipeline.md).
+py_library(
+    name = "verify_shard",
+    srcs = ["verify_shard.py"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":prove_shard",
+        ":shard_prover",
+        "@zorch//zorch:round",
+        "@zorch//zorch:transcript",
+        requirement("jax"),
+    ],
+)
+
 py_test(
     name = "prove_shard_test",
     # medium: the GKR and zerocheck legs run eager composite dispatch on CPU
@@ -92,6 +107,33 @@ py_test(
         requirement("jax"),
         requirement("numpy"),
         requirement("rw_constraints"),
+        requirement("zk_dtypes"),
+    ],
+)
+
+py_test(
+    name = "verify_shard_test",
+    # small workload — only the trace-commit stage runs (tiny regions); the
+    # GKR and zerocheck legs that make prove_shard_test medium never execute.
+    # timeout moderate: ~27s sandboxed (jax import + eager poseidon2 commit
+    # dominate), which a loaded shared CI runner pushes past the 60s short cap.
+    size = "small",
+    timeout = "moderate",
+    srcs = ["verify_shard_test.py"],
+    deps = [
+        ":prove_shard",
+        ":shard_prover",
+        ":verify_shard",
+        "//sp1_zorch/commit:region",
+        "//sp1_zorch/commit:smcs",
+        "//sp1_zorch/poseidon2:koalabear16",
+        "@zorch//zorch/hash:compression",
+        "@zorch//zorch/hash:sponge",
+        "@zorch//zorch/hash/poseidon2",
+        "@zorch//zorch/testkit:transcript",
+        requirement("absl_py"),
+        requirement("jax"),
+        requirement("numpy"),
         requirement("zk_dtypes"),
     ],
 )
