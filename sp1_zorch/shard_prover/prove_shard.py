@@ -20,7 +20,7 @@ import jax
 import jax.numpy as jnp
 from jax import Array
 from rw_constraints import Chip
-from zk_dtypes import efinfo, koalabearx4_mont
+from zk_dtypes import koalabearx4_mont
 
 from sp1_zorch.commit.region import JaggedRegion
 from sp1_zorch.commit.smcs import SingleMatrixCommitmentScheme
@@ -35,6 +35,7 @@ from sp1_zorch.jagged.prover import (
     JaggedEvalMsg,
     JaggedEvalRound,
     assemble_columns,
+    sample_z_col,
 )
 from sp1_zorch.logup_gkr.circuit import GkrChip
 from sp1_zorch.logup_gkr.prover import (
@@ -46,7 +47,7 @@ from sp1_zorch.shard_prover.types import MachineVerifyingKey
 from sp1_zorch.zerocheck.stage import ZerocheckProof, prove_shard_zerocheck
 from zorch.coding.reed_solomon import BitReversedReedSolomon
 from zorch.round import ProveChain, Round
-from zorch.transcript import GrindingTranscript, Transcript, sample_challenge
+from zorch.transcript import GrindingTranscript, Transcript
 from zorch.utils.bits import log2_ceil_usize
 
 
@@ -356,14 +357,7 @@ class ShardJaggedEvalRound(Round):
         target = 1 << log2_ceil_usize(dense.shape[0])
         dense = jnp.pad(dense, (0, target - dense.shape[0]))
 
-        # z_col is one EF challenge per column variable (SP1 samples it as
-        # extension elements, not stacked base squeezes).
-        ef_degree = efinfo(ef).degree
-        z_col_parts: list[Array] = []
-        for _ in range(log2_ceil_usize(len(col_heights))):
-            transcript, challenge = sample_challenge(transcript, ef, ef_degree)
-            z_col_parts.append(challenge)
-        z_col = jnp.stack(z_col_parts) if z_col_parts else jnp.zeros((0,), ef)
+        transcript, z_col = sample_z_col(transcript, len(col_heights), ef)
 
         # z_row is the zerocheck sumcheck point in SP1's insert-at-front
         # (reversed) order.

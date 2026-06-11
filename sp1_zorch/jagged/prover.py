@@ -53,6 +53,7 @@ from zorch.poly.eq import expand_eq_to_hypercube
 from zorch.poly.univariate import eval_coeffs
 from zorch.round import Round
 from zorch.transcript import Transcript, sample_challenge
+from zorch.utils.bits import log2_ceil_usize
 
 
 @dataclass(frozen=True)
@@ -117,6 +118,30 @@ def assemble_columns(
         if n_pad:
             claim_blocks.append(jnp.zeros((n_pad,), dtype=dtype))
     return col_heights, jnp.concatenate(claim_blocks, axis=0)
+
+
+def sample_z_col(
+    transcript: Transcript, num_columns: int, dtype
+) -> tuple[Transcript, Array]:
+    """One extension challenge per column variable — SP1 samples ``z_col`` as
+    extension elements, not stacked base squeezes. One definition driven by
+    the prover stage and its verifier dual."""
+    limbs = efinfo(dtype).degree
+    parts: list[Array] = []
+    for _ in range(log2_ceil_usize(num_columns)):
+        transcript, challenge = sample_challenge(transcript, dtype, limbs)
+        parts.append(challenge)
+    z_col = jnp.stack(parts) if parts else jnp.zeros((0,), dtype)
+    return transcript, z_col
+
+
+def merged_prefix_bits(col_heights: Sequence[int], num_bits: int, *, dtype) -> Array:
+    """The ``(L, 2·num_bits)`` merged prefix-bit buffer ``bits(t_c) ‖
+    bits(t_{c+1})`` — the branching-program input both the inner sumcheck and
+    its verifier leaf check read."""
+    prefix_int = build_prefix_sums(list(col_heights))
+    bits = msb_first_bits(prefix_int, num_bits)
+    return jnp.asarray(np.concatenate([bits[:-1], bits[1:]], axis=1), dtype=dtype)
 
 
 def outer_sumcheck_claim(all_claims: Array, z_col: Array) -> Array:
@@ -229,11 +254,7 @@ def inner_sumcheck(
     bp_num_vars = max(cfg.n_r, cfg.n_d)
     t_matrix = jnp.asarray(_TRANSITION_ROWS, dtype=dtype)
 
-    prefix_int = build_prefix_sums(heights)  # length L+1
-    bits = msb_first_bits(prefix_int, num_bits)  # (L+1, num_bits)
-    merged = jnp.asarray(
-        np.concatenate([bits[:-1], bits[1:]], axis=1), dtype=dtype
-    )  # (L, 2*num_bits)
+    merged = merged_prefix_bits(heights, num_bits, dtype=dtype)
 
     col_eq = expand_eq_to_hypercube(z_col, jnp.ones((), dtype))
     weights = col_eq[:l_max]
@@ -335,8 +356,10 @@ __all__ = [
     "JaggedEvalMsg",
     "JaggedEvalRound",
     "assemble_columns",
+    "merged_prefix_bits",
     "outer_sumcheck_claim",
     "build_outer_indicator",
     "outer_sumcheck",
     "inner_sumcheck",
+    "sample_z_col",
 ]

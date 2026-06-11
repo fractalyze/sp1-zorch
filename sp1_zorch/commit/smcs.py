@@ -92,13 +92,14 @@ class SingleMatrixCommitmentScheme:
         raw_root, digest_layers = self._tree.commit(matrix)
         height, width = matrix.shape
         log_height = log2_strict_usize(height)  # power-of-two enforced by commit
-        return self._bind_root(raw_root, log_height, width, matrix.dtype), digest_layers
+        return self.bind_root(raw_root, log_height, width, matrix.dtype), digest_layers
 
-    def _bind_root(self, raw_root: Array, log_height: int, width: int, dtype) -> Array:
+    def bind_root(self, raw_root: Array, log_height: int, width: int, dtype) -> Array:
         """Apply SP1's domain separator to a raw root: the single source of the
         ``compress([root, sponge([log_height, width])])`` formula, shared by
-        ``commit`` and ``verify_batch`` so the two can never drift. ``width`` is
-        the base-field width (commit/verify both guard EF)."""
+        ``commit``, ``verify_batch``, and the stacked-open dual's raw-root wire
+        pin so they can never drift. ``width`` is the base-field width
+        (commit/verify both guard EF)."""
         params = self._sponge.hash(jnp.array([log_height, width], dtype=dtype))
         return self._compressor.compress(jnp.stack([raw_root, params]))
 
@@ -160,7 +161,7 @@ class SingleMatrixCommitmentScheme:
 
         Reconstructs the raw root from ``row`` + sibling ``proof`` (zorch's
         ``reconstruct_root``), re-binds SP1's domain separator (via the same
-        ``_bind_root`` the prover used), and compares against ``commitment``.
+        ``bind_root`` the prover used), and compares against ``commitment``.
 
         Args:
             commitment: the ``(digest_elems,)`` SMCS commitment.
@@ -183,7 +184,7 @@ class SingleMatrixCommitmentScheme:
         # consumer keeps only the SP1 separator rebind, not the generic Merkle
         # fold.
         raw_root = self._tree.reconstruct_root(index, Opening(row=row, path=proof))
-        bound = self._bind_root(raw_root, log_height, width, row.dtype)
+        bound = self.bind_root(raw_root, log_height, width, row.dtype)
         matches = jnp.array_equal(bound, commitment)
         # Priority order: bounds first, then the reconstructed-root check.
         return jnp.where(

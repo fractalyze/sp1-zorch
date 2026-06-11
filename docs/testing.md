@@ -36,6 +36,7 @@ wrong.
 
 Heavy tests currently carrying explicit timeouts: `commit:smcs_test`,
 `commit:trace_commit_test`, `shard_prover:prove_shard_test`,
+`shard_prover:verify_shard_test`, `jagged:verifier_test`,
 `logup_gkr:prover_test`, `zerocheck:jagged_test`.
 
 > A green CI on a branch with **no** recent dep bump is usually an all-cache-hit

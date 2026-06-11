@@ -75,12 +75,46 @@ py_library(
     deps = [
         ":prove_shard",
         ":shard_prover",
+        "//sp1_zorch/commit:region",
+        "//sp1_zorch/commit:smcs",
+        "//sp1_zorch/jagged:prover",
+        "//sp1_zorch/jagged:verifier",
         "//sp1_zorch/logup_gkr",
         "//sp1_zorch/zerocheck",
         "@zorch//zorch:round",
         "@zorch//zorch:transcript",
+        "@zorch//zorch/coding:reed_solomon",
+        "@zorch//zorch/utils:bits",
         requirement("jax"),
         requirement("rw_constraints"),
+        requirement("zk_dtypes"),
+    ],
+)
+
+# Shared four-stage chain fixture for the dual-chain test suites
+# (verify_shard_test here, jagged:verifier_test).
+py_library(
+    name = "chain_testkit",
+    testonly = True,
+    srcs = ["chain_testkit.py"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":prove_shard",
+        ":shard_prover",
+        ":verify_shard",
+        "//sp1_zorch/commit:region",
+        "//sp1_zorch/commit:smcs",
+        "//sp1_zorch/logup_gkr",
+        "//sp1_zorch/poseidon2:koalabear16",
+        "@zorch//zorch:round",
+        "@zorch//zorch/hash:compression",
+        "@zorch//zorch/hash:sponge",
+        "@zorch//zorch/hash/poseidon2",
+        "@zorch//zorch/testkit:transcript",
+        requirement("jax"),
+        requirement("numpy"),
+        requirement("rw_constraints"),
+        requirement("zk_dtypes"),
     ],
 )
 
@@ -116,27 +150,19 @@ py_test(
 
 py_test(
     name = "verify_shard_test",
-    # medium: the GKR stage now proves and verifies on the dual (eager
-    # composite dispatch on CPU, the prove_shard_test cost shape at a tiny
-    # region scale).
-    size = "medium",
+    # large/eternal: the full four-stage prover run plus the dual chain and
+    # three chain-level tamper replays, all eager composite dispatch on CPU
+    # (~4.5 min locally; a loaded shared CI runner is 2-3x slower).
+    size = "large",
+    timeout = "eternal",
     srcs = ["verify_shard_test.py"],
     deps = [
-        ":prove_shard",
-        ":shard_prover",
+        ":chain_testkit",
         ":verify_shard",
-        "//sp1_zorch/commit:region",
-        "//sp1_zorch/commit:smcs",
-        "//sp1_zorch/logup_gkr",
-        "//sp1_zorch/poseidon2:koalabear16",
-        "@zorch//zorch/hash:compression",
-        "@zorch//zorch/hash:sponge",
-        "@zorch//zorch/hash/poseidon2",
         "@zorch//zorch/testkit:transcript",
         requirement("absl_py"),
         requirement("jax"),
         requirement("numpy"),
-        requirement("rw_constraints"),
         requirement("zk_dtypes"),
     ],
 )
