@@ -82,12 +82,17 @@ def _prove(*, pow_bits: int = 0, witness=None):
 
 
 def _verify(proof, *, pow_bits: int = 0):
+    # public_values=None: these tests pin the GKR-replay mechanics (layer
+    # chain, leaf check, grind, point copy) on synthetic chips with no
+    # public-values bus. The output-layer balance leg is exercised on a real
+    # shard in public_values_test.
     return verify_logup_gkr(
         _gkr_chips(),
         _CHIP_NAMES,
         _CHIP_HEIGHTS,
         proof,
         cheap_transcript(F),
+        None,
         num_betas=_NUM_BETAS,
         num_row_variables=_NUM_ROW_VARIABLES,
         pow_bits=pow_bits,

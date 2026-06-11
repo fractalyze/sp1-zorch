@@ -58,7 +58,7 @@ class HeadStreamTest(absltest.TestCase):
         for _ in range(log2_ceil_usize(num_betas)):
             raw, seed = sample_challenge(raw, EF, EF_LIMBS)
             seeds.append(seed)
-        raw, _ = sample_challenge(raw, EF, EF_LIMBS)  # the discarded challenge
+        raw, pv_challenge = sample_challenge(raw, EF, EF_LIMBS)  # the pv challenge
         num, den = output.numerator, output.denominator
         raw = raw.observe(jnp.array(num.shape[0], F))
         raw = raw.observe(num)
@@ -81,6 +81,7 @@ class HeadStreamTest(absltest.TestCase):
                 )
             )
         )
+        self.assertTrue(bool(jnp.all(head.pv_challenge == pv_challenge)))
         self.assertTrue(bool(jnp.all(z1_msg == z1)))
         num_eval, den_eval, carry_z1 = carry
         self.assertTrue(bool(jnp.all(carry_z1 == z1)))
