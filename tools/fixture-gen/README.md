@@ -20,9 +20,9 @@ challenger — can instantiate the shard prover without forking prover source.
 Determinism: the basefold prover is built with FRI `pow_bits = 0`, so the prove
 (and therefore the fixtures) is byte-identical run to run.
 
-The crate currently uses local `path` deps into a sibling fork checkout for
-iterative dev; convert them to `git` deps on `fractalyze/sp1` at the ref above
-before opening the PR (see the `Cargo.toml` dep-sourcing note).
+The crate's backend deps are `git`-pinned to `fractalyze/sp1` at the ref above
+(see `Cargo.toml`); for local iteration against a sibling fork checkout, swap
+them to `path` deps temporarily.
 
 ## Recipe (cargo, outside Bazel; needs CUDA GPU + SP1 toolchain)
 
