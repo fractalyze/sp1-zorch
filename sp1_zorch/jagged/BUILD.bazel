@@ -73,9 +73,11 @@ py_test(
     timeout = "eternal",
     srcs = ["verifier_test.py"],
     deps = [
+        ":verifier",
         "//sp1_zorch/shard_prover:chain_testkit",
         "//sp1_zorch/shard_prover:prove_shard",
         "//sp1_zorch/shard_prover:verify_shard",
+        "@zorch//zorch/coding:reed_solomon",
         "@zorch//zorch/testkit:transcript",
         requirement("absl_py"),
         requirement("jax"),

@@ -17,8 +17,10 @@ import jax.numpy as jnp
 from absl.testing import absltest
 from zk_dtypes import koalabear_mont
 
+from zorch.coding.reed_solomon import BitReversedReedSolomon
 from zorch.testkit.transcript import cheap_transcript
 
+from sp1_zorch.jagged.verifier import stacked_basefold_verify
 from sp1_zorch.shard_prover.prove_shard import ShardJaggedEvalProof
 from sp1_zorch.shard_prover.verify_shard import ShardVerifierCarry
 
@@ -44,6 +46,7 @@ class ShardJaggedEvalVerifierRoundTest(absltest.TestCase):
     @classmethod
     def setUpClass(cls):
         fx = small_shard_chain_fixture()
+        cls.smcs = fx.smcs
         cls.je_proof = fx.messages[3]
         carry = ShardVerifierCarry(fx.public_values)
         transcript = cheap_transcript(BF)
@@ -123,6 +126,25 @@ class ShardJaggedEvalVerifierRoundTest(absltest.TestCase):
         op = self.je_proof.open
         bad = replace(op, final_poly=self._bump(op.final_poly))
         self.assertFalse(self._ok(replace(self.je_proof, open=bad)))
+
+    def test_zero_stacking_variables_rejected(self) -> None:
+        """``log_stacking_height == 0`` (no fold layers, no query openings)
+        is outside the SP1 wire — rejected up front, not an index error."""
+        ev = self.je_proof.eval
+        code = BitReversedReedSolomon(message_len=1, blowup=2, dtype=BF)
+        with self.assertRaisesRegex(ValueError, "stacking variable"):
+            stacked_basefold_verify(
+                self.smcs,
+                code,
+                [1],
+                jnp.zeros((1,), ev.dense_eval.dtype),
+                ev.dense_eval,
+                0,
+                self.je_proof.open,
+                cheap_transcript(BF),
+                num_queries=1,
+                pow_bits=0,
+            )
 
     def test_tampered_query_row_rejected(self) -> None:
         """A forged opened leaf fails its Merkle rebuild."""

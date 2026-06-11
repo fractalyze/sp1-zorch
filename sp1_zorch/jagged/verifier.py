@@ -196,6 +196,14 @@ def stacked_basefold_verify(
     num_vars = log_stacking_height
     block_len = code.block_len
 
+    if num_vars < 1:
+        # SP1 fixes a positive stacking height, so a zero-variable open (no
+        # fold layers, no query openings) has no SP1 check set to mirror —
+        # reject it up front rather than index-error on the empty query phase.
+        raise ValueError(
+            f"need at least one stacking variable, got "
+            f"log_stacking_height={log_stacking_height}"
+        )
     if not (
         len(proof.component_commitments)
         == len(round_widths)
