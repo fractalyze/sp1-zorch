@@ -69,7 +69,7 @@ class ZerocheckSumcheckRound(Round):
     def __call__(
         self, claim: Array, msg: Array, transcript: Transcript
     ) -> tuple[Array, Transcript, Array, Array]:
-        ok = claim == msg[0] + jnp.sum(msg)
+        ok = jnp.array_equal(claim, msg[0] + jnp.sum(msg))
         transcript, r = transcript.observe_and_sample(msg, 1)
         return eval_coeffs(msg, r[0]), transcript, r[0], ok
 
