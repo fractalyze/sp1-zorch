@@ -9,9 +9,14 @@
 //! ```text
 //! fixture-gen --zerocheck-out <zerocheck/testdata/gpu_fibonacci>
 //!             --out           <jagged/testdata/gpu_fibonacci>
+//!             [--dump-cache <file>]   # after proving, cache the capture
+//!             [--from-cache <file>]   # load a cache, skip the GPU prove
 //! ```
 //! At least one of `--out` / `--zerocheck-out` is required. `--out` emits the
 //! jagged-eval pieces and the stacked-open pieces (open augments the jagged dir).
+//!
+//! `--from-cache` lets the emit stages be iterated offline (the GPU prove is the
+//! slow, shared-resource step); `--dump-cache` captures one prove for reuse.
 
 // Scaffold (issue #86): the npy/recorder helpers forward-declare the API that
 // Phase-3 emission consumes; remove this once `emit::{zerocheck,jagged,open}`
@@ -29,11 +34,15 @@ use std::path::PathBuf;
 struct Args {
     out: Option<PathBuf>,
     zerocheck_out: Option<PathBuf>,
+    dump_cache: Option<PathBuf>,
+    from_cache: Option<PathBuf>,
 }
 
 fn parse_args() -> Args {
     let mut out = None;
     let mut zerocheck_out = None;
+    let mut dump_cache = None;
+    let mut from_cache = None;
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -43,21 +52,50 @@ fn parse_args() -> Args {
                     it.next().expect("--zerocheck-out needs a path"),
                 ))
             }
-            other => panic!("unknown arg {other:?}; usage: --out <dir> --zerocheck-out <dir>"),
+            "--dump-cache" => {
+                dump_cache = Some(PathBuf::from(it.next().expect("--dump-cache needs a path")))
+            }
+            "--from-cache" => {
+                from_cache = Some(PathBuf::from(it.next().expect("--from-cache needs a path")))
+            }
+            other => panic!(
+                "unknown arg {other:?}; usage: --out <dir> --zerocheck-out <dir> \
+                 [--dump-cache <file>] [--from-cache <file>]"
+            ),
         }
     }
     if out.is_none() && zerocheck_out.is_none() {
         panic!("at least one of --out / --zerocheck-out is required");
     }
-    Args { out, zerocheck_out }
+    Args {
+        out,
+        zerocheck_out,
+        dump_cache,
+        from_cache,
+    }
 }
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() {
     let args = parse_args();
 
-    // One prove feeds both fixture dirs (the dense `D` is shared).
-    let captured = driver::prove_and_capture().await;
+    // The GPU prove is the slow, shared-resource step; `--from-cache` reuses a
+    // prior capture so emit can be iterated offline.
+    let captured = match &args.from_cache {
+        Some(path) => {
+            eprintln!("loading capture from {}", path.display());
+            driver::load_cache(path).expect("load --from-cache")
+        }
+        None => {
+            // One prove feeds both fixture dirs (the dense `D` is shared).
+            let captured = driver::prove_and_capture().await;
+            if let Some(path) = &args.dump_cache {
+                driver::save_cache(&captured, path).expect("write --dump-cache");
+                eprintln!("capture cached to {}", path.display());
+            }
+            captured
+        }
+    };
 
     let n_samples = captured.log.is_sample.iter().filter(|b| **b).count();
     eprintln!("=== capture summary ===");

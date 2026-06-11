@@ -17,8 +17,10 @@
 //! for the dense). Off-peak only.
 
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+use serde::{Deserialize, Serialize};
 use slop_basefold::{BasefoldVerifier, FriConfig};
 use slop_futures::queue::WorkerQueue;
 use sp1_core_machine::io::SP1Stdin;
@@ -42,6 +44,10 @@ use crate::recorder::{last_log, RecorderLog, RecordingGC};
 pub type RecordingShardProof = ShardProof<RecordingGC, SP1PcsProof<RecordingGC>>;
 
 /// Everything one prove yields that the fixture emitters consume.
+///
+/// `Serialize`/`Deserialize` back the `--dump-cache` / `--from-cache` loop: one
+/// off-peak GPU prove dumps this, then the emitters iterate offline against it.
+#[derive(Serialize, Deserialize)]
 pub struct Captured {
     /// The full shard proof (zerocheck / jagged / basefold sub-proofs).
     pub proof: RecordingShardProof,
@@ -164,4 +170,17 @@ pub async fn prove_and_capture() -> Captured {
 
     let captured = slot.lock().unwrap().take();
     captured.expect("prove_and_capture produced no result")
+}
+
+/// Serialize a [`Captured`] to `path` (JSON) so emit can be iterated without a
+/// fresh GPU prove. Same fork pin → identical capture → identical fixtures.
+pub fn save_cache(c: &Captured, path: &Path) -> std::io::Result<()> {
+    let f = std::io::BufWriter::new(std::fs::File::create(path)?);
+    serde_json::to_writer(f, c).map_err(std::io::Error::other)
+}
+
+/// Load a [`Captured`] previously written by [`save_cache`].
+pub fn load_cache(path: &Path) -> std::io::Result<Captured> {
+    let f = std::io::BufReader::new(std::fs::File::open(path)?);
+    serde_json::from_reader(f).map_err(std::io::Error::other)
 }

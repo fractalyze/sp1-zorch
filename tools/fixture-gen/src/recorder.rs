@@ -15,8 +15,8 @@
 //! * The host newtype logs every base-field draw (`is_sample`), every
 //!   `sample_bits` (FRI query indices) and every `grind`/`grind_device` (PoW
 //!   witness). EF challenges decompose to 4 consecutive base samples
-//!   (`sample_ext_element` → `sample_vec(4)`), so [`RecorderLog::ef_samples`]
-//!   reconstructs them. The jagged-eval per-round `alpha`s are sampled inside the
+//!   (`sample_ext_element` → `sample_vec(4)`), which `crate::emit::ef_samples`
+//!   reconstructs. The jagged-eval per-round `alpha`s are sampled inside the
 //!   CUDA kernel and bypass the newtype — but those values are the jagged
 //!   sumcheck *points*, recovered from the proof struct, so no device readback is
 //!   needed.
@@ -48,12 +48,12 @@ use sp1_gpu_utils::{Ext, Felt};
 /// **not** flow through the base `sample()` path on this newtype (they are
 /// delegated to the inner challenger).
 ///
-/// EF challenges are reconstructed by the emitter (Phase 3) reading this log
-/// **positionally** against the protocol order — a cursor that asserts the
-/// `is_sample` flag at each step and cross-checks proof-struct values, like the
-/// openvm reference's `walk_*_log`. (A global "collect all samples, chunk by 4"
-/// is intentionally avoided: `len % 4 == 0` cannot catch a misaligned interleave.)
-#[derive(Default, Debug)]
+/// EF challenges are reconstructed by the emitter (`crate::emit::ef_samples`)
+/// reading this log **positionally**: each maximal `sample()` run is chunked into
+/// 4-limb EF elements (a `<4` remainder in a run is discarded). A global "collect
+/// all samples, chunk by 4" is intentionally avoided — `len % 4 == 0` cannot
+/// catch a misaligned interleave across the `observe` boundaries between runs.
+#[derive(Default, Debug, Serialize, Deserialize)]
 pub struct RecorderLog {
     /// Every observed (`is_sample=false`) / base-sampled (`is_sample=true`)
     /// field element, in protocol order.
@@ -91,9 +91,16 @@ pub fn last_log() -> Option<LogHandle> {
 }
 
 /// A newtype over a host challenger `C` that records every host-trait draw.
-#[derive(Clone)]
+///
+/// `Serialize`/`Deserialize` exist only so `ShardProof<RecordingGC, _>` (whose
+/// `#[serde(bound)]` demands `GC::Challenger: Serialize` even though it stores no
+/// challenger) can round-trip through the prove cache. The `log` handle is
+/// `#[serde(skip)]` — it is never part of a proof, and a fresh empty log is the
+/// correct default on load.
+#[derive(Clone, Serialize, Deserialize)]
 pub struct RecordingChallenger<C> {
     pub inner: C,
+    #[serde(skip)]
     pub log: LogHandle,
 }
 
