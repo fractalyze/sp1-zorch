@@ -1,0 +1,73 @@
+# Rust fixture generator for the `gpu_fibonacci` byte-match fixtures.
+#
+# Drives the SP1 GPU shard prove in-process with a recording challenger and
+# emits the zerocheck + jagged(+open) fixtures directly — superseding the prior
+# dump-and-Python-convert pipeline (sp1-zorch #76 / PR #83) and the fork's
+# `fri.rs` Fiat-Shamir dumps (sp1 #29). See README.md / issue #86.
+#
+# ── DEP SOURCING ─────────────────────────────────────────────────────────
+# git-pinned to the SP1 fork `fractalyze/sp1` @
+# `b2eb920754af9145a9a01d96732aefa700f7eb75` — the upstream base plus the
+# `Poseidon2SP1Field16Kernels`-over-GC generalization (the sole fork change #86
+# needs; a phantom-param change, no behavior shift) — mirroring openvm-zorch's
+# `tools/fixture-gen`, which git-pins its backend. Same pin → byte-identical
+# fixtures. Build needs the SP1 CUDA toolchain (CUDA 12.x, `CUDA_ARCHS=120` for
+# the RTX 5090).
+[package]
+name = "fixture-gen"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "fixture-gen"
+path = "src/main.rs"
+
+# Standalone workspace — don't attach to any ambient parent workspace.
+[workspace]
+
+[dependencies]
+# --- slop primitives ---
+slop-algebra = { git = "https://github.com/fractalyze/sp1.git", rev = "b2eb920754af9145a9a01d96732aefa700f7eb75" }
+slop-challenger = { git = "https://github.com/fractalyze/sp1.git", rev = "b2eb920754af9145a9a01d96732aefa700f7eb75" }
+slop-koala-bear = { git = "https://github.com/fractalyze/sp1.git", rev = "b2eb920754af9145a9a01d96732aefa700f7eb75" }
+slop-basefold = { git = "https://github.com/fractalyze/sp1.git", rev = "b2eb920754af9145a9a01d96732aefa700f7eb75" }
+slop-sumcheck = { git = "https://github.com/fractalyze/sp1.git", rev = "b2eb920754af9145a9a01d96732aefa700f7eb75" }
+slop-jagged = { git = "https://github.com/fractalyze/sp1.git", rev = "b2eb920754af9145a9a01d96732aefa700f7eb75" }
+slop-stacked = { git = "https://github.com/fractalyze/sp1.git", rev = "b2eb920754af9145a9a01d96732aefa700f7eb75" }
+slop-multilinear = { git = "https://github.com/fractalyze/sp1.git", rev = "b2eb920754af9145a9a01d96732aefa700f7eb75" }
+slop-commit = { git = "https://github.com/fractalyze/sp1.git", rev = "b2eb920754af9145a9a01d96732aefa700f7eb75" }
+slop-alloc = { git = "https://github.com/fractalyze/sp1.git", rev = "b2eb920754af9145a9a01d96732aefa700f7eb75" }
+slop-futures = { git = "https://github.com/fractalyze/sp1.git", rev = "b2eb920754af9145a9a01d96732aefa700f7eb75" }
+
+# --- SP1 core ---
+sp1-primitives = { git = "https://github.com/fractalyze/sp1.git", rev = "b2eb920754af9145a9a01d96732aefa700f7eb75" }
+sp1-hypercube = { git = "https://github.com/fractalyze/sp1.git", rev = "b2eb920754af9145a9a01d96732aefa700f7eb75" }
+sp1-core-machine = { git = "https://github.com/fractalyze/sp1.git", rev = "b2eb920754af9145a9a01d96732aefa700f7eb75" }
+test-artifacts = { git = "https://github.com/fractalyze/sp1.git", rev = "b2eb920754af9145a9a01d96732aefa700f7eb75" }
+
+# --- SP1 GPU ---
+sp1-gpu-shard-prover = { git = "https://github.com/fractalyze/sp1.git", rev = "b2eb920754af9145a9a01d96732aefa700f7eb75" }
+sp1-gpu-challenger = { git = "https://github.com/fractalyze/sp1.git", rev = "b2eb920754af9145a9a01d96732aefa700f7eb75" }
+sp1-gpu-basefold = { git = "https://github.com/fractalyze/sp1.git", rev = "b2eb920754af9145a9a01d96732aefa700f7eb75" }
+sp1-gpu-jagged-assist = { git = "https://github.com/fractalyze/sp1.git", rev = "b2eb920754af9145a9a01d96732aefa700f7eb75" }
+sp1-gpu-jagged-tracegen = { git = "https://github.com/fractalyze/sp1.git", rev = "b2eb920754af9145a9a01d96732aefa700f7eb75", features = [
+    "test-utils",
+] }
+sp1-gpu-logup-gkr = { git = "https://github.com/fractalyze/sp1.git", rev = "b2eb920754af9145a9a01d96732aefa700f7eb75" }
+sp1-gpu-air = { git = "https://github.com/fractalyze/sp1.git", rev = "b2eb920754af9145a9a01d96732aefa700f7eb75" }
+sp1-gpu-merkle-tree = { git = "https://github.com/fractalyze/sp1.git", rev = "b2eb920754af9145a9a01d96732aefa700f7eb75" }
+sp1-gpu-zerocheck = { git = "https://github.com/fractalyze/sp1.git", rev = "b2eb920754af9145a9a01d96732aefa700f7eb75" }
+sp1-gpu-cudart = { git = "https://github.com/fractalyze/sp1.git", rev = "b2eb920754af9145a9a01d96732aefa700f7eb75" }
+sp1-gpu-utils = { git = "https://github.com/fractalyze/sp1.git", rev = "b2eb920754af9145a9a01d96732aefa700f7eb75" }
+
+# --- utility ---
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
+
+[profile.release]
+# Keep the PoW grind deterministic: the driver builds the basefold prover with
+# FRI pow_bits=0 (a sequential first-match witness), so fixtures are bit-identical
+# across regen runs; no rayon-nondeterminism concern here.
+debug = false
