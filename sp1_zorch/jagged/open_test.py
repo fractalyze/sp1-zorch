@@ -6,7 +6,7 @@ Drives ``stacked_basefold_open`` over the vendored ``gpu_fibonacci`` regions
 the dumped basefold challenges (the RLC weights, the per-round FRI fold betas,
 the query positions, and the proof-of-work witness), then byte-matches the
 structural proof the open produces: per-round batch evaluations, the FRI
-fold-layer roots (raw + SP1 separator-bound), the final poly, the proof-of-work
+fold-layer roots (SP1 separator-bound), the final poly, the proof-of-work
 witness, and the component + query Merkle openings. The duplex encoding that
 derives those challenges is the pipeline's concern (verified elsewhere via the
 real transcript), so replaying them here isolates the open's commit/fold/open
@@ -173,8 +173,9 @@ class StackedOpenByteMatchTest(absltest.TestCase):
                 f"batch_evals_r{r}",
             )
 
-    def test_fri_raw_roots(self):
-        self._assert_match(self.proof.fri_raw_roots, _out("fri_raw_roots.npy"), "fri_raw_roots")
+    # No fri_raw_roots check: the raw (pre-binding) fold-layer root is a
+    # zorch-internal digest with no SP1 reference — SP1's proof carries only the
+    # separator-bound root, byte-matched by test_fri_commitments below.
 
     def test_fri_commitments(self):
         self._assert_match(self.proof.fri_commitments, _out("fri_commitments.npy"), "fri_commitments")
