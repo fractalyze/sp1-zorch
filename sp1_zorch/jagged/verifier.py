@@ -18,17 +18,18 @@ Both run on zorch verifier blocks (``CoeffsSumcheckRound`` under the
 here is the SP1 wire — the absorb schedule, the canonical-low-bits query
 rule, the separator-bound fold-layer roots, and the scalar final poly.
 
-References, pinned at the same SP1 commit as the prover:
-- jagged verify — ``slop/crates/jagged/src/verifier.rs``
-  (``verify_trusted_evaluations``);
-- inner leaf check — ``slop/crates/jagged/src/jagged_eval/sumcheck_eval.rs``
-  (``jagged_evaluation``);
-- stacking check — ``slop/crates/stacked/src/verifier.rs``
-  (``verify_trusted_evaluation``);
-- fold/query phase — ``slop/crates/basefold/src/verifier.rs``
-  (``verify_mle_evaluations``). SP1 checks each query's fold chain against
-  the final poly and never separately compares the sumcheck side's terminal
-  claim to it; the dual mirrors SP1's check set exactly.
+References (pinned at the same SP1 commit as ``zerocheck/jagged.py``):
+- jagged verify — ``verify_trusted_evaluations``:
+  https://github.com/fractalyze/sp1/blob/640d8b80c/slop/crates/jagged/src/verifier.rs
+- inner leaf check — ``jagged_evaluation``:
+  https://github.com/fractalyze/sp1/blob/640d8b80c/slop/crates/jagged/src/jagged_eval/sumcheck_eval.rs
+- stacking check — ``verify_trusted_evaluation``:
+  https://github.com/fractalyze/sp1/blob/640d8b80c/slop/crates/stacked/src/verifier.rs
+- fold/query phase — ``verify_mle_evaluations``:
+  https://github.com/fractalyze/sp1/blob/640d8b80c/slop/crates/basefold/src/verifier.rs
+  SP1 checks each query's fold chain against the final poly and never
+  separately compares the sumcheck side's terminal claim to it; the dual
+  mirrors SP1's check set exactly.
 """
 
 from __future__ import annotations
