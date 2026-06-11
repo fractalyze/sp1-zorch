@@ -1,0 +1,37 @@
+# Copyright 2026 Fractalyze Inc. All rights reserved.
+#
+# Receives a `jax-update` repository_dispatch from the jax repo's
+# notify-downstream workflow and opens a pin-bump PR. sp1-zorch must be in that
+# dispatcher's consumer list for events to arrive.
+#
+# Unlike zorch, sp1-zorch pins jax-cuda12-plugin in lockstep with the other jax
+# wheels (see requirements.in), so all four bump together. The zorch git pin in
+# MODULE.bazel is a separate, manual bump — the pip-bump action only touches the
+# pip lock, not Bazel git_override revisions.
+
+name: JAX Update
+
+on:
+  repository_dispatch:
+    types: [jax-update]
+
+concurrency:
+  group: jax-update
+  cancel-in-progress: true
+
+jobs:
+  bump:
+    runs-on: [self-hosted, cpu]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.BUMPER_GH_PAT }}
+
+      - name: Bump jax/jaxlib/jax-cuda12-plugin/zkx-cuda-pjrt
+        uses: fractalyze/github-actions/pip-bump@main
+        with:
+          upstream_repo: jax
+          version: ${{ github.event.client_payload.jax_version }}
+          upstream_commit: ${{ github.event.client_payload.commit }}
+          packages: jax jaxlib jax-cuda12-plugin zkx-cuda-pjrt
+          github_token: ${{ secrets.BUMPER_GH_PAT }}
