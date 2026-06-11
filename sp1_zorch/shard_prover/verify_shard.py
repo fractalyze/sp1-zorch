@@ -53,7 +53,7 @@ class ShardVerifierCarry:
     # Written by TraceCommitVerifierRound; read by the stacked-open dual
     # (skip-level, two seams later). [prep, main] order, matching SP1's
     # round_evaluation_claims.
-    commitment_roots: tuple[Array, ...] | None = None
+    commitment_roots: tuple[Array, Array] | None = None
 
 
 class TraceCommitVerifierRound(Round):
