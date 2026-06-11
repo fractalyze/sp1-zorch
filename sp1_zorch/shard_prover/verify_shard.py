@@ -38,7 +38,7 @@ from sp1_zorch.shard_prover.prove_shard import (
     PreambleRound,
     ShardJaggedEvalProof,
 )
-from sp1_zorch.shard_prover.types import MachineVerifyingKey
+from sp1_zorch.shard_prover.types import ChipShape, MachineVerifyingKey
 from sp1_zorch.zerocheck.stage import ZerocheckProof
 from sp1_zorch.zerocheck.verifier import verify_shard_zerocheck
 from zorch.coding.reed_solomon import BitReversedReedSolomon
@@ -82,7 +82,8 @@ class ShardVerifierCarry:
     gkr_chip_openings: Mapping[str, ChipEvaluation] | None = None
     # Written by ShardZerocheckVerifierRound; read by the jagged-eval dual as
     # its z_row (the dual's own sampled challenges) and its per-column claims
-    # (the proof's opened values, oracle-checked by the zerocheck dual).
+    # (the proof's opened values, shape- and oracle-checked by the zerocheck
+    # dual).
     zc_sumcheck_point: Array | None = None
     zc_opened_values: Mapping[str, ChipEvaluation] | None = None
 
@@ -170,19 +171,27 @@ class ShardZerocheckVerifierRound(Round):
     via ``verify_shard_zerocheck``, consuming the GKR point and openings off
     the carry, and writes the dual's own sumcheck point plus the proof's
     oracle-checked opened values onto the carry — the same seams the prover
-    Round writes on ``ShardCarry`` for the jagged-eval stage."""
+    Round writes on ``ShardCarry`` for the jagged-eval stage.
+
+    The proof's opened values are checked against the statement shapes
+    before anything consumes them (SP1's ``verify_opening_shape`` inside
+    ``verify_zerocheck``, ``crates/hypercube/src/verifier/shard.rs``) — the
+    verifier absorbs the proof's opened values, so a shape lie never
+    desyncs Fiat-Shamir and only a statement check rejects it. Downstream
+    duals reading the carry's opened values may trust their shapes."""
 
     def __init__(
         self,
         chips: Mapping[str, Chip],
         *,
         chip_names: Sequence[str],
-        chip_heights: Mapping[str, int],
+        chip_shapes: Mapping[str, ChipShape],
         max_log_row_count: int,
     ) -> None:
         self._chips = chips
         self._chip_names = chip_names
-        self._chip_heights = chip_heights
+        self._chip_shapes = chip_shapes
+        self._chip_heights = {n: s.main.height for n, s in chip_shapes.items()}
         self._max_log_row_count = max_log_row_count
 
     def __call__(
@@ -196,6 +205,28 @@ class ShardZerocheckVerifierRound(Round):
                 "the zerocheck dual needs the LogUp-GKR stage's outputs on "
                 "the carry; sequence a LogupGkrVerifierRound before this Round"
             )
+        opened = msg.opened_values
+        for n in self._chip_names:
+            shape = self._chip_shapes[n]
+            if int(opened[n].main.shape[0]) != shape.main.width:
+                raise ValueError(
+                    f"chip {n!r}: need one main claim per statement column "
+                    f"({shape.main.width}), got {int(opened[n].main.shape[0])}"
+                )
+            prep_open = opened[n].preprocessed
+            if shape.prep is not None:
+                if prep_open is None or int(prep_open.shape[0]) != shape.prep.width:
+                    got = "none" if prep_open is None else int(prep_open.shape[0])
+                    raise ValueError(
+                        f"chip {n!r}: need one preprocessed claim per "
+                        f"statement column ({shape.prep.width}), got {got}"
+                    )
+            elif prep_open is not None:
+                raise ValueError(
+                    f"chip {n!r}: the statement has no preprocessed trace, "
+                    f"but the proof opens {int(prep_open.shape[0])} "
+                    f"preprocessed columns"
+                )
         transcript, point, ok = verify_shard_zerocheck(
             self._chips,
             self._chip_names,
@@ -221,11 +252,11 @@ class ShardJaggedEvalVerifierRound(Round):
     ``stacked_basefold_verify`` against the carry's skip-level commitment
     roots.
 
-    Chip heights are statement inputs; column widths come off the opened
-    values' shapes (the statement has no width source yet — the same
-    opening-shape gap the zerocheck dual records). ``prep_chip_heights``
-    being None states that no preprocessed round exists, so a proof carrying
-    one is a structural reject."""
+    The column manifest is built entirely from the statement shapes; the
+    carry's opened values only supply the claims, their shapes already
+    checked against the same statement by the zerocheck dual. A statement
+    with no preprocessed chip states that no preprocessed round exists, so
+    a proof carrying one is a structural reject."""
 
     def __init__(
         self,
@@ -235,20 +266,18 @@ class ShardJaggedEvalVerifierRound(Round):
         num_queries: int,
         pow_bits: int,
         chip_names: Sequence[str],
-        chip_heights: Mapping[str, int],
+        chip_shapes: Mapping[str, ChipShape],
         log_stacking_height: int,
         max_log_row_count: int,
-        prep_chip_heights: Mapping[str, int] | None = None,
     ) -> None:
         self._smcs = smcs
         self._log_blowup = log_blowup
         self._num_queries = num_queries
         self._pow_bits = pow_bits
         self._chip_names = chip_names
-        self._chip_heights = chip_heights
+        self._chip_shapes = chip_shapes
         self._log_stacking_height = log_stacking_height
         self._max_log_row_count = max_log_row_count
-        self._prep_chip_heights = prep_chip_heights
 
     def __call__(
         self,
@@ -268,26 +297,26 @@ class ShardJaggedEvalVerifierRound(Round):
             )
         opened = carry.zc_opened_values
         ef = carry.zc_sumcheck_point.dtype
+        shapes = self._chip_shapes
 
-        # [prep, main] manifests, mirroring the prover's region walk.
+        # [prep, main] manifests from the statement, mirroring the prover's
+        # region walk.
+        prep_names = [n for n in self._chip_names if shapes[n].prep is not None]
         regions: list[tuple[list[str], list[int], list[int], str]] = []
-        if self._prep_chip_heights is not None:
-            names = [
-                n for n in self._chip_names if opened[n].preprocessed is not None
-            ]
+        if prep_names:
             regions.append(
                 (
-                    names,
-                    [self._prep_chip_heights[n] for n in names],
-                    [int(opened[n].preprocessed.shape[0]) for n in names],
+                    prep_names,
+                    [shapes[n].prep.height for n in prep_names],
+                    [shapes[n].prep.width for n in prep_names],
                     "preprocessed",
                 )
             )
         regions.append(
             (
                 list(self._chip_names),
-                [self._chip_heights[n] for n in self._chip_names],
-                [int(opened[n].main.shape[0]) for n in self._chip_names],
+                [shapes[n].main.height for n in self._chip_names],
+                [shapes[n].main.width for n in self._chip_names],
                 "main",
             )
         )
@@ -350,7 +379,7 @@ class ShardJaggedEvalVerifierRound(Round):
         # commitments bind the openings to the statement.
         statement_roots = (
             list(carry.commitment_roots)
-            if self._prep_chip_heights is not None
+            if prep_names
             else [carry.commitment_roots[1]]
         )
         if len(msg.open.component_commitments) != len(statement_roots):
@@ -392,7 +421,7 @@ def verify_shard_chain(
     gkr_chips: Sequence[GkrChip],
     chips: Mapping[str, Chip],
     chip_names: Sequence[str],
-    chip_heights: Mapping[str, int],
+    chip_shapes: Mapping[str, ChipShape],
     num_betas: int,
     num_row_variables: int,
     max_log_row_count: int,
@@ -401,21 +430,22 @@ def verify_shard_chain(
     open_pow_bits: int = 0,
     pow_bits: int = 0,
     verify_public_values: bool = True,
-    prep_chip_heights: Mapping[str, int] | None = None,
 ) -> VerifyChain:
     """The ``VerifyChain`` dual of ``prove_shard_chain``: one verifier Round
     per prover stage, in the prover's order, so the proof's message list
     aligns slot for slot or fails the chain's one-message-per-round check.
 
-    ``chip_names`` and ``chip_heights`` cover every shard chip (the openings
-    absorb order, the leaf and oracle checks' geq thresholds, the jagged
-    column manifest) — the verifier-side statement counterpart of the
-    regions the prover Rounds read off the carry. ``log_stacking_height``
-    and the ``open_*`` parameters mirror the prover's stage-4 configuration.
+    ``chip_names`` and ``chip_shapes`` cover every shard chip (the openings
+    absorb order, the opening-shape check, the leaf and oracle checks' geq
+    thresholds, the jagged column manifest) — the verifier-side statement
+    counterpart of the regions the prover Rounds read off the carry.
+    ``log_stacking_height`` and the ``open_*`` parameters mirror the
+    prover's stage-4 configuration.
 
     ``verify_public_values`` runs the LogUp-GKR output-layer bus-balance leg
     (the public-values digest vs the circuit cumulative sum); a structural
     test over a synthetic shard with no real public-values bus sets it False."""
+    chip_heights = {n: s.main.height for n, s in chip_shapes.items()}
     return VerifyChain(
         [
             TraceCommitVerifierRound(vk=vk, chip_metadata=chip_metadata),
@@ -431,7 +461,7 @@ def verify_shard_chain(
             ShardZerocheckVerifierRound(
                 chips,
                 chip_names=chip_names,
-                chip_heights=chip_heights,
+                chip_shapes=chip_shapes,
                 max_log_row_count=max_log_row_count,
             ),
             ShardJaggedEvalVerifierRound(
@@ -440,10 +470,9 @@ def verify_shard_chain(
                 num_queries=open_num_queries,
                 pow_bits=open_pow_bits,
                 chip_names=chip_names,
-                chip_heights=chip_heights,
+                chip_shapes=chip_shapes,
                 log_stacking_height=log_stacking_height,
                 max_log_row_count=max_log_row_count,
-                prep_chip_heights=prep_chip_heights,
             ),
         ]
     )

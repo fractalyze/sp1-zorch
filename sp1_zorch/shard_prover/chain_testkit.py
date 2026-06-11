@@ -35,12 +35,17 @@ from sp1_zorch.shard_prover.prove_shard import (
     preamble_chip_metadata,
     prove_shard_chain,
 )
-from sp1_zorch.shard_prover.types import MachineVerifyingKey
+from sp1_zorch.shard_prover.types import (
+    ChipShape,
+    MachineVerifyingKey,
+    TraceShape,
+)
 from sp1_zorch.shard_prover.verify_shard import verify_shard_chain
 
 MAX_LOG_ROW_COUNT = 5
 CHIP_HEIGHT = 4
-_LOG_STACKING_HEIGHT = 3
+CHIP_WIDTH = 2
+LOG_STACKING_HEIGHT = 3
 _NUM_BETAS = 3
 
 
@@ -72,6 +77,7 @@ class ShardChainFixture:
     smcs: SingleMatrixCommitmentScheme
     vk: MachineVerifyingKey
     public_values: jnp.ndarray
+    chips: dict[str, Any]
     prove_chain: ProveChain
     dual: VerifyChain
     messages: list[Any]
@@ -90,7 +96,7 @@ def small_shard_chain_fixture() -> ShardChainFixture:
                 axis=1,
             )
         ],
-        log_stacking_height=_LOG_STACKING_HEIGHT,
+        log_stacking_height=LOG_STACKING_HEIGHT,
         max_log_row_count=MAX_LOG_ROW_COUNT,
         chip_names=("alpha",),
     )
@@ -140,8 +146,8 @@ def small_shard_chain_fixture() -> ShardChainFixture:
     # logup_gkr/public_values_test.
     dual = verify_shard_chain(
         chip_names=("alpha",),
-        chip_heights={"alpha": CHIP_HEIGHT},
-        log_stacking_height=_LOG_STACKING_HEIGHT,
+        chip_shapes={"alpha": ChipShape(TraceShape(CHIP_HEIGHT, CHIP_WIDTH))},
+        log_stacking_height=LOG_STACKING_HEIGHT,
         open_num_queries=2,
         verify_public_values=False,
         **shared,
@@ -158,6 +164,7 @@ def small_shard_chain_fixture() -> ShardChainFixture:
         smcs=smcs,
         vk=vk,
         public_values=public_values,
+        chips=chips,
         prove_chain=prove_chain,
         dual=dual,
         messages=messages,

@@ -50,6 +50,27 @@ class MachineVerifyingKey:
 
 
 @dataclass(frozen=True)
+class TraceShape:
+    """One trace matrix's statement shape."""
+
+    height: int
+    width: int
+
+
+@dataclass(frozen=True)
+class ChipShape:
+    """One chip's statement trace shapes: the main trace, plus the
+    preprocessed trace when the chip carries one — the verifier-side
+    counterpart of SP1's ``chip.width()`` / ``chip.preprocessed_width()``
+    (``crates/hypercube/src/verifier/shard.rs``). One record per chip keeps
+    the height/width/prep statement atomic: a half-stated preprocessed
+    trace is unrepresentable."""
+
+    main: TraceShape
+    prep: TraceShape | None = None
+
+
+@dataclass(frozen=True)
 class ChipOpenedValues:
     """SP1 mirror: ``ChipOpenedValues<F, EF>`` — one chip's zerocheck
     openings as the shard-proof wire carries them. ``degree`` is the chip's
