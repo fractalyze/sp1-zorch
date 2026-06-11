@@ -29,7 +29,11 @@ from sp1_zorch.commit.region import JaggedRegion
 from sp1_zorch.logup_gkr.prover import ChipEvaluation
 from sp1_zorch.zerocheck.jagged import prove_jagged_zerocheck
 from sp1_zorch.zerocheck.prover import gkr_powers, rlc_coeffs
-from sp1_zorch.zerocheck.stage import prove_shard_zerocheck, split_opened_values
+from sp1_zorch.zerocheck.stage import (
+    OpenedValuesRound,
+    prove_shard_zerocheck,
+    split_opened_values,
+)
 
 # The pinned jaxlib wheel's embedded zkx CPU emitter CHECK-fails on the rank-1
 # linalg.broadcast inside an engaged zorch.constraint_eval region
@@ -235,6 +239,21 @@ class ProveZerocheckTest(absltest.TestCase):
         _assert_bytes_equal(opened["alpha"].preprocessed, self.want_finals[0][3:5, 0])
         _assert_bytes_equal(opened["lookup"].main, self.want_finals[1][:1, 0])
         self.assertIsNone(opened["lookup"].preprocessed)
+
+
+class OpenedValuesRoundGuardTest(absltest.TestCase):
+    """The absorb order is the caller's statement; a mapping that does not
+    cover it exactly is rejected before anything reaches the transcript —
+    the mapping is proof-controlled once the verifier dual drives the
+    Round."""
+
+    def test_extra_chip_raises(self) -> None:
+        opened = {
+            "alpha": ChipEvaluation(main=jnp.zeros((1,), EF), preprocessed=None),
+            "stowaway": ChipEvaluation(main=jnp.zeros((1,), EF), preprocessed=None),
+        }
+        with self.assertRaisesRegex(ValueError, "cover exactly"):
+            OpenedValuesRound(opened, ("alpha",))(None, cheap_transcript(BF))
 
 
 class SplitOpenedValuesTest(absltest.TestCase):

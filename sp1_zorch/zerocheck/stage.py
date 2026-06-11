@@ -26,7 +26,11 @@ from jax import Array
 from rw_constraints import Chip
 
 from sp1_zorch.commit.region import JaggedRegion
-from sp1_zorch.logup_gkr.prover import ChipEvaluation, flat_openings_absorb
+from sp1_zorch.logup_gkr.prover import (
+    ChipEvaluation,
+    flat_openings_absorb,
+    select_openings,
+)
 from sp1_zorch.zerocheck.jagged import prove_jagged_zerocheck
 from sp1_zorch.zerocheck.prover import gkr_powers, rlc_coeffs
 from zorch.round import Round
@@ -173,7 +177,7 @@ class OpenedValuesRound(Round):
         self, carry: Any, transcript: Transcript
     ) -> tuple[Any, Transcript, Mapping[str, ChipEvaluation]]:
         flat = flat_openings_absorb(
-            [self._opened_values[name] for name in self._chip_names],
+            select_openings(self._opened_values, self._chip_names),
             empty_prep_absorbs_zero=True,
         )
         return carry, transcript.observe(flat), self._opened_values

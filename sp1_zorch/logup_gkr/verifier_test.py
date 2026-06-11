@@ -162,7 +162,13 @@ class VerifyLogupGkrTest(absltest.TestCase):
 
     def test_missing_chip_opening_raises(self) -> None:
         openings = {"A": self.proof.chip_openings["A"]}
-        with self.assertRaisesRegex(ValueError, "chip openings"):
+        with self.assertRaisesRegex(ValueError, "cover exactly"):
+            _verify(replace(self.proof, chip_openings=openings))
+
+    def test_extra_chip_opening_raises(self) -> None:
+        openings = dict(self.proof.chip_openings)
+        openings["stowaway"] = openings["A"]
+        with self.assertRaisesRegex(ValueError, "cover exactly"):
             _verify(replace(self.proof, chip_openings=openings))
 
 

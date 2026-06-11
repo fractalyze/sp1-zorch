@@ -127,6 +127,19 @@ def _open_chip(trace: Array, rev_point: Array, real_height: int) -> Array:
     return mles[:, 0] * correction
 
 
+def select_openings(
+    openings: Mapping[str, ChipEvaluation], chip_names: Sequence[str]
+) -> list[ChipEvaluation]:
+    """Order a per-chip openings mapping by the caller's statement chips,
+    rejecting a mapping that does not cover them exactly. The guard lives
+    with the absorb Rounds consuming the selection because the mapping is
+    proof-controlled once a verifier dual drives them: a missing chip would
+    KeyError anyway, but an extra one would ride along silently."""
+    if set(openings) != set(chip_names):
+        raise ValueError("openings must cover exactly the statement chips")
+    return [openings[name] for name in chip_names]
+
+
 def flat_openings_absorb(
     evaluations: Sequence[ChipEvaluation], *, empty_prep_absorbs_zero: bool
 ) -> Array:
@@ -176,7 +189,7 @@ class ChipOpeningsRound(Round):
         self, carry: Any, transcript: Transcript
     ) -> tuple[Any, Transcript, Mapping[str, ChipEvaluation]]:
         flat = flat_openings_absorb(
-            [self._openings[name] for name in self._chip_names],
+            select_openings(self._openings, self._chip_names),
             empty_prep_absorbs_zero=False,
         )
         return carry, transcript.observe(flat), self._openings

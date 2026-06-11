@@ -164,9 +164,6 @@ def verify_logup_gkr(
             f"circuit output must have {expected_output} entries, got "
             f"{proof.circuit_output.numerator.shape[0]}"
         )
-    if set(proof.chip_openings) != set(chip_names):
-        raise ValueError("chip openings must cover exactly the shard chips")
-
     # Grind gate. The prover's GrindRound judges host-side and raises; the
     # dual needs the verdict as a traced leg of ok, so it calls the same
     # one-definition predicate directly.
