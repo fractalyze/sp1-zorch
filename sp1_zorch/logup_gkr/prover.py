@@ -20,12 +20,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import partial
-from typing import Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 import jax
 import jax.numpy as jnp
 from jax import Array, lax
 from rw_constraints import Chip
+from zk_dtypes import efinfo
 
 from sp1_zorch.commit.region import JaggedRegion
 from sp1_zorch.logup_gkr.circuit import (
@@ -47,7 +48,7 @@ from zorch.logup_gkr.circuit import (
     jagged_layer_transition,
 )
 from zorch.logup_gkr.jagged_prover import JaggedGkrLayerRound, JaggedLayerProof
-from zorch.round import ProveChain
+from zorch.round import ProveChain, Round
 from zorch.transcript import Transcript
 
 
@@ -126,6 +127,61 @@ def _open_chip(trace: Array, rev_point: Array, real_height: int) -> Array:
     return mles[:, 0] * correction
 
 
+def flat_openings_absorb(
+    evaluations: Sequence[ChipEvaluation], *, empty_prep_absorbs_zero: bool
+) -> Array:
+    """SP1's length-prefixed openings absorb as one flat base-field array:
+    the chip count, then per chip preprocessed before main, each eval
+    length-prefixed. One flat absorb because the sponge eats elements one at
+    a time either way, and per-eval transcript calls would re-trace the
+    absorb scan per chip.
+
+    A chip with no preprocessed eval absorbs a bare zero length when
+    ``empty_prep_absorbs_zero`` (SP1's empty-Vec framing on the zerocheck
+    opened values) and nothing at all otherwise (SP1's GKR chip-openings
+    framing). The two wire schedules share everything else; keeping them in
+    one builder is what stops them drifting apart.
+    """
+    bf_dtype = efinfo(evaluations[0].main.dtype).base_field_dtype
+    flat_parts: list[Array] = [jnp.array([len(evaluations)], bf_dtype)]
+    for ev in evaluations:
+        if ev.preprocessed is not None:
+            flat_parts.append(jnp.array([ev.preprocessed.shape[0]], bf_dtype))
+            flat_parts.append(
+                lax.bitcast_convert_type(ev.preprocessed, bf_dtype).reshape(-1)
+            )
+        elif empty_prep_absorbs_zero:
+            flat_parts.append(jnp.array([0], bf_dtype))
+        flat_parts.append(jnp.array([ev.main.shape[0]], bf_dtype))
+        flat_parts.append(lax.bitcast_convert_type(ev.main, bf_dtype).reshape(-1))
+    return jnp.concatenate(flat_parts)
+
+
+class ChipOpeningsRound(Round):
+    """SP1's GKR chip-openings absorb schedule, single-sourced the same way
+    as the preamble and the GKR head glue: the prover (``open_traces``)
+    drives it with the openings it just computed, the verifier dual with the
+    proof's recorded ones, so the two Fiat-Shamir streams cannot drift.
+    ``chip_names`` fixes the absorb order -- the caller's statement, never
+    the mapping's own iteration order. The message is the openings, the
+    values this round binds."""
+
+    def __init__(
+        self, openings: Mapping[str, ChipEvaluation], chip_names: Sequence[str]
+    ) -> None:
+        self._openings = openings
+        self._chip_names = chip_names
+
+    def __call__(
+        self, carry: Any, transcript: Transcript
+    ) -> tuple[Any, Transcript, Mapping[str, ChipEvaluation]]:
+        flat = flat_openings_absorb(
+            [self._openings[name] for name in self._chip_names],
+            empty_prep_absorbs_zero=False,
+        )
+        return carry, transcript.observe(flat), self._openings
+
+
 def open_traces(
     main_region: JaggedRegion,
     prep_region: JaggedRegion | None,
@@ -134,15 +190,12 @@ def open_traces(
     *,
     trace_dimension: int,
 ) -> tuple[Transcript, dict[str, ChipEvaluation]]:
-    """Open every shard chip's traces at the final GKR point and absorb them.
+    """Open every shard chip's traces at the final GKR point and absorb them
+    via ``ChipOpeningsRound``.
 
-    SP1 opens ALL shard chips (not just the GKR ones), preprocessed before
-    main per chip, each eval length-prefixed. The absorb is one flat array
-    in that exact element order -- the sponge eats elements one at a time
-    either way, and per-eval transcript calls would re-trace the absorb
-    scan per chip. Preprocessed traces open at their keygen height.
+    SP1 opens ALL shard chips (not just the GKR ones). Preprocessed traces
+    open at their keygen height.
     """
-    bf_dtype = main_region.dense.dtype
     rev_point = eval_point[-trace_dimension:][::-1]
     prep_name_to_idx = (
         {name: i for i, name in enumerate(prep_region.chip_names)}
@@ -151,7 +204,6 @@ def open_traces(
     )
 
     openings: dict[str, ChipEvaluation] = {}
-    flat_parts: list[Array] = [jnp.array([len(main_region.chip_names)], bf_dtype)]
     for idx, name in enumerate(main_region.chip_names):
         main_eval = _open_chip(
             _chip_view(main_region, idx), rev_point, main_region.chip_heights[idx]
@@ -164,13 +216,11 @@ def open_traces(
                 rev_point,
                 prep_region.chip_heights[prep_idx],
             )
-            flat_parts.append(jnp.array([prep_eval.shape[0]], bf_dtype))
-            flat_parts.append(lax.bitcast_convert_type(prep_eval, bf_dtype).reshape(-1))
-        flat_parts.append(jnp.array([main_eval.shape[0]], bf_dtype))
-        flat_parts.append(lax.bitcast_convert_type(main_eval, bf_dtype).reshape(-1))
         openings[name] = ChipEvaluation(main=main_eval, preprocessed=prep_eval)
 
-    transcript = transcript.observe(jnp.concatenate(flat_parts))
+    _, transcript, _ = ChipOpeningsRound(openings, main_region.chip_names)(
+        None, transcript
+    )
     return transcript, openings
 
 

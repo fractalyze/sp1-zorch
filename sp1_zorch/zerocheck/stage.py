@@ -22,12 +22,11 @@ from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Sequence
 
 import jax.numpy as jnp
-from jax import Array, lax
+from jax import Array
 from rw_constraints import Chip
-from zk_dtypes import efinfo
 
 from sp1_zorch.commit.region import JaggedRegion
-from sp1_zorch.logup_gkr.prover import ChipEvaluation
+from sp1_zorch.logup_gkr.prover import ChipEvaluation, flat_openings_absorb
 from sp1_zorch.zerocheck.jagged import prove_jagged_zerocheck
 from sp1_zorch.zerocheck.prover import gkr_powers, rlc_coeffs
 from zorch.round import Round
@@ -156,33 +155,28 @@ class OpenedValuesRound(Round):
     the shard preamble and the GKR head): ``prove_shard_zerocheck`` drives it
     for every stage consumer, and the verifier dual will absorb the proof's
     opened values through the same Round. A chip with no preprocessed trace
-    absorbs a bare zero length, matching SP1's empty-Vec framing. The absorb
-    is one flat array in that exact element order (the ``open_traces``
-    precedent — per-eval transcript calls would re-trace the absorb scan per
-    chip). Carry-agnostic; the message is the opened values, the wire's
+    absorbs a bare zero length, matching SP1's empty-Vec framing — the one
+    knob on the shared ``flat_openings_absorb`` (the GKR chip-openings
+    framing absorbs nothing there). ``chip_names`` fixes the absorb order —
+    the caller's statement, never the mapping's own iteration order, which
+    is proof-controlled once the verifier dual drives this Round.
+    Carry-agnostic; the message is the opened values, the wire's
     structure-bound payload."""
 
-    def __init__(self, opened_values: Mapping[str, ChipEvaluation]) -> None:
+    def __init__(
+        self, opened_values: Mapping[str, ChipEvaluation], chip_names: Sequence[str]
+    ) -> None:
         self._opened_values = opened_values
+        self._chip_names = chip_names
 
     def __call__(
         self, carry: Any, transcript: Transcript
     ) -> tuple[Any, Transcript, Mapping[str, ChipEvaluation]]:
-        values = self._opened_values.values()
-        bf = efinfo(next(iter(values)).main.dtype).base_field_dtype
-        flat_parts = [jnp.array([len(self._opened_values)], bf)]
-        for ev in values:
-            if ev.preprocessed is not None:
-                flat_parts.append(jnp.array([ev.preprocessed.shape[0]], bf))
-                flat_parts.append(
-                    lax.bitcast_convert_type(ev.preprocessed, bf).reshape(-1)
-                )
-            else:
-                flat_parts.append(jnp.array([0], bf))
-            flat_parts.append(jnp.array([ev.main.shape[0]], bf))
-            flat_parts.append(lax.bitcast_convert_type(ev.main, bf).reshape(-1))
-        transcript = transcript.observe(jnp.concatenate(flat_parts))
-        return carry, transcript, self._opened_values
+        flat = flat_openings_absorb(
+            [self._opened_values[name] for name in self._chip_names],
+            empty_prep_absorbs_zero=True,
+        )
+        return carry, transcript.observe(flat), self._opened_values
 
 
 def prove_shard_zerocheck(
@@ -256,7 +250,7 @@ def prove_shard_zerocheck(
     # The stage's transcript tail: absorb the opened values so every stage
     # consumer samples the evaluation-stage challenges from SP1's stream.
     opened_values = split_opened_values(finals, main_region, prep_region)
-    _, transcript, _ = OpenedValuesRound(opened_values)(None, transcript)
+    _, transcript, _ = OpenedValuesRound(opened_values, chip_names)(None, transcript)
 
     # The wire's claimed_sum: the per-chip claims under the same chip RLC
     # weights the round engine applies.
