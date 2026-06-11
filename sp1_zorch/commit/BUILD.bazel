@@ -95,7 +95,10 @@ py_test(
     name = "trace_commit_test",
     # medium: poseidon2/merkle composite hashing dominates (same reason as
     # smcs_test), plus the jit-vs-eager test compiles the fused pipeline.
+    # timeout long: ~150s locally, but it runs both the eager and the jit
+    # leg, so on a loaded shared CI runner it overruns the medium 300s cap.
     size = "medium",
+    timeout = "long",
     srcs = ["trace_commit_test.py"],
     deps = [
         ":region",

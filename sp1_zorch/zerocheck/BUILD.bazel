@@ -54,7 +54,10 @@ py_test(
 
 py_test(
     name = "jagged_test",
+    # timeout moderate: ~18s locally, but the small 60s cap is too tight on a
+    # loaded shared CI runner (2-3x slower under parallel test load).
     size = "small",
+    timeout = "moderate",
     srcs = ["jagged_test.py"],
     deps = [
         ":zerocheck",
