@@ -1,0 +1,19 @@
+load("@rules_python//python:defs.bzl", "py_binary")
+load("@sp1_zorch_pip//:requirements.bzl", "requirement")
+
+# Deterministic SP1-dump -> gpu_fibonacci fixture converter. The dump step
+# (cargo against the pinned SP1 fork; needs the SP1 toolchain + a CUDA GPU) is a
+# manual prerequisite tagged requires-sp1-toolchain elsewhere — see README.md.
+# This is the bazel-runnable convert half:
+#   bazel run //tools/fixture-gen:convert -- --dump <dump_dir> --out <fixture_dir>
+py_binary(
+    name = "convert",
+    srcs = ["convert.py"],
+    main = "convert.py",
+    visibility = ["//visibility:private"],
+    deps = [
+        requirement("jax"),
+        requirement("numpy"),
+        requirement("zk_dtypes"),
+    ],
+)
