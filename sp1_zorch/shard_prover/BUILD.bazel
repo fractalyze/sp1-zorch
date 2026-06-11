@@ -158,6 +158,7 @@ py_test(
     srcs = ["verify_shard_test.py"],
     deps = [
         ":chain_testkit",
+        ":shard_prover",
         ":verify_shard",
         "@zorch//zorch/testkit:transcript",
         requirement("absl_py"),

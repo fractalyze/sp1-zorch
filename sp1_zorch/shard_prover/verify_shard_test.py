@@ -7,8 +7,9 @@ the schedule is rejected loudly by ``VerifyChain`` itself rather than
 accepted on a desynced stream. These tests pin that alignment plus all four
 stage duals against a full prover run (the shared ``chain_testkit``
 fixture): same Fiat-Shamir stream, carry seams written for the downstream
-duals, and a tampered stage message rejected through the chain (the per-leg
-tamper coverage is each stage's own verifier test).
+duals, a tampered stage message rejected through the chain (the per-leg
+tamper coverage is each stage's own verifier test), and the zerocheck
+dual's opening-shape statement checks.
 """
 
 from __future__ import annotations
@@ -23,7 +24,11 @@ from zk_dtypes import koalabear_mont
 
 from zorch.testkit.transcript import cheap_transcript
 
-from sp1_zorch.shard_prover.verify_shard import ShardVerifierCarry
+from sp1_zorch.shard_prover.types import ChipShape, TraceShape
+from sp1_zorch.shard_prover.verify_shard import (
+    ShardVerifierCarry,
+    ShardZerocheckVerifierRound,
+)
 
 # The pinned jaxlib wheel's embedded zkx CPU emitter CHECK-fails on the rank-1
 # linalg.broadcast inside an engaged zorch.constraint_eval region
@@ -34,7 +39,12 @@ import zorch._composite as _zorch_composite
 
 _zorch_composite._HAS_COMPOSITE_OP = False
 
-from sp1_zorch.shard_prover.chain_testkit import small_shard_chain_fixture
+from sp1_zorch.shard_prover.chain_testkit import (
+    CHIP_HEIGHT,
+    CHIP_WIDTH,
+    MAX_LOG_ROW_COUNT,
+    small_shard_chain_fixture,
+)
 
 BF = koalabear_mont
 
@@ -164,6 +174,51 @@ class VerifyShardChainTest(absltest.TestCase):
             cheap_transcript(BF),
         )
         self.assertFalse(bool(ok))
+
+    def test_truncated_main_opening_rejected(self) -> None:
+        """The opening-shape check (SP1's ``verify_opening_shape``): the
+        statement owns the widths, so an opening that disagrees is a loud
+        structural reject at the zerocheck dual — the verifier absorbs the
+        proof's opened values, so a shape lie never desyncs Fiat-Shamir and
+        only the statement check catches it."""
+        ev = self.zc_proof.opened_values["alpha"]
+        bad = replace(
+            self.zc_proof,
+            opened_values={"alpha": replace(ev, main=ev.main[:-1])},
+        )
+        with self.assertRaisesRegex(ValueError, "main claim per statement"):
+            self.fx.dual.rounds[2](self.dual_carry, bad, self.dual_transcript)
+
+    def test_unexpected_preprocessed_opening_rejected(self) -> None:
+        """A statement with no preprocessed trace rejects a proof that opens
+        one."""
+        ev = self.zc_proof.opened_values["alpha"]
+        bad = replace(
+            self.zc_proof,
+            opened_values={"alpha": replace(ev, preprocessed=ev.main[:1])},
+        )
+        with self.assertRaisesRegex(ValueError, "no preprocessed trace"):
+            self.fx.dual.rounds[2](self.dual_carry, bad, self.dual_transcript)
+
+    def test_missing_preprocessed_opening_rejected(self) -> None:
+        """A statement whose chip carries a preprocessed trace rejects a
+        proof that opens none (SP1's preprocessed-chips-appear-in-the-proof
+        check). The carry is the post-chain one (every seam written), so the
+        call exercises only the shape check, which raises before any
+        cryptographic work."""
+        round_ = ShardZerocheckVerifierRound(
+            self.fx.chips,
+            chip_names=("alpha",),
+            chip_shapes={
+                "alpha": ChipShape(
+                    TraceShape(CHIP_HEIGHT, CHIP_WIDTH),
+                    prep=TraceShape(CHIP_HEIGHT, 1),
+                )
+            },
+            max_log_row_count=MAX_LOG_ROW_COUNT,
+        )
+        with self.assertRaisesRegex(ValueError, "preprocessed claim per statement"):
+            round_(self.dual_carry, self.zc_proof, self.dual_transcript)
 
     def test_trace_commit_dual_writes_commitment_roots(self) -> None:
         """[prep (from the vk), main (from the message)] — the order of SP1's

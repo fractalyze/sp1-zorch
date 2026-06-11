@@ -25,9 +25,10 @@ The final oracle check closes the reduction: the lambda-RLC over chips of
 beta-weighted column batch``, scaled by ``eq(zeta, z_row)``, must equal the
 replay's final claim. Trace heights are statement inputs (the same source as
 the GKR dual's); SP1 reads them off the proof's opened-values degrees
-instead. SP1's per-chip opening-width check has no statement-side source
-here yet — a mis-shaped opening row fails the constraint evaluation or the
-jagged-eval stage's column manifest instead of a dedicated shape error.
+instead. SP1's per-chip opening-width check is the chain round's:
+``ShardZerocheckVerifierRound`` checks every opening against its statement
+shape before delegating to this module, so the opened values reaching the
+replay and the oracle check here are statement-shaped already.
 """
 
 from __future__ import annotations
