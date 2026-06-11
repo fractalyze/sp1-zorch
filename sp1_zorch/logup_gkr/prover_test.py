@@ -26,6 +26,8 @@ from sp1_zorch.logup_gkr.head import (
     OutputBindRound,
 )
 from sp1_zorch.logup_gkr.prover import (
+    ChipEvaluation,
+    ChipOpeningsRound,
     extract_sp1_outputs,
     num_beta_values,
     prove_logup_gkr,
@@ -233,6 +235,36 @@ class ProveLogupGkrTest(absltest.TestCase):
                 num_row_variables=3,
                 pow_bits=12,
             )
+
+
+class ChipOpeningsRoundTest(absltest.TestCase):
+    def test_round_reproduces_the_raw_absorb_schedule(self) -> None:
+        # The round is the single in-tree definition of SP1's chip-openings
+        # absorb; write the schedule out a second time as raw transcript ops
+        # (count, then per chip prep-before-main, each eval length-prefixed)
+        # and pin that the round leaves the sponge in the same state.
+        prep = jnp.arange(3, dtype=jnp.uint32).view(F).astype(EF)
+        main_a = jnp.arange(10, 12, dtype=jnp.uint32).view(F).astype(EF)
+        main_b = jnp.arange(20, 24, dtype=jnp.uint32).view(F).astype(EF)
+        openings = {
+            "A": ChipEvaluation(main=main_a, preprocessed=prep),
+            "B": ChipEvaluation(main=main_b, preprocessed=None),
+        }
+
+        _, transcript, msg = ChipOpeningsRound(openings, ("A", "B"))(
+            None, cheap_transcript(F)
+        )
+
+        raw = cheap_transcript(F)
+        raw = raw.observe(jnp.array(2, F))
+        for ev in (prep, main_a, main_b):
+            raw = raw.observe(jnp.array(ev.shape[0], F))
+            raw = raw.observe(ev)
+
+        _, round_next = transcript.sample(1)
+        _, raw_next = raw.sample(1)
+        self.assertTrue(bool(jnp.all(round_next == raw_next)))
+        self.assertIs(msg, openings)
 
 
 if __name__ == "__main__":
