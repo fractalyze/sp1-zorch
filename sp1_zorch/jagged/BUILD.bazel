@@ -40,6 +40,51 @@ py_test(
     ],
 )
 
+# SP1 jagged-eval verifier: the stage-4 dual's sumcheck and stacked-open
+# halves on zorch verifier blocks.
+py_library(
+    name = "verifier",
+    srcs = ["verifier.py"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":open",
+        ":prover",
+        "//sp1_zorch/commit:smcs",
+        "@zorch//zorch:transcript",
+        "@zorch//zorch:verify",
+        "@zorch//zorch/coding:reed_solomon",
+        "@zorch//zorch/commit:merkle",
+        "@zorch//zorch/pcs:fold",
+        "@zorch//zorch/pcs/basefold",
+        "@zorch//zorch/pcs/jagged:poly",
+        "@zorch//zorch/poly:poly",
+        "@zorch//zorch/sumcheck",
+        "@zorch//zorch/utils:bits",
+        requirement("jax"),
+        requirement("zk_dtypes"),
+    ],
+)
+
+py_test(
+    name = "verifier_test",
+    # large/eternal: one four-stage prover run plus eleven stage-4 dual
+    # replays, all eager poseidon2 on CPU (~9 min locally).
+    size = "large",
+    timeout = "eternal",
+    srcs = ["verifier_test.py"],
+    deps = [
+        ":verifier",
+        "//sp1_zorch/shard_prover:chain_testkit",
+        "//sp1_zorch/shard_prover:prove_shard",
+        "//sp1_zorch/shard_prover:verify_shard",
+        "@zorch//zorch/coding:reed_solomon",
+        "@zorch//zorch/testkit:transcript",
+        requirement("absl_py"),
+        requirement("jax"),
+        requirement("zk_dtypes"),
+    ],
+)
+
 # SP1-schedule stacked BaseFold open (the open half of stage 5).
 py_library(
     name = "open",

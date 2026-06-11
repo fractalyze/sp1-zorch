@@ -12,10 +12,6 @@ Static configuration (vk, chip metadata, chip set) lives on the Round
 instances and per-shard values flow on the carry, mirroring the prover's
 split; ``ShardVerifierCarry`` threads what a later dual reads from an
 earlier one — the witness-free dual of ``ShardCarry``.
-
-The trace-commit, LogUp-GKR, and zerocheck duals are real; the jagged-eval
-dual is an accept-all placeholder, replaced the same way
-(fractalyze/sp1-zorch#75).
 """
 
 from __future__ import annotations
@@ -23,22 +19,32 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from functools import partial
-from typing import Any
 
 import jax
 import jax.numpy as jnp
 from jax import Array
 from rw_constraints import Chip
-
+from sp1_zorch.commit.region import structure_counts
+from sp1_zorch.commit.smcs import SingleMatrixCommitmentScheme
+from sp1_zorch.jagged.prover import assemble_columns, sample_z_col
+from sp1_zorch.jagged.verifier import (
+    stacked_basefold_verify,
+    verify_jagged_eval_msg,
+)
 from sp1_zorch.logup_gkr.circuit import GkrChip
 from sp1_zorch.logup_gkr.prover import ChipEvaluation, LogupGkrProof
 from sp1_zorch.logup_gkr.verifier import verify_logup_gkr
-from sp1_zorch.shard_prover.prove_shard import PreambleRound
+from sp1_zorch.shard_prover.prove_shard import (
+    PreambleRound,
+    ShardJaggedEvalProof,
+)
 from sp1_zorch.shard_prover.types import MachineVerifyingKey
 from sp1_zorch.zerocheck.stage import ZerocheckProof
 from sp1_zorch.zerocheck.verifier import verify_shard_zerocheck
+from zorch.coding.reed_solomon import BitReversedReedSolomon
 from zorch.round import Round, VerifyChain
 from zorch.transcript import GrindingTranscript, Transcript
+from zorch.utils.bits import log2_ceil_usize
 
 
 # Pytree like ShardCarry: written stage outputs are array leaves; unwritten
@@ -207,20 +213,180 @@ class ShardZerocheckVerifierRound(Round):
         return carry, transcript, ok
 
 
-class _AcceptAllRound(Round):
-    """Placeholder stage dual: passes the carry and transcript through and
-    accepts its message unconditionally. Holds the stage's slot so the
-    chain's round count mirrors the prover's; replaced by the real dual
-    (fractalyze/sp1-zorch#75)."""
+class ShardJaggedEvalVerifierRound(Round):
+    """Stage-4 dual of ``ShardJaggedEvalRound``: rebuilds the column manifest
+    and per-column claims from the statement plus the carry's oracle-checked
+    opened values, samples ``z_col`` itself, verifies the outer/inner
+    sumchecks via ``verify_jagged_eval_msg``, and closes the chain with
+    ``stacked_basefold_verify`` against the carry's skip-level commitment
+    roots.
+
+    Chip heights are statement inputs; column widths come off the opened
+    values' shapes (the statement has no width source yet — the same
+    opening-shape gap the zerocheck dual records). ``prep_chip_heights``
+    being None states that no preprocessed round exists, so a proof carrying
+    one is a structural reject."""
+
+    def __init__(
+        self,
+        smcs: SingleMatrixCommitmentScheme,
+        *,
+        log_blowup: int,
+        num_queries: int,
+        pow_bits: int,
+        chip_names: Sequence[str],
+        chip_heights: Mapping[str, int],
+        log_stacking_height: int,
+        max_log_row_count: int,
+        prep_chip_heights: Mapping[str, int] | None = None,
+    ) -> None:
+        self._smcs = smcs
+        self._log_blowup = log_blowup
+        self._num_queries = num_queries
+        self._pow_bits = pow_bits
+        self._chip_names = chip_names
+        self._chip_heights = chip_heights
+        self._log_stacking_height = log_stacking_height
+        self._max_log_row_count = max_log_row_count
+        self._prep_chip_heights = prep_chip_heights
 
     def __call__(
-        self, carry: Any, msg: Any, transcript: Transcript
-    ) -> tuple[Any, Transcript, Array]:
-        return carry, transcript, jnp.bool_(True)
+        self,
+        carry: ShardVerifierCarry,
+        msg: ShardJaggedEvalProof,
+        transcript: GrindingTranscript,
+    ) -> tuple[ShardVerifierCarry, GrindingTranscript, Array]:
+        if (
+            carry.zc_sumcheck_point is None
+            or carry.zc_opened_values is None
+            or carry.commitment_roots is None
+        ):
+            raise ValueError(
+                "the jagged-eval dual needs the zerocheck point, opened "
+                "values, and commitment roots on the carry; sequence the "
+                "trace-commit and zerocheck duals before this Round"
+            )
+        opened = carry.zc_opened_values
+        ef = carry.zc_sumcheck_point.dtype
+
+        # [prep, main] manifests, mirroring the prover's region walk.
+        regions: list[tuple[list[str], list[int], list[int], str]] = []
+        if self._prep_chip_heights is not None:
+            names = [
+                n for n in self._chip_names if opened[n].preprocessed is not None
+            ]
+            regions.append(
+                (
+                    names,
+                    [self._prep_chip_heights[n] for n in names],
+                    [int(opened[n].preprocessed.shape[0]) for n in names],
+                    "preprocessed",
+                )
+            )
+        regions.append(
+            (
+                list(self._chip_names),
+                [self._chip_heights[n] for n in self._chip_names],
+                [int(opened[n].main.shape[0]) for n in self._chip_names],
+                "main",
+            )
+        )
+
+        S = 1 << self._log_stacking_height
+        rc_rounds, cc_rounds, claims_rounds = [], [], []
+        round_widths: list[int] = []
+        raw_total = 0
+        for names, heights, widths, claim_field in regions:
+            rc, cc, area, aligned = structure_counts(
+                heights,
+                widths,
+                log_stacking_height=self._log_stacking_height,
+                max_log_row_count=self._max_log_row_count,
+            )
+            rc_rounds.append(rc)
+            cc_rounds.append(cc)
+            claims_rounds.append(
+                jnp.concatenate([getattr(opened[n], claim_field) for n in names])
+            )
+            round_widths.append(aligned >> self._log_stacking_height)
+            raw_total += area
+
+        col_heights, all_claims = assemble_columns(
+            rc_rounds, cc_rounds, claims_rounds, dtype=ef
+        )
+
+        # The prover pads the concatenated raw packed dense to a power of
+        # two; the round count is a statement fact, so a mis-sized outer
+        # transcript is a structural reject.
+        num_outer = log2_ceil_usize(raw_total)
+        if msg.eval.outer_sumcheck_polys.shape[0] != num_outer:
+            raise ValueError(
+                f"need one outer round per packed-dense variable "
+                f"({num_outer}), got {msg.eval.outer_sumcheck_polys.shape[0]}"
+            )
+
+        # z_col is the dual's own sampling, through the same shared rule.
+        transcript, z_col = sample_z_col(transcript, len(col_heights), ef)
+
+        transcript, z_final, ok_eval = verify_jagged_eval_msg(
+            col_heights,
+            all_claims,
+            carry.zc_sumcheck_point[::-1],
+            z_col,
+            msg.eval,
+            transcript,
+            dtype=ef,
+        )
+
+        bf = carry.commitment_roots[1].dtype
+        code = BitReversedReedSolomon(
+            message_len=S, blowup=1 << self._log_blowup, dtype=bf
+        )
+
+        # The soundness anchor: each round's shape-bound proof commitment,
+        # rebound with the statement-derived structure counts, must be the
+        # preamble-observed commitment off the carry (SP1's table-sizes
+        # check) — only then do the open's Merkle checks against the proof
+        # commitments bind the openings to the statement.
+        statement_roots = (
+            list(carry.commitment_roots)
+            if self._prep_chip_heights is not None
+            else [carry.commitment_roots[1]]
+        )
+        if len(msg.open.component_commitments) != len(statement_roots):
+            raise ValueError(
+                f"need one committed round per statement region "
+                f"({len(statement_roots)}), got "
+                f"{len(msg.open.component_commitments)}"
+            )
+        ok_bind = jnp.bool_(True)
+        for component, root, rc, cc in zip(
+            msg.open.component_commitments, statement_roots, rc_rounds, cc_rounds
+        ):
+            rebound = self._smcs.bind_structure(
+                component, jnp.array(rc, dtype=bf), jnp.array(cc, dtype=bf)
+            )
+            ok_bind = ok_bind & jnp.array_equal(rebound, root)
+
+        transcript, ok_open = stacked_basefold_verify(
+            self._smcs,
+            code,
+            round_widths,
+            z_final,
+            msg.eval.dense_eval,
+            self._log_stacking_height,
+            msg.open,
+            transcript,
+            num_queries=self._num_queries,
+            pow_bits=self._pow_bits,
+        )
+        return carry, transcript, ok_eval & ok_bind & ok_open
 
 
 def verify_shard_chain(
     *,
+    smcs: SingleMatrixCommitmentScheme,
+    log_blowup: int,
     vk: MachineVerifyingKey,
     chip_metadata: Array,
     gkr_chips: Sequence[GkrChip],
@@ -230,17 +396,22 @@ def verify_shard_chain(
     num_betas: int,
     num_row_variables: int,
     max_log_row_count: int,
+    log_stacking_height: int,
+    open_num_queries: int,
+    open_pow_bits: int = 0,
     pow_bits: int = 0,
     verify_public_values: bool = True,
+    prep_chip_heights: Mapping[str, int] | None = None,
 ) -> VerifyChain:
     """The ``VerifyChain`` dual of ``prove_shard_chain``: one verifier Round
     per prover stage, in the prover's order, so the proof's message list
     aligns slot for slot or fails the chain's one-message-per-round check.
 
     ``chip_names`` and ``chip_heights`` cover every shard chip (the openings
-    absorb order, the leaf and oracle checks' geq thresholds) — the
-    verifier-side statement counterpart of the regions the prover Rounds
-    read off the carry.
+    absorb order, the leaf and oracle checks' geq thresholds, the jagged
+    column manifest) — the verifier-side statement counterpart of the
+    regions the prover Rounds read off the carry. ``log_stacking_height``
+    and the ``open_*`` parameters mirror the prover's stage-4 configuration.
 
     ``verify_public_values`` runs the LogUp-GKR output-layer bus-balance leg
     (the public-values digest vs the circuit cumulative sum); a structural
@@ -263,6 +434,16 @@ def verify_shard_chain(
                 chip_heights=chip_heights,
                 max_log_row_count=max_log_row_count,
             ),
-            _AcceptAllRound(),  # jagged eval + stacked open dual
+            ShardJaggedEvalVerifierRound(
+                smcs,
+                log_blowup=log_blowup,
+                num_queries=open_num_queries,
+                pow_bits=open_pow_bits,
+                chip_names=chip_names,
+                chip_heights=chip_heights,
+                log_stacking_height=log_stacking_height,
+                max_log_row_count=max_log_row_count,
+                prep_chip_heights=prep_chip_heights,
+            ),
         ]
     )

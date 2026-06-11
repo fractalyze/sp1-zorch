@@ -79,11 +79,45 @@ class StackedRound:
 Opening = tuple[Array, list[Array]]
 
 
+def sample_rlc_coeffs(
+    transcript: Transcript, total_width: int, dtype
+) -> tuple[Transcript, Array]:
+    """The staggered partial-Lagrange RLC weights over the batch's total
+    column width: ``log2_ceil(total_width)`` extension challenges expanded to
+    the eq basis. One definition driven by the open and its verifier dual,
+    so the batching weights cannot drift between their Fiat-Shamir streams."""
+    nbv = log2_ceil_usize(total_width)
+    if nbv == 0:
+        return transcript, jnp.ones(1, dtype)
+    limbs = efinfo(dtype).degree
+    samples = []
+    for _ in range(nbv):
+        transcript, challenge = sample_challenge(transcript, dtype, limbs)
+        samples.append(challenge)
+    return transcript, partial_lagrange(jnp.stack(samples))
+
+
+def sample_query_positions(
+    transcript: Transcript, block_len: int, num_queries: int
+) -> tuple[Transcript, Array]:
+    """SP1's ``sample_bits`` rule: one base squeeze per query, masked to the
+    canonical low ``log2(block_len)`` bits. One definition driven by the open
+    and its verifier dual — zorch's ``sample_positions`` reduces the Mont
+    bitpattern mod the block length instead, a different wire."""
+    transcript, raw = transcript.sample(num_queries)
+    mask = jnp.uint32((1 << log2_strict_usize(block_len)) - 1)
+    return transcript, (raw.astype(jnp.uint32) & mask).astype(jnp.int32)
+
+
 @dataclass(frozen=True)
 class StackedOpenProof:
     """The stacked BaseFold open proof, byte-matched field-for-field against the
     SP1 reference dump.
 
+    component_commitments: per round, the shape-bound SMCS root of the
+        committed codeword — SP1's ``merkle_tree_commitments``, the roots the
+        verifier checks the component openings against; the structure rebind
+        ties each to the statement's (preamble-observed) commitment.
     fri_raw_roots / fri_commitments: per fold layer, the raw Merkle root and the
         SP1 separator-bound root (the transcript observes the bound one).
     univariate_messages: per fold round, the ``(s(0), s(1))`` sumcheck message
@@ -99,6 +133,7 @@ class StackedOpenProof:
         query positions.
     """
 
+    component_commitments: list[Array]
     fri_raw_roots: Array
     fri_commitments: Array
     univariate_messages: Array
@@ -154,19 +189,10 @@ def stacked_basefold_open(
     for evals in batch_evals:
         t = t.observe(evals)
 
-    # Staggered partial-Lagrange RLC weights over the total column width:
-    # log2_ceil(total_width) extension challenges expanded to the eq-basis,
-    # allocated staggered across the rounds (round r consumes its K_r weights).
+    # Staggered RLC weights over the total column width, allocated staggered
+    # across the rounds (round r consumes its K_r weights).
     total_width = sum(int(rd.mle.shape[1]) for rd in rounds)
-    nbv = log2_ceil_usize(total_width)
-    if nbv == 0:
-        coeffs = jnp.ones(1, ef_dtype)
-    else:
-        samples = []
-        for _ in range(nbv):
-            t, challenge = sample_challenge(t, ef_dtype, ef_degree)
-            samples.append(challenge)
-        coeffs = partial_lagrange(jnp.stack(samples))
+    t, coeffs = sample_rlc_coeffs(t, total_width, ef_dtype)
     mle = batch_staggered([rd.mle for rd in rounds], coeffs)
     codeword = batch_staggered([rd.codeword for rd in rounds], coeffs)
     claim = batch_staggered(batch_evals, coeffs)
@@ -220,14 +246,9 @@ def stacked_basefold_open(
     # query positions depend on it.
     t, pow_witness = t.grind(pow_bits)
 
-    # Query positions: one base challenge per query, masked to log2(block_len)
-    # canonical bits (SP1's sample_bits — the canonical value, not the Mont
-    # bitpattern).
-    block_len = code.block_len
-    log_n = log2_strict_usize(block_len)
-    t, raw = t.sample(num_queries)
-    mask = jnp.uint32((1 << log_n) - 1)
-    positions = (raw.astype(jnp.uint32) & mask).astype(jnp.int32)
+    # Query positions: SP1's sample_bits — the canonical value, not the Mont
+    # bitpattern.
+    t, positions = sample_query_positions(t, code.block_len, num_queries)
 
     # Each component matrix opened at the full positions; each fold layer's
     # pair-leaf opened at the cumulatively halved positions.
@@ -240,7 +261,21 @@ def stacked_basefold_open(
         for i, (leaves, digest_layers) in enumerate(fold_layers)
     ]
 
+    # The per-round shape-bound roots (SP1's merkle_tree_commitments): the
+    # verifier checks the component openings against these, then ties each to
+    # the statement's commitment via the structure rebind.
+    component_commitments = [
+        smcs.bind_root(
+            rd.digest_layers[-1][0],
+            log2_strict_usize(rd.codeword.shape[0]),
+            rd.codeword.shape[1],
+            bf_dtype,
+        )
+        for rd in rounds
+    ]
+
     proof = StackedOpenProof(
+        component_commitments=component_commitments,
         fri_raw_roots=jnp.stack(raw_roots),
         fri_commitments=jnp.stack(bound_roots),
         univariate_messages=jnp.stack(messages),
@@ -253,4 +288,10 @@ def stacked_basefold_open(
     return proof, t
 
 
-__all__ = ["StackedRound", "StackedOpenProof", "stacked_basefold_open"]
+__all__ = [
+    "StackedRound",
+    "StackedOpenProof",
+    "sample_query_positions",
+    "sample_rlc_coeffs",
+    "stacked_basefold_open",
+]

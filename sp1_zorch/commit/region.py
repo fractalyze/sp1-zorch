@@ -26,6 +26,36 @@ import jax.numpy as jnp
 from jax import Array
 
 
+def structure_counts(
+    heights: Sequence[int],
+    widths: Sequence[int],
+    *,
+    log_stacking_height: int,
+    max_log_row_count: int,
+) -> tuple[tuple[int, ...], tuple[int, ...], int, int]:
+    """SP1's structure-hash ``(row_counts, column_counts)`` for a region of the
+    given chip heights/widths, plus the raw packed area and its
+    stacking-aligned size: per-chip entries first, then the trailing pad pair
+    decoding the end pad to the stacking alignment. One definition shared by
+    the prover's region packing and the jagged-eval verifier dual's column
+    manifest — the counts and the alignment are part of the commitment
+    format, so the two sides must derive them identically."""
+    S = 1 << log_stacking_height
+    max_height = 1 << max_log_row_count
+    total_area = sum(
+        int(h) * int(w) for h, w in zip(heights, widths, strict=True)
+    )
+    # End-pad to the next multiple of S (at least one full stack); the pad
+    # decodes as full max_height columns plus one leftover column.
+    aligned = max(((total_area + S - 1) // S) * S, S)
+    num_added_vals = aligned - total_area
+    num_added_cols = max((num_added_vals + max_height - 1) // max_height, 1)
+    leftover = num_added_vals - (num_added_cols - 1) * max_height
+    row_counts = tuple(int(h) for h in heights) + (max_height, int(leftover))
+    column_counts = tuple(int(w) for w in widths) + (int(num_added_cols - 1), 1)
+    return row_counts, column_counts, total_area, aligned
+
+
 @partial(jax.jit, static_argnames=("num_added_vals", "pad_dtype"))
 def _pack_chip_data(
     chips: tuple[Array, ...], *, num_added_vals: int, pad_dtype
@@ -106,7 +136,6 @@ class JaggedRegion:
                 f"JaggedRegion.from_chips: chip_names length {len(chip_names)} "
                 f"!= chips length {len(chips)}"
             )
-        S = 1 << log_stacking_height
         max_height = 1 << max_log_row_count
 
         heights: list[int] = []
@@ -139,22 +168,21 @@ class JaggedRegion:
                 total_area += int(h) * int(w)
             starts.append(total_area)
 
-        # End-pad to the next multiple of S (at least one full stack).
-        aligned = max(((total_area + S - 1) // S) * S, S)
-        num_added_vals = aligned - total_area
-        dense = _pack_chip_data(
-            tuple(nonempty), num_added_vals=int(num_added_vals), pad_dtype=dtype
+        row_counts, column_counts, _, aligned = structure_counts(
+            heights,
+            widths,
+            log_stacking_height=log_stacking_height,
+            max_log_row_count=max_log_row_count,
         )
-
-        # The pad decodes as full max_height columns plus one leftover column.
-        num_added_cols = max((num_added_vals + max_height - 1) // max_height, 1)
-        leftover = num_added_vals - (num_added_cols - 1) * max_height
+        dense = _pack_chip_data(
+            tuple(nonempty), num_added_vals=int(aligned - total_area), pad_dtype=dtype
+        )
 
         return cls(
             dense=dense,
             chip_starts=tuple(starts),
-            row_counts=tuple(heights) + (max_height, int(leftover)),
-            column_counts=tuple(widths) + (int(num_added_cols - 1), 1),
+            row_counts=row_counts,
+            column_counts=column_counts,
             log_stacking_height=log_stacking_height,
             chip_names=tuple(chip_names) if chip_names is not None else (),
         )

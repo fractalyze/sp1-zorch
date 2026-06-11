@@ -301,6 +301,9 @@ def _open_proof(num_rounds: int = 1) -> StackedOpenProof:
     """One-fold-round synthetic stacked open over ``num_rounds`` committed
     rounds."""
     return StackedOpenProof(
+        component_commitments=[
+            jnp.arange(70 + 10 * r, 78 + 10 * r, dtype=F) for r in range(num_rounds)
+        ],
         fri_raw_roots=jnp.arange(80, 88, dtype=F).reshape(1, 8),
         fri_commitments=jnp.arange(90, 98, dtype=F).reshape(1, 8),
         univariate_messages=jnp.arange(1, 9, dtype=F).view(EF).reshape(1, 2),
