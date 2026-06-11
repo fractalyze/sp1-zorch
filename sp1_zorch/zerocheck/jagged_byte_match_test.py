@@ -94,7 +94,7 @@ class _ScriptedTranscript:
     reference run's Fiat-Shamir outcomes rather than re-deriving them (the
     duplex-sponge encoding is the pipeline integration's concern, not the
     round engine's). A registered pytree with the cursor as a leaf so it rides
-    the round ``lax.scan`` carry; ``observe_and_sample`` advances it with
+    the round ``lax.scan`` carry; ``sample`` advances it with
     ``dynamic_slice``."""
 
     challenges: jnp.ndarray
@@ -102,10 +102,18 @@ class _ScriptedTranscript:
 
     @classmethod
     def replaying(cls, challenges) -> "_ScriptedTranscript":
-        return cls(jnp.asarray(challenges), jnp.asarray(0, jnp.int32))
+        # The engine squeezes base limbs and reassembles each EF challenge
+        # (one extension element = degree base squeezes, the
+        # ``sample_challenge`` rule — fractalyze/sp1-zorch#88), so the script
+        # stores flat base limbs.
+        flat = jax.lax.bitcast_convert_type(jnp.asarray(challenges), BF).reshape(-1)
+        return cls(flat, jnp.asarray(0, jnp.int32))
 
-    def observe_and_sample(self, values, n=1):
+    def observe(self, values):
         del values
+        return self
+
+    def sample(self, n=1):
         out = jax.lax.dynamic_slice_in_dim(self.challenges, self.pos, n, axis=0)
         return _ScriptedTranscript(self.challenges, self.pos + n), out
 

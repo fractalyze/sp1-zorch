@@ -22,17 +22,21 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from functools import partial
+from unittest import mock
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 from absl.testing import absltest
 from zk_dtypes import koalabear_mont as KB
+from zk_dtypes import koalabearx4_mont as EF
 
+import zorch._composite as _zorch_composite
 from zorch._composite import _HAS_COMPOSITE_OP
 from zorch.poly.eq import expand_eq_to_hypercube
 from zorch.poly.univariate import compute_inv_vandermonde, eval_coeffs
 from zorch.testkit.transcript import cheap_transcript
+from zorch.transcript import sample_challenge
 
 from sp1_zorch.zerocheck.jagged import (
     DEGREE,
@@ -65,6 +69,10 @@ def _rand(seed: int, shape) -> jnp.ndarray:
     return jnp.array(ints, dtype=KB)
 
 
+def _rand_ef(seed: int, shape) -> jnp.ndarray:
+    return jax.lax.bitcast_convert_type(_rand(seed, (*shape, 4)), EF)
+
+
 def _witness_trace(seed: int, nr: int) -> jnp.ndarray:
     if nr == 0:
         return jnp.zeros((_NUM_COLS, 0), dtype=KB)
@@ -78,10 +86,10 @@ def _witness_trace(seed: int, nr: int) -> jnp.ndarray:
 @dataclass(frozen=True)
 class _ScriptedTranscript:
     """Transcript stub returning preset challenges — the forced-challenge seam
-    for comparing the driver against the reference (the driver only calls
-    ``observe_and_sample``). A registered pytree with the cursor as a leaf so it
-    rides the round ``lax.scan`` carry; ``observe_and_sample`` advances it with
-    ``dynamic_slice`` (a Python ``list.pop`` cannot be a scan carry)."""
+    for comparing the driver against the reference (the driver only observes
+    and samples). A registered pytree with the cursor as a leaf so it rides
+    the round ``lax.scan`` carry; ``sample`` advances it with ``dynamic_slice``
+    (a Python ``list.pop`` cannot be a scan carry)."""
 
     challenges: jnp.ndarray
     pos: jnp.ndarray
@@ -90,8 +98,11 @@ class _ScriptedTranscript:
     def replaying(cls, challenges) -> "_ScriptedTranscript":
         return cls(jnp.asarray(challenges), jnp.asarray(0, jnp.int32))
 
-    def observe_and_sample(self, values, n=1):
+    def observe(self, values):
         del values
+        return self
+
+    def sample(self, n=1):
         out = jax.lax.dynamic_slice_in_dim(self.challenges, self.pos, n, axis=0)
         return _ScriptedTranscript(self.challenges, self.pos + n), out
 
@@ -375,6 +386,37 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
                 self.assertTrue(
                     bool(jnp.all(finals[i][:, 0] == v[:, 0])), msg=f"chip {i}"
                 )
+
+    def test_round_challenge_is_one_extension_sample(self) -> None:
+        """The round challenge binds SP1's ``sample_ext_element`` rule: degree
+        base squeezes reinterpreted as one extension element, pinned against
+        the shared ``sample_challenge`` definition on a real transcript
+        (fractalyze/sp1-zorch#88). The scripted replays above bypass the
+        squeeze rule entirely, so they cannot catch a squeeze-count drift."""
+        num_vars, nr = 2, 3
+        traces = [_witness_trace(11, nr)]
+        alphas = [rlc_coeffs(_rand_ef(99, ()), _K)]
+        lambdas = _rand_ef(50, (1,))
+        zeta = _rand_ef(3, (num_vars,))
+
+        # The pinned jaxlib's embedded zkx CPU emitter CHECK-fails on an
+        # engaged extension-field constraint_eval region (fractalyze/zkx#605;
+        # tracked removal: fractalyze/sp1-zorch#62) — run the inline
+        # decomposition for this EF case only, keeping the marker tests above
+        # on the real composite path.
+        with mock.patch.object(_zorch_composite, "_HAS_COMPOSITE_OP", False):
+            _, _, msgs = prove_jagged_zerocheck(
+                [_eval_fn], traces, [nr], alphas, lambdas, zeta, cheap_transcript(KB)
+            )
+
+        self.assertEqual(msgs.challenge.dtype, EF)
+        t = cheap_transcript(KB)
+        for r in range(num_vars):
+            t = t.observe(msgs.round_poly[r])
+            t, want = sample_challenge(t, EF, 4)
+            self.assertTrue(
+                bool(jnp.array_equal(want, msgs.challenge[r])), msg=f"round {r}"
+            )
 
     def test_validation_rejects_mismatched_height(self) -> None:
         trace = _witness_trace(0, 4)

@@ -64,6 +64,7 @@ py_test(
     srcs = ["jagged_test.py"],
     deps = [
         ":zerocheck",
+        "@zorch//zorch:transcript",
         "@zorch//zorch/testkit:transcript",
         "@zorch//zorch/poly:poly",
         requirement("absl_py"),

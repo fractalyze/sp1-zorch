@@ -23,6 +23,8 @@ from absl.testing import absltest
 from zk_dtypes import koalabear_mont, koalabearx4_mont
 
 from zorch.round import ProveChain
+from zorch.testkit.transcript import cheap_transcript
+from zorch.transcript import sample_challenge
 
 from sp1_zorch.jagged.prover import (
     JaggedEvalInputs,
@@ -59,13 +61,22 @@ class _ScriptedTranscript:
     """Replays the dumped per-round challenges — the byte-match reproduces the
     reference run's Fiat-Shamir outcomes rather than re-deriving them (the duplex
     encoding is the pipeline's concern, not this round's). Mirrors
-    ``zerocheck/jagged_byte_match_test``."""
+    ``zerocheck/jagged_byte_match_test``: the sumchecks squeeze base limbs and
+    reassemble each EF challenge (the ``sample_challenge`` rule,
+    fractalyze/sp1-zorch#88), so the script holds one flat base-limb stream."""
 
     def __init__(self, challenges):
-        self._next = list(challenges)
+        self._stream = jax.lax.bitcast_convert_type(
+            jnp.asarray(challenges), BF
+        ).reshape(-1)
+        self._pos = 0
 
-    def observe_and_sample(self, values, n=1):
-        out = jnp.stack([self._next.pop(0) for _ in range(n)])
+    def observe(self, values):
+        return self
+
+    def sample(self, n=1):
+        out = self._stream[self._pos : self._pos + n]
+        self._pos += n
         return self, out
 
 
@@ -113,7 +124,7 @@ class JaggedEvalRoundByteMatchTest(absltest.TestCase):
         # Run via ProveChain — the round must compose, not just stand alone.
         # The outer sumcheck samples its 23 alphas first, then the inner its 48.
         chain = ProveChain([JaggedEvalRound(dtype=EF)])
-        script = list(outer_alphas) + list(inner_alphas)
+        script = jnp.concatenate([outer_alphas, inner_alphas])
         _, _, msgs = chain(carry, _ScriptedTranscript(script))
         cls.msg = msgs[0]
 
@@ -148,6 +159,54 @@ class JaggedEvalRoundByteMatchTest(absltest.TestCase):
 
     def test_inner_point(self):
         self._assert_match(self.msg.inner_point, "inner_point.npy")
+
+
+class ChallengeRuleTest(absltest.TestCase):
+    """Pin the squeeze rule on a real transcript: SP1 binds each outer and
+    inner round with ``sample_ext_element`` — degree base squeezes
+    reinterpreted as one extension element, the shared ``sample_challenge``
+    definition (fractalyze/sp1-zorch#88). The scripted byte-match above
+    bypasses the rule entirely, so it cannot catch a squeeze-count drift."""
+
+    def test_outer_and_inner_rounds_sample_extension_challenges(self):
+        def rand_ef(seed, shape):
+            ints = np.random.default_rng(seed).integers(
+                1, 1 << 30, size=(*shape, 4), dtype=np.int64
+            )
+            return jax.lax.bitcast_convert_type(jnp.array(ints, dtype=BF), EF)
+
+        col_heights = (2, 2)
+        inputs = JaggedEvalInputs(
+            col_heights=col_heights,
+            all_claims=rand_ef(1, (2,)),
+            z_row=rand_ef(2, (2,)),
+            z_col=rand_ef(3, (1,)),
+            dense=jnp.array([3, 5, 7, 11], dtype=BF),
+        )
+        _, _, msg = JaggedEvalRound(dtype=EF)(inputs, cheap_transcript(BF))
+
+        # Independent replay of the stage's whole challenge stream off the
+        # message: observe each round poly, take one extension sample, and
+        # match the point entry it bound (points are the challenge lists
+        # reversed — SP1's insert-at-front).
+        def replay_rounds(t, polys, point, label):
+            self.assertEqual(point.dtype, EF, label)
+            for r in range(polys.shape[0]):
+                t = t.observe(polys[r])
+                t, want = sample_challenge(t, EF, 4)
+                self.assertTrue(
+                    bool(jnp.array_equal(want, point[-1 - r])), f"{label} round {r}"
+                )
+            return t
+
+        t = cheap_transcript(BF)
+        t = replay_rounds(
+            t, msg.outer_sumcheck_polys, msg.outer_sumcheck_point, "outer"
+        )
+        # SP1 absorbs the claimed J̃ value before the inner rounds
+        # (fractalyze/sp1-zorch#90).
+        t = t.observe(msg.inner_claimed_sum)
+        replay_rounds(t, msg.inner_sumcheck_polys, msg.inner_point, "inner")
 
 
 if __name__ == "__main__":

@@ -38,6 +38,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import Array
+from zk_dtypes import efinfo
 
 from zorch.pcs.jagged.poly import (
     _TRANSITION_ROWS,
@@ -51,7 +52,7 @@ from zorch.pcs.jagged.poly import (
 from zorch.poly.eq import expand_eq_to_hypercube
 from zorch.poly.univariate import eval_coeffs
 from zorch.round import Round
-from zorch.transcript import Transcript
+from zorch.transcript import Transcript, sample_challenge
 
 
 @dataclass(frozen=True)
@@ -170,7 +171,9 @@ def outer_sumcheck(
     state_a = dense
     state_b = indicator
     n_rounds = (state_a.shape[0] - 1).bit_length()
-    two = jnp.array(2, claim.dtype)
+    ef = claim.dtype
+    ef_limbs = efinfo(ef).degree
+    two = jnp.array(2, ef)
 
     cur = claim
     polys: list[Array] = []
@@ -182,8 +185,10 @@ def outer_sumcheck(
         s_inf = jnp.sum((p1a - p0a) * (p1b - p0b))
         coef = jnp.stack([s0, cur - two * s0 - s_inf, s_inf])
 
-        transcript, sampled = transcript.observe_and_sample(coef, 1)
-        alpha = sampled[0]
+        # SP1 binds each variable with one extension element (its
+        # ``sample_ext_element``) — the shared ``sample_challenge`` rule.
+        transcript = transcript.observe(coef)
+        transcript, alpha = sample_challenge(transcript, ef, ef_limbs)
         state_a = p0a + alpha * (p1a - p0a)
         state_b = p0b + alpha * (p1b - p0b)
         cur = eval_coeffs(coef, alpha)
@@ -234,6 +239,7 @@ def inner_sumcheck(
     weights = col_eq[:l_max]
     one = jnp.ones((), dtype)
     two = jnp.array(2, dtype)
+    ef_limbs = efinfo(dtype).degree
 
     @jax.jit
     def bp_all(buf: Array) -> Array:
@@ -248,6 +254,10 @@ def inner_sumcheck(
     # 1726-deep unroll, which compiles abysmally.
     claimed_sum = jnp.sum(weights * bp_all(merged))
 
+    # SP1's prove_jagged_evaluation absorbs the claimed J̃ value before the
+    # rounds; its verifier re-absorbs it the same way (fractalyze/sp1-zorch#90).
+    transcript = transcript.observe(claimed_sum)
+
     buf = merged
     claim = claimed_sum
     polys: list[Array] = []
@@ -261,8 +271,9 @@ def inner_sumcheck(
         p_inf = jnp.sum(weights * (bits_i - eq0) * (bp1 - bp0))
         coef = jnp.stack([p0, claim - two * p0 - p_inf, p_inf])
 
-        transcript, sampled = transcript.observe_and_sample(coef, 1)
-        alpha = sampled[0]
+        # One extension element per variable, as in ``outer_sumcheck``.
+        transcript = transcript.observe(coef)
+        transcript, alpha = sample_challenge(transcript, dtype, ef_limbs)
         buf = buf.at[:, round_idx].set(alpha)
         weights = weights * (alpha * bits_i + (one - alpha) * eq0)
         claim = eval_coeffs(coef, alpha)

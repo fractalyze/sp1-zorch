@@ -13,11 +13,12 @@ prover drives.
 
 The per-round rule is the plain coefficient-form sumcheck check — SP1's
 ``partially_verify_sumcheck_proof`` applies no per-round eq adjustment; the
-eq factor enters once, in the final oracle check. What keeps the round local
-to sp1-zorch is the challenge squeeze: SP1's zerocheck binds each variable
-with ONE base-field squeeze (the prover's ``observe_and_sample(rlc, 1)``),
-where zorch's ``CoeffsSumcheckRound`` derives the challenge in the claim's
-extension field.
+eq factor enters once, in the final oracle check. The challenge squeeze is
+SP1's ``sample_ext_element`` (one extension element per variable, degree
+base squeezes reinterpreted) — exactly the rule zorch's
+``CoeffsSumcheckRound`` owns via ``challenge_limbs``, so the round replay
+is the stock zorch round under the agnostic ``zorch.verify`` scan
+(fractalyze/sp1-zorch#88).
 
 The final oracle check closes the reduction: the lambda-RLC over chips of
 ``constraint RLC on the opened row - padded-row adjustment * geq + the
@@ -31,14 +32,12 @@ jagged-eval stage's column manifest instead of a dedicated shape error.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from functools import partial
 from typing import Mapping, Sequence
 
-import jax
 import jax.numpy as jnp
 from jax import Array
 from rw_constraints import Chip
+from zk_dtypes import efinfo
 
 from sp1_zorch.logup_gkr.prover import ChipEvaluation, select_openings
 from sp1_zorch.logup_gkr.verifier import padding_geqs
@@ -53,26 +52,9 @@ from sp1_zorch.zerocheck.stage import (
     sample_stage_challenges,
 )
 from zorch.poly.eq import eval_eq
-from zorch.poly.univariate import eval_coeffs
-from zorch.round import Round
+from zorch.sumcheck.verifier import CoeffsSumcheckRound
 from zorch.transcript import Transcript
 from zorch.verify import verify
-
-
-@partial(jax.tree_util.register_dataclass, data_fields=[], meta_fields=[])
-@dataclass(frozen=True)
-class ZerocheckSumcheckRound(Round):
-    """One zerocheck sumcheck round: the coefficient-form claim identity
-    (``s(0) = c_0``, ``s(1) = sum(c)``) with SP1's challenge rule — one
-    base-field squeeze per variable, via the same fused
-    ``observe_and_sample`` primitive the prover binds with."""
-
-    def __call__(
-        self, claim: Array, msg: Array, transcript: Transcript
-    ) -> tuple[Array, Transcript, Array, Array]:
-        ok = jnp.array_equal(claim, msg[0] + jnp.sum(msg))
-        transcript, r = transcript.observe_and_sample(msg, 1)
-        return eval_coeffs(msg, r[0]), transcript, r[0], ok
 
 
 def verify_shard_zerocheck(
@@ -137,7 +119,10 @@ def verify_shard_zerocheck(
     )
 
     point, final_claim, transcript, ok_rounds = verify(
-        ZerocheckSumcheckRound(), claimed_sum, proof.msgs.round_poly, transcript
+        CoeffsSumcheckRound(DEGREE, efinfo(ef).degree),
+        claimed_sum,
+        proof.msgs.round_poly,
+        transcript,
     )
     ok_point = jnp.array_equal(point, proof.msgs.challenge)
 
@@ -146,7 +131,7 @@ def verify_shard_zerocheck(
     # for the virtual padding rows, whose constant constraint value the
     # prover's summand subtracts — plus its beta-weighted column batch,
     # scaled by the bound eq factor, must reproduce the replay's final claim.
-    z_row = point[::-1].astype(ef)
+    z_row = point[::-1]
     eq_val = eval_eq(zeta, z_row)
     geq_by_height = padding_geqs((chip_heights[n] for n in chip_names), z_row)
     # The same beta-power column batch as the claims derivation, on the

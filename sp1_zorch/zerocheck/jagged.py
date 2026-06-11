@@ -64,6 +64,7 @@ from collections.abc import Callable, Sequence
 import jax
 import jax.numpy as jnp
 from jax import Array, lax
+from zk_dtypes import efinfo
 
 from zorch.constraint_eval import constraint_eval
 from zorch.poly.eq import expand_eq_to_hypercube
@@ -74,7 +75,7 @@ from zorch.poly.univariate import (
     eval_coeffs,
 )
 from zorch.sumcheck.prover import RoundMsg
-from zorch.transcript import Transcript
+from zorch.transcript import Transcript, sample_challenge
 
 from sp1_zorch.zerocheck.prover import gkr_powers
 
@@ -82,6 +83,17 @@ from sp1_zorch.zerocheck.prover import gkr_powers
 # factor. The 4-point evaluation trick below is specific to this degree;
 # the constraint-degree bound is the caller's contract (not probeable).
 DEGREE = 4
+
+
+def _challenge_limbs(dtype) -> int:
+    """Transcript squeezes per challenge of ``dtype``: an extension field
+    takes ``degree`` base squeezes reinterpreted (SP1's ``sample_ext_element``
+    convention, fractalyze/sp1-zorch#88); the transcript's own field takes
+    one."""
+    try:
+        return efinfo(dtype).degree
+    except ValueError:
+        return 1
 
 
 def _zero_extend_cols(trace: Array, width: int) -> Array:
@@ -255,6 +267,7 @@ def prove_jagged_zerocheck(
             )
 
     ef = zeta.dtype
+    ef_limbs = _challenge_limbs(ef)
     one = jnp.ones((), ef)
     zero = jnp.zeros((), ef)
     inv_vand = compute_inv_vandermonde(DEGREE, ef)
@@ -364,8 +377,10 @@ def prove_jagged_zerocheck(
 
         rlc = jnp.dot(lambdas, jnp.stack(polys))
 
-        transcript, r = transcript.observe_and_sample(rlc, 1)
-        alpha_r = r[0]
+        # SP1 binds each variable with one extension element (its
+        # ``sample_ext_element``) — the shared ``sample_challenge`` rule.
+        transcript = transcript.observe(rlc)
+        transcript, alpha_r = sample_challenge(transcript, ef, ef_limbs)
 
         bufs = [
             _zero_extend_cols(p0s[i] + alpha_r * diffs[i], widths[i])

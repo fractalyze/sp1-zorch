@@ -320,9 +320,8 @@ class ShardJaggedEvalRound(Round):
             )
         main = carry.main_region
         openings = carry.zc_opened_values
-        # The jagged eval runs in the extension field; the sumcheck points
-        # (z_row) are base-field per-round challenge lists, embedded up to EF
-        # where the eval needs them.
+        # The jagged eval runs in the extension field — the upstream sumcheck
+        # points are EF challenge lists (one extension sample per variable).
         ef = koalabearx4_mont
 
         # Per-round (row/column counts, real per-column claims) in [prep, main]
@@ -367,12 +366,11 @@ class ShardJaggedEvalRound(Round):
         z_col = jnp.stack(z_col_parts) if z_col_parts else jnp.zeros((0,), ef)
 
         # z_row is the zerocheck sumcheck point in SP1's insert-at-front
-        # (reversed) order, embedded base->extension (exact) so the eval's scan
-        # carry stays in the extension field.
+        # (reversed) order.
         inputs = JaggedEvalInputs(
             col_heights=tuple(col_heights),
             all_claims=all_claims,
-            z_row=carry.zc_sumcheck_point[::-1].astype(ef),
+            z_row=carry.zc_sumcheck_point[::-1],
             z_col=z_col,
             dense=dense,
         )
@@ -383,15 +381,12 @@ class ShardJaggedEvalRound(Round):
             blowup=1 << self._log_blowup,
             dtype=main.dense.dtype,
         )
-        # The outer sumcheck folds in the base field; the BaseFold open works
-        # in the extension field, so embed its folded point and D(z_final)
-        # base->extension (exact).
         open_proof, transcript = stacked_basefold_open(
             self._smcs,
             code,
             carry.commit_rounds,
-            eval_msg.outer_sumcheck_point.astype(ef),
-            eval_msg.dense_eval.astype(ef),
+            eval_msg.outer_sumcheck_point,
+            eval_msg.dense_eval,
             main.log_stacking_height,
             num_queries=self._num_queries,
             pow_bits=self._pow_bits,
