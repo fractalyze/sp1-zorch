@@ -23,7 +23,7 @@ valid proof still fails a stream or claim check.
 
 from __future__ import annotations
 
-from typing import Mapping, Sequence
+from typing import Iterable, Mapping, Sequence
 
 import jax.numpy as jnp
 from jax import Array
@@ -65,6 +65,22 @@ def virtual_padding_geq(threshold: Array | int, point: Array) -> Array:
     return geq.eval_at(0)
 
 
+def padding_geqs(
+    heights: Iterable[int], trace_point: Array
+) -> dict[int, Array]:
+    """The ``index >= height`` indicator masses at ``trace_point``, one per
+    distinct height — the padded-row corrections of the GKR leaf check and
+    the zerocheck oracle check.
+
+    The threshold domain is one variable wider than the trace point so a
+    full-height chip (``height == 2^|trace_point|``) stays representable;
+    the prepended zero pins the evaluation to the real half (SP1's
+    ``point_extended``).
+    """
+    point_extended = jnp.pad(trace_point, (1, 0))
+    return {h: virtual_padding_geq(h, point_extended) for h in set(heights)}
+
+
 def _leaf_evaluations(
     gkr_chips: Sequence[GkrChip],
     openings: Mapping[str, ChipEvaluation],
@@ -87,14 +103,11 @@ def _leaf_evaluations(
     (SP1 verifier.rs, the trace-openings consistency block).
     """
     ef = alpha.dtype
-    # The threshold domain is one variable wider than the trace point so a
-    # full-height chip (degree == 2^|trace_point|) stays representable; the
-    # prepended zero pins the evaluation to the real half (SP1's
-    # ``point_extended``).
-    point_extended = jnp.pad(trace_point, (1, 0))
+    geq_by_height = padding_geqs(
+        (chip_heights[c.name] for c in gkr_chips if c.interactions), trace_point
+    )
     numerator_values: list[Array] = []
     denominator_values: list[Array] = []
-    geq_by_height: dict[int, Array] = {}
     for chip in gkr_chips:
         if not chip.interactions:
             continue
@@ -110,10 +123,7 @@ def _leaf_evaluations(
             if opening.preprocessed is not None
             else None
         )
-        height = chip_heights[chip.name]
-        if height not in geq_by_height:
-            geq_by_height[height] = virtual_padding_geq(height, point_extended)
-        geq = geq_by_height[height]
+        geq = geq_by_height[chip_heights[chip.name]]
         for interaction in chip.interactions:
             nums, dens = generate_interaction_vals_batch(
                 interaction, prep, main, alpha, betas
@@ -164,9 +174,6 @@ def verify_logup_gkr(
             f"circuit output must have {expected_output} entries, got "
             f"{proof.circuit_output.numerator.shape[0]}"
         )
-    if set(proof.chip_openings) != set(chip_names):
-        raise ValueError("chip openings must cover exactly the shard chips")
-
     # Grind gate. The prover's GrindRound judges host-side and raises; the
     # dual needs the verdict as a traced leg of ok, so it calls the same
     # one-definition predicate directly.

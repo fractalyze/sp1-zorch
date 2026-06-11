@@ -25,16 +25,19 @@ import jax.numpy as jnp
 from jax import Array
 from rw_constraints import Chip
 
+from zk_dtypes import efinfo
+
 from sp1_zorch.commit.region import JaggedRegion
-from sp1_zorch.logup_gkr.prover import ChipEvaluation, flat_openings_absorb
+from sp1_zorch.logup_gkr.prover import (
+    ChipEvaluation,
+    flat_openings_absorb,
+    select_openings,
+)
 from sp1_zorch.zerocheck.jagged import prove_jagged_zerocheck
 from sp1_zorch.zerocheck.prover import gkr_powers, rlc_coeffs
 from zorch.round import Round
 from zorch.sumcheck.prover import RoundMsg
 from zorch.transcript import Transcript, sample_challenge
-
-# An SP1 extension-field challenge is four base-field squeezes.
-_EF_LIMBS = 4
 
 
 @dataclass(frozen=True)
@@ -105,10 +108,55 @@ def chip_traces(
     return traces
 
 
-def _bind_pv(chip: Chip, public_values: Array) -> Callable[[Array], Array]:
+def bind_pv(chip: Chip, public_values: Array) -> Callable[[Array], Array]:
     """Bind the public-values vector; ``eval_constraints`` ignores it for
-    constraints that declare no ``pv_arg``."""
+    constraints that declare no ``pv_arg``. Shared by the stage and its
+    verifier dual — the one definition of how a chip's constraint circuit
+    sees the statement."""
     return lambda trace: chip.eval_constraints(trace, public_values)
+
+
+def probe_num_constraints(
+    eval_fn: Callable[[Array], Array], width: int, ef: Any
+) -> int:
+    """A chip's constraint count, from a one-row zero probe — the constraint
+    functions may emit several columns each, so the count is not readable
+    off the manifest. One definition: it sizes the constraint-RLC fold on
+    both the prover and the verifier dual."""
+    return eval_fn(jnp.zeros((1, width), dtype=ef)).shape[-1]
+
+
+def sample_stage_challenges(
+    transcript: Transcript, ef: Any
+) -> tuple[Transcript, Array, Array, Array]:
+    """The three zerocheck stage challenges in SP1's order — constraint
+    batching, GKR opening batch, chip-RLC lambda (sampled inside zerocheck,
+    after the GKR stage). One definition driven by the prover and the
+    verifier dual, so the sampling schedule cannot drift between their
+    Fiat-Shamir streams."""
+    limbs = efinfo(ef).degree
+    transcript, batching = sample_challenge(transcript, ef, limbs)
+    transcript, gkr_batch = sample_challenge(transcript, ef, limbs)
+    transcript, lambda_ = sample_challenge(transcript, ef, limbs)
+    return transcript, batching, gkr_batch, lambda_
+
+
+def gkr_opening_claims(
+    openings: Sequence[ChipEvaluation], gkr_batch: Array
+) -> Array:
+    """Each chip's GKR opening claim: its ``[main | prep]`` evaluations
+    weighted by the shared beta powers — the seed of the round engine's
+    ``p(1) = claim - p(0)`` identity. One definition: the prover seeds the
+    sumcheck with these, the verifier dual re-derives its claimed sum from
+    them."""
+    evals = [opening.all_evals() for opening in openings]
+    max_cols = max(e.shape[0] for e in evals)
+    gkr_all = (
+        gkr_powers(gkr_batch, max_cols)
+        if max_cols
+        else jnp.zeros(0, gkr_batch.dtype)
+    )
+    return jnp.stack([jnp.sum(gkr_all[: e.shape[0]] * e) for e in evals])
 
 
 def split_opened_values(
@@ -173,7 +221,7 @@ class OpenedValuesRound(Round):
         self, carry: Any, transcript: Transcript
     ) -> tuple[Any, Transcript, Mapping[str, ChipEvaluation]]:
         flat = flat_openings_absorb(
-            [self._opened_values[name] for name in self._chip_names],
+            select_openings(self._opened_values, self._chip_names),
             empty_prep_absorbs_zero=True,
         )
         return carry, transcript.observe(flat), self._opened_values
@@ -201,36 +249,23 @@ def prove_shard_zerocheck(
     """
     ef = eval_point.dtype
 
-    # SP1 samples lambda inside zerocheck, after the two batch challenges.
-    transcript, batching_challenge = sample_challenge(transcript, ef, _EF_LIMBS)
-    transcript, gkr_batch = sample_challenge(transcript, ef, _EF_LIMBS)
-    transcript, lambda_ = sample_challenge(transcript, ef, _EF_LIMBS)
+    transcript, batching_challenge, gkr_batch, lambda_ = sample_stage_challenges(
+        transcript, ef
+    )
 
     zeta = eval_point[-max_log_row_count:]
 
     chip_names = main_region.chip_names
     num_reals = list(main_region.chip_heights)
     traces = chip_traces(chip_names, num_reals, main_region, prep_region)
-    eval_fns = [_bind_pv(chips[name], public_values) for name in chip_names]
+    eval_fns = [bind_pv(chips[name], public_values) for name in chip_names]
 
-    max_cols = max(t.shape[0] for t in traces)
-    gkr_all = gkr_powers(gkr_batch, max_cols) if max_cols else jnp.zeros(0, ef)
-    claims = []
-    for name in chip_names:
-        opening = chip_openings[name]
-        if opening.preprocessed is not None:
-            all_evals = jnp.concatenate([opening.main, opening.preprocessed])
-        else:
-            all_evals = opening.main
-        claims.append(jnp.sum(gkr_all[: all_evals.shape[0]] * all_evals))
+    claims = gkr_opening_claims(
+        [chip_openings[name] for name in chip_names], gkr_batch
+    )
 
-    # Constraint counts come from a one-row probe — a chip's constraint
-    # functions may emit several columns each, so the count is not readable
-    # off the manifest.
     alphas = [
-        rlc_coeffs(
-            batching_challenge, fn(jnp.zeros((1, t.shape[0]), dtype=ef)).shape[-1]
-        )
+        rlc_coeffs(batching_challenge, probe_num_constraints(fn, t.shape[0], ef))
         for fn, t in zip(eval_fns, traces)
     ]
     lambdas = rlc_coeffs(lambda_, len(chip_names))
@@ -254,7 +289,7 @@ def prove_shard_zerocheck(
 
     # The wire's claimed_sum: the per-chip claims under the same chip RLC
     # weights the round engine applies.
-    claimed_sum = jnp.sum(jnp.stack(claims) * lambdas)
+    claimed_sum = jnp.sum(claims * lambdas)
 
     return transcript, ZerocheckProof(
         batching_challenge=batching_challenge,

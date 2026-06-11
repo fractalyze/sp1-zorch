@@ -5,10 +5,10 @@ The dual chain's guarantee is structural before it is cryptographic: one
 verifier Round per prover stage, so a proof whose message list misaligns with
 the schedule is rejected loudly by ``VerifyChain`` itself rather than
 accepted on a desynced stream. These tests pin that alignment plus the live
-stage duals — trace commit and LogUp-GKR — against a two-stage prover run:
-same Fiat-Shamir stream, carry seams written for the downstream duals, and a
-tampered stage-2 message rejected through the chain (the per-leg tamper
-coverage is ``logup_gkr/verifier_test``).
+stage duals — trace commit, LogUp-GKR, and zerocheck — against a three-stage
+prover run: same Fiat-Shamir stream, carry seams written for the downstream
+duals, and a tampered stage message rejected through the chain (the per-leg
+tamper coverage is each stage's own verifier test).
 """
 
 from __future__ import annotations
@@ -42,6 +42,15 @@ from sp1_zorch.shard_prover.verify_shard import (
     verify_shard_chain,
 )
 
+# The pinned jaxlib wheel's embedded zkx CPU emitter CHECK-fails on the rank-1
+# linalg.broadcast inside an engaged zorch.constraint_eval region
+# (fractalyze/zkx#605), so run every marker's inline decomposition instead —
+# byte-identical output, only the fusion marker is dropped. Tracked removal:
+# fractalyze/sp1-zorch#62.
+import zorch._composite as _zorch_composite
+
+_zorch_composite._HAS_COMPOSITE_OP = False
+
 BF = koalabear_mont
 
 _MAX_LOG_ROW_COUNT = 5
@@ -63,16 +72,36 @@ def _assert_bytes_equal(got, want, label: str = "") -> None:
     np.testing.assert_array_equal(_u32(got), _u32(want), err_msg=label)
 
 
+class _WitnessChip:
+    """Witness-shaped stub: column ``a == 1`` on real rows, so the constraint
+    vanishes there while ``C(0_row) != 0`` keeps the padded-row correction
+    live in the zerocheck dual's oracle check."""
+
+    def eval_constraints(self, trace, public_values):
+        a, b = trace[:, 0], trace[:, 1]
+        one = jnp.ones((), trace.dtype)
+        return jnp.stack([(a - one) * (b - one)], axis=-1)
+
+
 class VerifyShardChainTest(absltest.TestCase):
-    """A two-stage prover run vs one full dual-chain run; the live duals
-    (trace commit, LogUp-GKR) are checked cryptographically, the rest
-    structurally (round count) — stages 3-4 are still placeholders, so the
-    zerocheck Round's chips stay empty: its constructor just stores them."""
+    """A three-stage prover run vs one full dual-chain run; the live duals
+    (trace commit, LogUp-GKR, zerocheck) are checked cryptographically, the
+    placeholder stage structurally (round count)."""
 
     @classmethod
     def setUpClass(cls):
+        # Column a == 1 (the witness shape the zerocheck statement needs),
+        # column b random; the GKR interaction reads both.
         main_region = JaggedRegion.from_chips(
-            [_rand_bf(1, (_CHIP_HEIGHT, 2))],
+            [
+                jnp.concatenate(
+                    [
+                        jnp.ones((_CHIP_HEIGHT, 1), dtype=BF),
+                        _rand_bf(1, (_CHIP_HEIGHT, 1)),
+                    ],
+                    axis=1,
+                )
+            ],
             log_stacking_height=4,
             max_log_row_count=_MAX_LOG_ROW_COUNT,
             chip_names=("alpha",),
@@ -105,13 +134,14 @@ class VerifyShardChainTest(absltest.TestCase):
             Sponge(perm, SpongeParams(rate=8, out=8)),
             Compression(perm, CompressionParams(arity=2, chunk=8)),
         )
+        chips = {"alpha": _WitnessChip()}
         cls.prove_chain = prove_shard_chain(
             smcs=smcs,
             log_blowup=1,
             vk=vk,
             chip_metadata=metadata,
             gkr_chips=gkr_chips,
-            chips={},
+            chips=chips,
             num_betas=_NUM_BETAS,
             num_row_variables=_NUM_ROW_VARIABLES,
             max_log_row_count=_MAX_LOG_ROW_COUNT,
@@ -121,7 +151,10 @@ class VerifyShardChainTest(absltest.TestCase):
         carry, transcript, cls.commitment = cls.prove_chain.rounds[0](
             carry, cheap_transcript(BF)
         )
-        _, cls.prover_transcript, cls.gkr_proof = cls.prove_chain.rounds[1](
+        carry, transcript, cls.gkr_proof = cls.prove_chain.rounds[1](
+            carry, transcript
+        )
+        _, cls.prover_transcript, cls.zc_proof = cls.prove_chain.rounds[2](
             carry, transcript
         )
 
@@ -129,14 +162,16 @@ class VerifyShardChainTest(absltest.TestCase):
             vk=vk,
             chip_metadata=metadata,
             gkr_chips=gkr_chips,
+            chips=chips,
             chip_names=("alpha",),
             chip_heights={"alpha": _CHIP_HEIGHT},
             num_betas=_NUM_BETAS,
             num_row_variables=_NUM_ROW_VARIABLES,
+            max_log_row_count=_MAX_LOG_ROW_COUNT,
         )
         cls.dual_carry, cls.dual_transcript, cls.dual_ok = cls.dual(
             ShardVerifierCarry(public_values),
-            [cls.commitment, cls.gkr_proof, None, None],
+            [cls.commitment, cls.gkr_proof, cls.zc_proof, None],
             cheap_transcript(BF),
         )
         cls.vk = vk
@@ -151,18 +186,19 @@ class VerifyShardChainTest(absltest.TestCase):
         with self.assertRaisesRegex(ValueError, "one message per round"):
             self.dual(
                 ShardVerifierCarry(self.public_values),
-                [self.commitment, self.gkr_proof, None],
+                [self.commitment, self.gkr_proof, self.zc_proof],
                 cheap_transcript(BF),
             )
 
     def test_live_duals_match_the_prover_stream(self) -> None:
-        """The chain-output transcript byte-matches the prover's post-stage-2
-        one, so the two Fiat-Shamir streams enter stage 3 in sync — and the
-        placeholder stages provably leave the stream untouched."""
+        """The chain-output transcript byte-matches the prover's post-stage-3
+        one, so the two Fiat-Shamir streams enter the evaluation stage in
+        sync — and the placeholder stage provably leaves the stream
+        untouched."""
         self.assertTrue(bool(self.dual_ok))
         _, got = self.dual_transcript.sample(1)
         _, want = self.prover_transcript.sample(1)
-        _assert_bytes_equal(got, want, "post-stage-2 sample")
+        _assert_bytes_equal(got, want, "post-stage-3 sample")
 
     def test_gkr_dual_writes_the_zerocheck_seams(self) -> None:
         """The point is the dual's own derivation (pinned against the wire
@@ -188,7 +224,34 @@ class VerifyShardChainTest(absltest.TestCase):
         bad_proof = replace(self.gkr_proof, round_proofs=bad_rounds)
         _, _, ok = self.dual(
             ShardVerifierCarry(self.public_values),
-            [self.commitment, bad_proof, None, None],
+            [self.commitment, bad_proof, self.zc_proof, None],
+            cheap_transcript(BF),
+        )
+        self.assertFalse(bool(ok))
+
+    def test_zerocheck_dual_writes_the_eval_seams(self) -> None:
+        """The point is the dual's own sampled challenges (the prover's
+        ``msgs.challenge`` order), the opened values the proof's
+        oracle-checked ones — what the jagged-eval dual reads, surviving to
+        the chain output."""
+        _assert_bytes_equal(
+            self.dual_carry.zc_sumcheck_point, self.zc_proof.msgs.challenge, "point"
+        )
+        _assert_bytes_equal(
+            self.dual_carry.zc_opened_values["alpha"].main,
+            self.zc_proof.opened_values["alpha"].main,
+            "opened values",
+        )
+
+    def test_tampered_zerocheck_message_rejected_through_the_chain(self) -> None:
+        """One representative stage-3 tamper rejecting at the chain level;
+        the per-leg coverage is the stage's own test file."""
+        bad_sum = self.zc_proof.claimed_sum + jnp.ones(
+            (), self.zc_proof.claimed_sum.dtype
+        )
+        _, _, ok = self.dual(
+            ShardVerifierCarry(self.public_values),
+            [self.commitment, self.gkr_proof, replace(self.zc_proof, claimed_sum=bad_sum), None],
             cheap_transcript(BF),
         )
         self.assertFalse(bool(ok))
