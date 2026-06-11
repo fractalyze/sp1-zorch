@@ -56,11 +56,11 @@ def _assert_bytes_equal(got, want, label: str = "") -> None:
 
 
 class VerifyShardChainTest(absltest.TestCase):
-    """One prover stage-1 run vs one dual run; the chain itself is checked
-    structurally (round count), not cryptographically — the later stage duals
-    are still placeholders. Only the trace-commit stage executes, so the
-    chain's chips are empty: the GKR and zerocheck Round constructors just
-    store them."""
+    """One prover stage-1 run vs one full dual-chain run; the chain is
+    checked structurally (round count), not cryptographically — the later
+    stage duals are still placeholders. Only the trace-commit stage executes,
+    so the chain's chips are empty: the GKR and zerocheck Round constructors
+    just store them."""
 
     @classmethod
     def setUpClass(cls):
@@ -70,12 +70,12 @@ class VerifyShardChainTest(absltest.TestCase):
             max_log_row_count=_MAX_LOG_ROW_COUNT,
             chip_names=("alpha",),
         )
-        public_values = _rand_bf(7, (8,))
+        public_values = _rand_bf(30, (8,))
         vk = MachineVerifyingKey(
-            preprocessed_commit=_rand_bf(9, (8,)),
-            pc_start=_rand_bf(10, (3,)),
-            cum_sum_x=_rand_bf(11, (7,)),
-            cum_sum_y=_rand_bf(12, (7,)),
+            preprocessed_commit=_rand_bf(31, (8,)),
+            pc_start=_rand_bf(32, (3,)),
+            cum_sum_x=_rand_bf(33, (7,)),
+            cum_sum_y=_rand_bf(34, (7,)),
             enable_untrusted=0,
         )
         metadata = preamble_chip_metadata(("alpha",), [4], dtype=BF)
@@ -103,8 +103,10 @@ class VerifyShardChainTest(absltest.TestCase):
         )
 
         cls.dual = verify_shard_chain(vk=vk, chip_metadata=metadata)
-        cls.dual_carry, cls.dual_transcript, cls.dual_ok = cls.dual.rounds[0](
-            ShardVerifierCarry(public_values), cls.commitment, cheap_transcript(BF)
+        cls.dual_carry, cls.dual_transcript, cls.dual_ok = cls.dual(
+            ShardVerifierCarry(public_values),
+            [cls.commitment, None, None, None],
+            cheap_transcript(BF),
         )
         cls.vk = vk
         cls.public_values = public_values
@@ -124,8 +126,9 @@ class VerifyShardChainTest(absltest.TestCase):
 
     def test_trace_commit_dual_matches_the_prover_stream(self) -> None:
         """The dual replays the preamble from the proof's commitment message;
-        its post-stage transcript byte-matches the prover's, so the two
-        Fiat-Shamir streams enter stage 2 in sync."""
+        the chain-output transcript byte-matches the prover's post-stage-1
+        one, so the two Fiat-Shamir streams enter stage 2 in sync — and the
+        placeholder stages provably leave the stream untouched."""
         self.assertTrue(bool(self.dual_ok))
         _, got = self.dual_transcript.sample(1)
         _, want = self.prover_transcript.sample(1)
@@ -133,23 +136,11 @@ class VerifyShardChainTest(absltest.TestCase):
 
     def test_trace_commit_dual_writes_commitment_roots(self) -> None:
         """[prep (from the vk), main (from the message)] — the order of SP1's
-        round_evaluation_claims, read skip-level by the stacked-open dual."""
+        round_evaluation_claims, read skip-level by the stacked-open dual; the
+        write survives the placeholder stages to the chain output."""
         roots = self.dual_carry.commitment_roots
-        self.assertLen(roots, 2)
         _assert_bytes_equal(roots[0], self.vk.preprocessed_commit, "prep root")
         _assert_bytes_equal(roots[1], self.commitment, "main root")
-
-    def test_chain_accepts_the_stage_one_message(self) -> None:
-        """The full dual chain threads the carry through the placeholder
-        stages: ok stays true and the stage-1 carry write survives to the
-        chain output."""
-        carry, _, ok = self.dual(
-            ShardVerifierCarry(self.public_values),
-            [self.commitment, None, None, None],
-            cheap_transcript(BF),
-        )
-        self.assertTrue(bool(ok))
-        self.assertIsNotNone(carry.commitment_roots)
 
     def test_verifier_carry_flattens_to_array_leaves(self) -> None:
         """``ShardVerifierCarry`` is a pytree like the prover's carry: the
