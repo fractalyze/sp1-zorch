@@ -1,0 +1,71 @@
+# Rust fixture generator for the `gpu_fibonacci` byte-match fixtures.
+#
+# Drives the SP1 GPU shard prove in-process with a recording challenger and
+# emits the zerocheck + jagged(+open) fixtures directly — superseding the
+# `dump + convert.py` pipeline (sp1-zorch #76 / PR #83) and the fork's
+# `fri.rs` Fiat-Shamir dumps (sp1 #29). See README.md / issue #86.
+#
+# ── DEP SOURCING ─────────────────────────────────────────────────────────
+# These are LOCAL path deps into the sibling fork checkout `envs/zorch4/sp1`
+# for iterative dev. They are NOT committable as-is (layout-fragile). Before
+# the PR, convert to git deps on `fractalyze/sp1` pinned at the fork ref
+# (mirroring openvm-zorch's `tools/fixture-gen`, which git-pins the backend),
+# using the post-`#29`-removal ref decided in Phase 4. Build needs the SP1
+# CUDA toolchain (CUDA 12.x, `CUDA_ARCHS=120` for the RTX 5090).
+[package]
+name = "fixture-gen"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "fixture-gen"
+path = "src/main.rs"
+
+# Detach from any ambient workspace — this crate resolves the fork's own
+# workspace for its path deps.
+[workspace]
+
+[dependencies]
+# --- slop primitives ---
+slop-algebra = { path = "../../../sp1/slop/crates/algebra" }
+slop-challenger = { path = "../../../sp1/slop/crates/challenger" }
+slop-koala-bear = { path = "../../../sp1/slop/crates/koala-bear" }
+slop-basefold = { path = "../../../sp1/slop/crates/basefold" }
+slop-sumcheck = { path = "../../../sp1/slop/crates/sumcheck" }
+slop-jagged = { path = "../../../sp1/slop/crates/jagged" }
+slop-stacked = { path = "../../../sp1/slop/crates/stacked" }
+slop-multilinear = { path = "../../../sp1/slop/crates/multilinear" }
+slop-commit = { path = "../../../sp1/slop/crates/commit" }
+slop-alloc = { path = "../../../sp1/slop/crates/alloc" }
+
+# --- SP1 core ---
+sp1-primitives = { path = "../../../sp1/crates/primitives" }
+sp1-hypercube = { path = "../../../sp1/crates/hypercube" }
+sp1-core-machine = { path = "../../../sp1/crates/core/machine" }
+test-artifacts = { path = "../../../sp1/crates/test-artifacts" }
+
+# --- SP1 GPU ---
+sp1-gpu-shard-prover = { path = "../../../sp1/sp1-gpu/crates/shard_prover" }
+sp1-gpu-challenger = { path = "../../../sp1/sp1-gpu/crates/challenger" }
+sp1-gpu-basefold = { path = "../../../sp1/sp1-gpu/crates/basefold" }
+sp1-gpu-jagged-assist = { path = "../../../sp1/sp1-gpu/crates/jagged_assist" }
+sp1-gpu-jagged-tracegen = { path = "../../../sp1/sp1-gpu/crates/jagged_tracegen" }
+sp1-gpu-logup-gkr = { path = "../../../sp1/sp1-gpu/crates/logup_gkr" }
+sp1-gpu-air = { path = "../../../sp1/sp1-gpu/crates/air" }
+sp1-gpu-merkle-tree = { path = "../../../sp1/sp1-gpu/crates/merkle_tree" }
+sp1-gpu-zerocheck = { path = "../../../sp1/sp1-gpu/crates/zerocheck" }
+sp1-gpu-cudart = { path = "../../../sp1/sp1-gpu/crates/cuda" }
+sp1-gpu-utils = { path = "../../../sp1/sp1-gpu/crates/utils" }
+
+# --- utility ---
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+zip = { version = "2", default-features = false }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
+
+[profile.release]
+# Match openvm-zorch's generator: keep the PoW grind deterministic. The fork's
+# `test_prove_shard_fibonacci` already forces FRI pow_bits=0 under SP1_DUMP_PHASES,
+# so witnesses are reproducible; no rayon-nondeterminism concern here.
+debug = false
