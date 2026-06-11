@@ -8,7 +8,8 @@ public-values challenge -> build the circuit -> observe the output MLEs with
 their length prefixes -> sample z1 -> per layer (output to input): sample
 lambda (EF), run the materialized sumcheck, observe the four pair openings,
 sample r (EF). Every EF challenge is four base squeezes, zorch's
-``sample_challenge`` with four limbs.
+``sample_challenge`` with four limbs. The head legs (through z1) live as the
+shared glue Rounds in ``sp1_zorch.logup_gkr.head``.
 
 Grinding searches for the witness; proving from a reference dump replays the
 recorded one. The search loop arrives with the end-to-end shard prover --
@@ -25,7 +26,6 @@ import jax
 import jax.numpy as jnp
 from jax import Array, lax
 from rw_constraints import Chip
-from zk_dtypes import koalabearx4_mont as EF
 
 from sp1_zorch.commit.region import JaggedRegion
 from sp1_zorch.logup_gkr.circuit import (
@@ -34,6 +34,12 @@ from sp1_zorch.logup_gkr.circuit import (
     generate_circuit_layers,
     generate_first_layer,
 )
+from sp1_zorch.logup_gkr.head import (
+    EF_LIMBS,
+    GrindRound,
+    HeadChallengesRound,
+    OutputBindRound,
+)
 from zorch.logup_gkr.circuit import (
     JaggedGkrLayer,
     LogUpGkrOutput,
@@ -41,14 +47,8 @@ from zorch.logup_gkr.circuit import (
     jagged_layer_transition,
 )
 from zorch.logup_gkr.jagged_prover import JaggedGkrLayerRound, JaggedLayerProof
-from zorch.poly.eq import expand_eq_to_hypercube
-from zorch.poly.multilinear import eval_mle
 from zorch.round import ProveChain
-from zorch.transcript import Transcript, sample_challenge
-from zorch.utils.bits import log2_ceil_usize, log2_strict_usize
-
-# An SP1 extension-field challenge is four base-field squeezes.
-_EF_LIMBS = 4
+from zorch.transcript import Transcript
 
 
 # Pytree: both evals are array leaves (preprocessed is None for prep-less
@@ -217,56 +217,31 @@ def prove_logup_gkr(
             raise ValueError("pow_bits > 0 needs a witness (grinding not built)")
     else:
         witness = jnp.zeros((), dtype=bf_dtype)
-    transcript = transcript.observe(witness)
-    transcript, pow_sample = transcript.sample(1)
-    # The PoW gate host-reads the sample; skip it when pow_bits == 0 (empty
-    # mask, always passes) so the stage traces inside one @jit. Grinding
-    # (pow_bits > 0) is not built and runs eagerly.
-    if pow_bits > 0 and int(pow_sample[0]) & ((1 << pow_bits) - 1):
-        raise ValueError(f"witness fails the {pow_bits}-bit proof of work")
-
-    transcript, alpha = sample_challenge(transcript, EF, _EF_LIMBS)
-    seeds = []
-    for _ in range(log2_ceil_usize(num_betas)):
-        transcript, seed = sample_challenge(transcript, EF, _EF_LIMBS)
-        seeds.append(seed)
-    # SP1 samples one extra public-values challenge here and discards it.
-    transcript, _ = sample_challenge(transcript, EF, _EF_LIMBS)
-    one = jnp.ones((), dtype=EF)
-    betas = one[None] if not seeds else expand_eq_to_hypercube(jnp.stack(seeds), one)
+    # The head schedule (grind, challenges, output binding) runs as the
+    # shared glue Rounds -- the byte-match harness and the phase benchmark
+    # thread the same definitions, so the three cannot drift.
+    _, transcript, _ = GrindRound(witness, pow_bits=pow_bits)(None, transcript)
+    _, transcript, head = HeadChallengesRound(num_betas)(None, transcript)
 
     # No standalone binding for the first layer -- it is the largest, and a
     # stray reference would pin it past its round's release below.
     layers = generate_circuit_layers(
-        generate_first_layer(gkr_chips, main_region, prep_region, alpha, betas),
+        generate_first_layer(
+            gkr_chips, main_region, prep_region, head.alpha, head.betas
+        ),
         num_row_variables,
     )
     output = extract_sp1_outputs(layers[-1])
-
-    # SP1 serializes the output MLEs with length prefixes.
-    transcript = transcript.observe(jnp.array(output.numerator.shape[0], bf_dtype))
-    transcript = transcript.observe(output.numerator)
-    transcript = transcript.observe(jnp.array(output.denominator.shape[0], bf_dtype))
-    transcript = transcript.observe(output.denominator)
-
-    coords = []
-    for _ in range(log2_strict_usize(output.numerator.shape[0])):
-        transcript, c = sample_challenge(transcript, EF, _EF_LIMBS)
-        coords.append(c)
-    z1 = jnp.stack(coords)
-    num_eval = eval_mle(output.numerator, z1)
-    den_eval = eval_mle(output.denominator, z1)
+    carry, transcript, _ = OutputBindRound(output)(None, transcript)
 
     # layers.pop() walks output to input; the lazily consumed chain builds
     # each round on demand and releases it once proved, so at most one layer
     # of the pyramid stays live -- the planes sum to gigabytes at shard scale.
     chain = ProveChain(
-        JaggedGkrLayerRound(layers.pop(), _EF_LIMBS, jit=jit)
+        JaggedGkrLayerRound(layers.pop(), EF_LIMBS, jit=jit)
         for _ in range(len(layers))
     )
-    (_, _, eval_point), transcript, round_proofs = chain(
-        (num_eval, den_eval, z1), transcript
-    )
+    (_, _, eval_point), transcript, round_proofs = chain(carry, transcript)
 
     transcript, chip_openings = open_traces(
         main_region,

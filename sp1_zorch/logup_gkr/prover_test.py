@@ -19,6 +19,12 @@ from zk_dtypes import koalabearx4_mont as EF
 
 from sp1_zorch.commit.region import JaggedRegion
 from sp1_zorch.logup_gkr.circuit import GkrChip
+from sp1_zorch.logup_gkr.head import (
+    EF_LIMBS,
+    GrindRound,
+    HeadChallengesRound,
+    OutputBindRound,
+)
 from sp1_zorch.logup_gkr.prover import (
     extract_sp1_outputs,
     num_beta_values,
@@ -27,13 +33,8 @@ from sp1_zorch.logup_gkr.prover import (
 from sp1_zorch.shard_prover.chip_loader import make_chip_stub
 from zorch.logup_gkr.circuit import JaggedGkrLayer, jagged_layer_transition
 from zorch.logup_gkr.jagged_verifier import JaggedGkrLayerRound as VerifierRound
-from zorch.poly.eq import expand_eq_to_hypercube
 from zorch.round import VerifyChain
 from zorch.testkit.transcript import cheap_transcript
-from zorch.transcript import sample_challenge
-from zorch.utils.bits import log2_ceil_usize
-
-_EF_LIMBS = 4
 
 
 def _interaction(mult_col: int, val_col: int, *, kind: int = 3) -> Interaction:
@@ -147,34 +148,20 @@ class ProveLogupGkrTest(absltest.TestCase):
 
     def test_stream_replays_through_the_zorch_verifier_dual(self) -> None:
         # The glue's per-layer carry threading must be byte-for-byte the
-        # jagged verifier round's: replay the head (witness, challenges,
-        # output binding) and drive the verifier chain off the same fresh
-        # sponge -- every layer must accept and land on the same point.
+        # jagged verifier round's: replay the head through the shared glue
+        # Rounds (their raw-schedule pin is head_test) and drive the verifier
+        # chain off the same fresh sponge -- every layer must accept and land
+        # on the same point.
         proof = self._prove()
 
         transcript = cheap_transcript(F)
-        transcript = transcript.observe(proof.witness)
-        transcript, _ = transcript.sample(1)
-        transcript, _alpha = sample_challenge(transcript, EF, _EF_LIMBS)
-        for _ in range(log2_ceil_usize(3)):
-            transcript, _ = sample_challenge(transcript, EF, _EF_LIMBS)
-        transcript, _ = sample_challenge(transcript, EF, _EF_LIMBS)
+        _, transcript, _ = GrindRound(proof.witness)(None, transcript)
+        _, transcript, _ = HeadChallengesRound(3)(None, transcript)
+        carry, transcript, _ = OutputBindRound(proof.circuit_output)(
+            None, transcript
+        )
 
-        num = proof.circuit_output.numerator
-        den = proof.circuit_output.denominator
-        transcript = transcript.observe(jnp.array(num.shape[0], F))
-        transcript = transcript.observe(num)
-        transcript = transcript.observe(jnp.array(den.shape[0], F))
-        transcript = transcript.observe(den)
-        coords = []
-        for _ in range(2):  # niv + 1
-            transcript, c = sample_challenge(transcript, EF, _EF_LIMBS)
-            coords.append(c)
-        z1 = jnp.stack(coords)
-        eq_z1 = expand_eq_to_hypercube(z1, jnp.ones((), EF))
-        carry = (jnp.sum(num * eq_z1), jnp.sum(den * eq_z1), z1)
-
-        chain = VerifyChain([VerifierRound(_EF_LIMBS) for _ in proof.round_proofs])
+        chain = VerifyChain([VerifierRound(EF_LIMBS) for _ in proof.round_proofs])
         (num_eval, den_eval, point), _, ok = chain(
             carry, proof.round_proofs, transcript
         )

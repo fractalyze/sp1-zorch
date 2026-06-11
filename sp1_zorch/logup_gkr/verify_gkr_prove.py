@@ -29,8 +29,12 @@ from pathlib import Path
 
 import jax.numpy as jnp
 from absl import app, flags
-from zk_dtypes import koalabearx4_mont as EF
 
+from sp1_zorch.logup_gkr.head import (
+    GrindRound,
+    HeadChallengesRound,
+    OutputBindRound,
+)
 from sp1_zorch.logup_gkr.prover import LogupGkrProof, num_beta_values
 from sp1_zorch.shard_prover.fixture_loader import (
     _parse_ef_list,
@@ -44,8 +48,7 @@ from sp1_zorch.shard_prover.replay import (
     replay_gkr,
     shard_regions,
 )
-from zorch.transcript import Transcript, sample_challenge
-from zorch.utils.bits import log2_ceil_usize
+from zorch.transcript import Transcript
 
 _SHARD_DIR = flags.DEFINE_string(
     "shard_dir", None, "rsp shard dump directory (e.g. .../rsp_dump/shard1)."
@@ -56,8 +59,6 @@ _GKR_POW_BITS = flags.DEFINE_integer(
     "GKR grind bits (SP1 hardcodes GKR_GRINDING_BITS = 12).",
 )
 
-_EF_LIMBS = 4
-
 
 def _replay_challenges_to_z1(
     transcript: Transcript,
@@ -67,34 +68,28 @@ def _replay_challenges_to_z1(
 ) -> bool:
     """Diagnostic replay from the preamble through z1 on a transcript clone.
 
-    Mirrors ``prove_logup_gkr``'s head exactly; the per-value checks say
+    Threads the same head Rounds ``prove_logup_gkr`` runs (one schedule
+    definition, ``sp1_zorch.logup_gkr.head``); the per-value checks say
     which challenge first diverged when a later anchor mismatches. Runs
     after the prove since the z1 leg absorbs the circuit output."""
-    bf_dtype = proof.witness.dtype
-    transcript = transcript.observe(proof.witness)
-    transcript, _ = transcript.sample(1)
+    # pow_bits=0: advance the recorded witness's stream without re-judging it.
+    _, transcript, _ = GrindRound(proof.witness)(None, transcript)
     ok = check_match(
         "post_grind_diag", clone_diag(transcript), int(state["witness_diag"])
     )
-    transcript, alpha = sample_challenge(transcript, EF, _EF_LIMBS)
-    ok &= check_match("alpha", alpha, _parse_ef_list(state["alpha"])[0])
-    for i in range(log2_ceil_usize(num_betas)):
-        transcript, seed = sample_challenge(transcript, EF, _EF_LIMBS)
+    _, transcript, head = HeadChallengesRound(num_betas)(None, transcript)
+    ok &= check_match("alpha", head.alpha, _parse_ef_list(state["alpha"])[0])
+    for i in range(head.beta_seeds.shape[0]):
         ok &= check_match(
-            f"beta_seed[{i}]", seed, _parse_ef_list(state[f"beta_seed[{i}]"])[0]
+            f"beta_seed[{i}]",
+            head.beta_seeds[i],
+            _parse_ef_list(state[f"beta_seed[{i}]"])[0],
         )
-    transcript, _ = sample_challenge(transcript, EF, _EF_LIMBS)
-
-    num = proof.circuit_output.numerator
-    den = proof.circuit_output.denominator
-    transcript = transcript.observe(jnp.array(num.shape[0], bf_dtype))
-    transcript = transcript.observe(num)
-    transcript = transcript.observe(jnp.array(den.shape[0], bf_dtype))
-    transcript = transcript.observe(den)
+    _, transcript, z1 = OutputBindRound(proof.circuit_output)(None, transcript)
     z1_keys = sum(1 for k in state if k.startswith("z1["))
-    for i in range(z1_keys):
-        transcript, c = sample_challenge(transcript, EF, _EF_LIMBS)
-        ok &= check_match(f"z1[{i}]", c, _parse_ef_list(state[f"z1[{i}]"])[0])
+    ok &= check_match("z1 count", z1.shape[0], z1_keys)
+    for i in range(min(z1.shape[0], z1_keys)):
+        ok &= check_match(f"z1[{i}]", z1[i], _parse_ef_list(state[f"z1[{i}]"])[0])
     return ok
 
 
