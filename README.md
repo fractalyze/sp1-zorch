@@ -47,6 +47,11 @@ the SP1 reference needs a CUDA GPU):
 bazel test //...
 ```
 
+## Documentation
+
+See [`docs/`](docs/README.md) — conventions, the shard pipeline, and testing
+(`size`/`timeout` and fixtures).
+
 ## License
 
 Licensed under the Apache License, Version 2.0 (see [LICENSE](LICENSE)).
