@@ -13,7 +13,7 @@ them.
 |---|---|---|---|---|
 | Trace commit | SMCS merkle commit over the jagged dense packing (no sumcheck rounds; transcript observes vk, public values, commitment, chip metadata) | — (seeds the transcript) | `sp1_zorch/commit` | `commit:verify_trace_commit` |
 | LogUp-GKR | A chain of layer Rounds (output layer → input layer), each layer a chain of per-variable sumcheck rounds | Per-layer running claim, ending in trace-column openings at the final evaluation point | `sp1_zorch/logup_gkr` | `logup_gkr:verify_first_layer`, `logup_gkr:verify_gkr_prove` |
-| Zerocheck | One jagged multi-chip sumcheck: 22 homogeneous per-variable rounds over `eq * (constraint RLC + GKR column term)` | In: every chip's constraint zero-sum + its GKR opening claim; out: one claim at the sumcheck point | `sp1_zorch/zerocheck` | `zerocheck:verify_zerocheck` |
+| Zerocheck | One jagged multi-chip sumcheck: 22 homogeneous per-variable rounds over `eq * (constraint RLC + GKR column term)`, then the per-chip opened values absorbed into the transcript | In: every chip's constraint zero-sum + its GKR opening claim; out: one claim at the sumcheck point + the opened values there (the evaluation stage's per-column claims) | `sp1_zorch/zerocheck` | `zerocheck:verify_zerocheck` |
 
 Each stage runnable above gates one stage's math; `shard_prover:verify_prove_shard`
 gates the *composition* — it runs the assembled `prove_shard_chain` over a dump

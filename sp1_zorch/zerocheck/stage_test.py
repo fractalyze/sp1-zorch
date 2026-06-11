@@ -29,7 +29,7 @@ from sp1_zorch.commit.region import JaggedRegion
 from sp1_zorch.logup_gkr.prover import ChipEvaluation
 from sp1_zorch.zerocheck.jagged import prove_jagged_zerocheck
 from sp1_zorch.zerocheck.prover import gkr_powers, rlc_coeffs
-from sp1_zorch.zerocheck.stage import prove_shard_zerocheck
+from sp1_zorch.zerocheck.stage import prove_shard_zerocheck, split_opened_values
 
 # The pinned jaxlib wheel's embedded zkx CPU emitter CHECK-fails on the rank-1
 # linalg.broadcast inside an engaged zorch.constraint_eval region
@@ -165,7 +165,7 @@ class ProveZerocheckTest(absltest.TestCase):
         alphas = [rlc_coeffs(alpha, 2), rlc_coeffs(alpha, 0)]
         lambdas = rlc_coeffs(lambda_, 2)
 
-        cls.want_finals, cls.want_transcript, cls.want_msgs = prove_jagged_zerocheck(
+        want_finals, t, want_msgs = prove_jagged_zerocheck(
             eval_fns,
             traces,
             [5, 3],
@@ -176,6 +176,22 @@ class ProveZerocheckTest(absltest.TestCase):
             beta=beta,
             claims=claims,
         )
+        # The stage's transcript tail replayed raw — the deliberate second
+        # writing of the opened-values absorb schedule (chip count, then per
+        # chip the length-prefixed [prep | main] evaluations at the sumcheck
+        # point; a prep-less chip absorbs a bare zero length). Finals stack
+        # [main | prep], so alpha's prep is rows 3:5 of its column stack.
+        alpha_vals = want_finals[0][:, 0]
+        lookup_vals = want_finals[1][:, 0]
+        t = t.observe(jnp.array(2, BF))
+        t = t.observe(jnp.array(2, BF))
+        t = t.observe(alpha_vals[3:5])
+        t = t.observe(jnp.array(3, BF))
+        t = t.observe(alpha_vals[:3])
+        t = t.observe(jnp.array(0, BF))
+        t = t.observe(jnp.array(1, BF))
+        t = t.observe(lookup_vals[:1])
+        cls.want_finals, cls.want_transcript, cls.want_msgs = want_finals, t, want_msgs
         cls.zeta = zeta
         cls.want_claims = claims
 
@@ -212,6 +228,68 @@ class ProveZerocheckTest(absltest.TestCase):
         _, got = sample_challenge(self.got_transcript, EF, 4)
         _, want = sample_challenge(self.want_transcript, EF, 4)
         _assert_bytes_equal(got, want)
+
+    def test_opened_values_are_the_finals_split(self):
+        opened = self.proof.opened_values
+        _assert_bytes_equal(opened["alpha"].main, self.want_finals[0][:3, 0])
+        _assert_bytes_equal(opened["alpha"].preprocessed, self.want_finals[0][3:5, 0])
+        _assert_bytes_equal(opened["lookup"].main, self.want_finals[1][:1, 0])
+        self.assertIsNone(opened["lookup"].preprocessed)
+
+
+class SplitOpenedValuesTest(absltest.TestCase):
+    """Pins the finals split directly: position 0 of each ``[main | prep]``
+    column stack is the column's evaluation at the sumcheck point, sliced
+    main-first per the ``chip_traces`` order; a chip absent from the prep
+    region gets ``preprocessed=None``."""
+
+    def test_splits_main_then_prep(self) -> None:
+        # "alpha": 2 main cols + 1 prep col; "lookup": 1 main col, no prep.
+        main_region = JaggedRegion(
+            dense=jnp.zeros(8, dtype=BF),
+            chip_starts=(0, 6, 8),
+            row_counts=(3, 2, 4, 1),
+            column_counts=(2, 1, 1, 1),
+            log_stacking_height=2,
+            chip_names=("alpha", "lookup"),
+        )
+        prep_region = JaggedRegion(
+            dense=jnp.zeros(3, dtype=BF),
+            chip_starts=(0, 3),
+            row_counts=(3, 4, 1),
+            column_counts=(1, 1, 1),
+            log_stacking_height=2,
+            chip_names=("alpha",),
+        )
+        finals = [
+            jnp.array([[31, 0], [32, 0], [33, 0]], dtype=EF),
+            jnp.array([[41, 0]], dtype=EF),
+        ]
+
+        opened = split_opened_values(finals, main_region, prep_region)
+
+        _assert_bytes_equal(opened["alpha"].main, finals[0][:2, 0], "alpha main")
+        _assert_bytes_equal(
+            opened["alpha"].preprocessed, finals[0][2:3, 0], "alpha prep"
+        )
+        _assert_bytes_equal(opened["lookup"].main, finals[1][:1, 0], "lookup main")
+        self.assertIsNone(opened["lookup"].preprocessed)
+
+    def test_no_prep_region_means_no_preprocessed_anywhere(self) -> None:
+        main_region = JaggedRegion(
+            dense=jnp.zeros(8, dtype=BF),
+            chip_starts=(0, 8),
+            row_counts=(4, 4, 1),
+            column_counts=(2, 1, 1),
+            log_stacking_height=2,
+            chip_names=("alpha",),
+        )
+        finals = [jnp.array([[31, 0], [32, 0]], dtype=EF)]
+
+        opened = split_opened_values(finals, main_region, None)
+
+        _assert_bytes_equal(opened["alpha"].main, finals[0][:, 0], "alpha main")
+        self.assertIsNone(opened["alpha"].preprocessed)
 
 
 if __name__ == "__main__":

@@ -64,6 +64,7 @@ from zorch.utils.bits import log2_ceil_usize
         "gkr_eval_point",
         "gkr_chip_openings",
         "zc_sumcheck_point",
+        "zc_opened_values",
     ],
     meta_fields=[],
 )
@@ -85,6 +86,10 @@ class ShardCarry:
     # Written by ShardZerocheckRound; read by the jagged-eval open stage as its
     # z_row — the accumulated per-round sumcheck challenges, not the GKR zeta.
     zc_sumcheck_point: Array | None = None
+    # Written by ShardZerocheckRound; read by the jagged-eval stage as its
+    # per-column claims (the trace evaluations at the zerocheck point) and by
+    # proof assembly as the wire's ShardOpenedValues.
+    zc_opened_values: Mapping[str, ChipEvaluation] | None = None
 
 
 def preamble_chip_metadata(
@@ -236,7 +241,10 @@ class LogupGkrRound(Round):
 
 class ShardZerocheckRound(Round):
     """Zerocheck stage over ``prove_shard_zerocheck``, consuming the GKR
-    point and openings off the carry."""
+    point and openings off the carry. The stage absorbs the per-chip opened
+    values itself (``OpenedValuesRound`` in ``zerocheck.stage``); this Round
+    threads them onto the carry for the jagged-eval stage's claims and the
+    wire's ShardOpenedValues."""
 
     def __init__(self, chips: Mapping[str, Chip], *, max_log_row_count: int) -> None:
         self._chips = chips
@@ -260,7 +268,11 @@ class ShardZerocheckRound(Round):
             transcript,
             max_log_row_count=self._max_log_row_count,
         )
-        carry = replace(carry, zc_sumcheck_point=proof.msgs.challenge)
+        carry = replace(
+            carry,
+            zc_sumcheck_point=proof.msgs.challenge,
+            zc_opened_values=proof.opened_values,
+        )
         return carry, transcript, proof
 
 
@@ -277,8 +289,8 @@ class ShardJaggedEvalProof:
 class ShardJaggedEvalRound(Round):
     """Jagged evaluation proof (SP1 Phase 4): reduce the committed trace to
     ``D(z_final)`` via the outer/inner sumcheck, then open ``D`` at ``z_final``
-    with the stacked BaseFold FRI. Reads the zerocheck point, the per-chip GKR
-    openings, and the committed stacked witness off the carry."""
+    with the stacked BaseFold FRI. Reads the zerocheck point, the per-chip
+    opened values at it, and the committed stacked witness off the carry."""
 
     def __init__(
         self,
@@ -299,23 +311,24 @@ class ShardJaggedEvalRound(Round):
         if (
             carry.zc_sumcheck_point is None
             or carry.commit_rounds is None
-            or carry.gkr_chip_openings is None
+            or carry.zc_opened_values is None
         ):
             raise ValueError(
                 "the jagged-eval stage needs the zerocheck point, committed "
-                "rounds, and GKR openings on the carry; sequence the commit, "
-                "LogUp-GKR, and zerocheck Rounds before it"
+                "rounds, and zerocheck opened values on the carry; sequence "
+                "the commit, LogUp-GKR, and zerocheck Rounds before it"
             )
         main = carry.main_region
-        openings = carry.gkr_chip_openings
+        openings = carry.zc_opened_values
         # The jagged eval runs in the extension field; the sumcheck points
         # (z_row) are base-field per-round challenge lists, embedded up to EF
         # where the eval needs them.
         ef = koalabearx4_mont
 
         # Per-round (row/column counts, real per-column claims) in [prep, main]
-        # order — each chip's GKR opening field is its columns' claims — plus
-        # each region's raw (unpadded) dense for the combined committed D.
+        # order — each chip's opened-values field at the zerocheck point is its
+        # columns' claims (SP1's round_evaluation_claims) — plus each region's
+        # raw (unpadded) dense for the combined committed D.
         rc_rounds: list[Sequence[int]] = []
         cc_rounds: list[Sequence[int]] = []
         claims_rounds: list[Array] = []

@@ -337,32 +337,26 @@ def encode_vk(vk: MachineVerifyingKey) -> bytes:
     )
 
 
-def chip_opened_values(
-    zerocheck_proof: ZerocheckProof, carry: ShardCarry
-) -> list[ChipOpenedValues]:
-    """Split the zerocheck stage's final folded traces into the wire's
-    per-chip opened values.
-
-    ``finals[c]`` stacks the chip's ``[main | prep]`` columns (the
-    ``chip_traces`` order) with each column's evaluation at the sumcheck
-    point in position 0. ``degree`` is the chip's live row count — the
-    height whose bits the wire spells out.
+def chip_opened_values(carry: ShardCarry) -> list[ChipOpenedValues]:
+    """Bridge the carry's zerocheck opened values to the wire's per-chip
+    shape. The split off the final folded traces is the zerocheck stage's
+    (``zerocheck.stage.split_opened_values`` — one view shared with the
+    transcript absorbs and the jagged-eval claims); ``degree`` is the chip's
+    live row count — the height whose bits the wire spells out.
     """
+    if carry.zc_opened_values is None:
+        raise ValueError(
+            "the carry holds no zerocheck opened values; run the chain "
+            "through ShardZerocheckRound before assembling the wire"
+        )
     main = carry.main_region
-    prep = carry.prep_region
-    prep_widths = (
-        dict(zip(prep.chip_names, prep.chip_widths, strict=True)) if prep else {}
-    )
-
     values = []
     for i, name in enumerate(main.chip_names):
-        evals = zerocheck_proof.finals[i][:, 0]
-        mw = int(main.chip_widths[i])
-        pw = prep_widths.get(name, 0)
+        ev = carry.zc_opened_values[name]
         values.append(
             ChipOpenedValues(
-                preprocessed_evals=evals[mw : mw + pw] if pw else None,
-                main_evals=evals[:mw],
+                preprocessed_evals=ev.preprocessed,
+                main_evals=ev.main,
                 degree=int(main.chip_heights[i]),
             )
         )
@@ -405,7 +399,7 @@ def encode_shard_proof(
 
     parts.append(
         _encode_shard_opened_values(
-            chip_opened_values(zerocheck_proof, carry),
+            chip_opened_values(carry),
             list(carry.main_region.chip_names),
             max_log_row_count,
         )
