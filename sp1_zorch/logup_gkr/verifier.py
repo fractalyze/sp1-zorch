@@ -13,12 +13,15 @@ the chain's reduced claim. Per-chip trace heights are statement inputs here
 proof's opened-values degrees instead, which in our chain layering arrive
 only with the zerocheck stage's message.
 
-One SP1 acceptance leg is missing: the output-layer cumulative-sum check
-(``sum(num/den)`` against the public-values interaction digest) needs SP1's
-``eval_public_values`` constraint machinery, which has no rw-constraints
-port yet. Until it lands, a from-scratch re-prove of an unbalanced witness
-is the one tamper class this dual cannot reject; every in-place tamper of a
-valid proof still fails a stream or claim check.
+The output-layer acceptance leg closes the bus: ``sum(num/den)`` over the
+circuit output must equal ``-digest``, where ``digest`` is SP1's
+public-values interaction digest from ``eval_public_values``
+(``sp1_zorch.logup_gkr.public_values``), folded under the head's
+public-values challenge. With it, a from-scratch re-prove of an unbalanced
+witness is rejected here — the shard-local soundness of the bus — alongside
+the public-values constraint accumulator (well-formed public values fold to
+zero). The leg needs the statement's public-values vector; a mechanics-only
+caller (the layer-replay unit test) passes ``None`` to skip it.
 """
 
 from __future__ import annotations
@@ -35,6 +38,7 @@ from sp1_zorch.logup_gkr.prover import (
     ChipOpeningsRound,
     LogupGkrProof,
 )
+from sp1_zorch.logup_gkr.public_values import eval_public_values
 from zorch.logup_gkr.jagged_verifier import JaggedGkrLayerRound
 from zorch.poly.geq import VirtualGeq
 from zorch.poly.multilinear import eval_mle
@@ -145,6 +149,7 @@ def verify_logup_gkr(
     chip_heights: Mapping[str, int],
     proof: LogupGkrProof,
     transcript: GrindingTranscript,
+    public_values: Array | None,
     *,
     num_betas: int,
     num_row_variables: int,
@@ -160,6 +165,12 @@ def verify_logup_gkr(
     chip count, wrong output size) raises instead — shapes are host
     decisions, the same split SP1 makes between its shape errors and field
     checks.
+
+    ``public_values`` is the shard's statement public-values vector; the
+    output-layer leg checks ``sum(num/den)`` over the circuit output against
+    ``-eval_public_values`` digest and folds the public-values constraint
+    accumulator to zero. Pass ``None`` to skip the leg in a mechanics-only
+    test — production callers (the shard dual) always provide it.
     """
     total_interactions = sum(len(c.interactions) for c in gkr_chips)
     num_interaction_variables = log2_ceil_usize(total_interactions)
@@ -216,4 +227,19 @@ def verify_logup_gkr(
     ok_leaf = jnp.array_equal(jnp.stack([num_eval, den_eval]), expected)
 
     ok = ok_pow & ok_denominator & ok_layers & ok_point & ok_leaf
+
+    if public_values is not None:
+        # Output-layer bus balance: the circuit's cumulative sum cancels the
+        # public-values interaction digest, and the public-values constraints
+        # fold to zero. SP1 ``verify_logup_gkr``: ``output_cumulative_sum ==
+        # -verify_public_values(...)`` and ``accumulator == 0``.
+        accumulator, digest = eval_public_values(
+            public_values, head.pv_challenge, head.alpha, head.betas
+        )
+        output = proof.circuit_output
+        output_cumulative_sum = jnp.sum(output.numerator / output.denominator)
+        ok_bus = output_cumulative_sum == -digest
+        ok_accumulator = accumulator == jnp.zeros((), accumulator.dtype)
+        ok = ok & ok_bus & ok_accumulator
+
     return transcript, eval_point, ok

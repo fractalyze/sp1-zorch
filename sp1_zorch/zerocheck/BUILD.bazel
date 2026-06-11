@@ -43,6 +43,14 @@ filegroup(
     visibility = ["//visibility:public"],
 )
 
+# A real, valid shard's public-values vector — reused by the LogUp-GKR
+# public-values predicate test as ground truth for the constraint accumulator.
+filegroup(
+    name = "shard_public_values_fixture",
+    srcs = ["testdata/gpu_fibonacci/inputs/public_values.npy"],
+    visibility = ["//visibility:public"],
+)
+
 py_test(
     name = "prover_test",
     size = "small",

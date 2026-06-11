@@ -126,6 +126,7 @@ class LogupGkrVerifierRound(Round):
         num_betas: int,
         num_row_variables: int,
         pow_bits: int = 0,
+        verify_public_values: bool = True,
     ) -> None:
         self._gkr_chips = gkr_chips
         self._chip_names = chip_names
@@ -133,6 +134,7 @@ class LogupGkrVerifierRound(Round):
         self._num_betas = num_betas
         self._num_row_variables = num_row_variables
         self._pow_bits = pow_bits
+        self._verify_public_values = verify_public_values
 
     def __call__(
         self,
@@ -146,6 +148,7 @@ class LogupGkrVerifierRound(Round):
             self._chip_heights,
             msg,
             transcript,
+            carry.public_values if self._verify_public_values else None,
             num_betas=self._num_betas,
             num_row_variables=self._num_row_variables,
             pow_bits=self._pow_bits,
@@ -228,6 +231,7 @@ def verify_shard_chain(
     num_row_variables: int,
     max_log_row_count: int,
     pow_bits: int = 0,
+    verify_public_values: bool = True,
 ) -> VerifyChain:
     """The ``VerifyChain`` dual of ``prove_shard_chain``: one verifier Round
     per prover stage, in the prover's order, so the proof's message list
@@ -236,7 +240,11 @@ def verify_shard_chain(
     ``chip_names`` and ``chip_heights`` cover every shard chip (the openings
     absorb order, the leaf and oracle checks' geq thresholds) — the
     verifier-side statement counterpart of the regions the prover Rounds
-    read off the carry."""
+    read off the carry.
+
+    ``verify_public_values`` runs the LogUp-GKR output-layer bus-balance leg
+    (the public-values digest vs the circuit cumulative sum); a structural
+    test over a synthetic shard with no real public-values bus sets it False."""
     return VerifyChain(
         [
             TraceCommitVerifierRound(vk=vk, chip_metadata=chip_metadata),
@@ -247,6 +255,7 @@ def verify_shard_chain(
                 num_betas=num_betas,
                 num_row_variables=num_row_variables,
                 pow_bits=pow_bits,
+                verify_public_values=verify_public_values,
             ),
             ShardZerocheckVerifierRound(
                 chips,

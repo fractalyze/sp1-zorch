@@ -36,6 +36,7 @@ from sp1_zorch.logup_gkr.head import (
     OutputBindRound,
 )
 from sp1_zorch.logup_gkr.prover import LogupGkrProof, num_beta_values
+from sp1_zorch.logup_gkr.public_values import eval_public_values
 from sp1_zorch.shard_prover.fixture_loader import (
     _parse_ef_list,
     _parse_kv_lines,
@@ -107,6 +108,39 @@ def _check_outputs(proof: LogupGkrProof, state: dict[str, str]) -> bool:
     return ok
 
 
+def _check_public_values_leg(
+    proof: LogupGkrProof,
+    shard,
+    preamble: Transcript,
+    num_betas: int,
+) -> bool:
+    """The output-layer bus-balance leg on a real shard (acceptance criterion:
+    the public-values digest byte-matches SP1).
+
+    Re-derives the head challenges the way ``verify_logup_gkr`` does — the
+    prover sampled and discarded the public-values challenge; the verifier
+    folds the public-values constraints under it — then checks SP1's two
+    output-layer conditions: the constraint accumulator folds to zero and the
+    circuit's cumulative sum ``sum(num/den)`` cancels the interaction digest.
+    A from-scratch re-prove of an unbalanced witness changes that sum and
+    fails the equality; a valid shard balances exactly."""
+    _, transcript, _ = GrindRound(proof.witness)(None, preamble)
+    _, transcript, head = HeadChallengesRound(num_betas)(None, transcript)
+    public_values = shard.main_trace_data.public_values
+    accumulator, digest = eval_public_values(
+        public_values, head.pv_challenge, head.alpha, head.betas
+    )
+    out = proof.circuit_output
+    output_cumulative_sum = jnp.sum(out.numerator / out.denominator)
+    ok = check_match(
+        "pv constraint accumulator == 0", accumulator, jnp.zeros((), accumulator.dtype)
+    )
+    ok &= check_match(
+        "bus balance: sum(num/den) == -pv_digest", output_cumulative_sum, -digest
+    )
+    return ok
+
+
 def _check_rounds(proof: LogupGkrProof, shard_dir: Path) -> bool:
     blocks = (shard_dir / "gkr_sumcheck_rounds.txt").read_text().split("--- round ---")
     rounds = [_parse_kv_lines(b, skip_unkeyed=True) for b in blocks if b.strip()]
@@ -159,6 +193,7 @@ def main(argv) -> None:
 
     ok &= _check_outputs(proof, state)
     ok &= _check_rounds(proof, shard_dir)
+    ok &= _check_public_values_leg(proof, shard, preamble, num_betas)
     # One scalar seals the whole stage: the post-GKR diag samples the
     # challenger after every round poly, opening, and trace eval absorbed,
     # so a match here means the full opening stream byte-matched too.

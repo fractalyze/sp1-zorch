@@ -68,16 +68,24 @@ class GrindRound(Round):
 class HeadChallenges:
     """The head's sampled challenges. ``betas`` is the eq-expansion of the
     seeds (a single one when there are none) — derived here once so every
-    consumer fingerprints interactions with the same tensor."""
+    consumer fingerprints interactions with the same tensor. ``pv_challenge``
+    is SP1's public-values constraint-folding seed: the prover samples it only
+    to advance the stream, but the verifier's output cumulative-sum leg folds
+    the public-values constraints under it (``eval_public_values``)."""
 
     alpha: Array  # () EF
     beta_seeds: Array  # (num_seeds,) EF; empty when num_betas == 1
     betas: Array  # (2^num_seeds,) EF
+    pv_challenge: Array  # () EF
 
 
 class HeadChallengesRound(Round):
-    """Sample alpha, the beta seeds, and SP1's extra public-values challenge
-    (sampled and discarded — it still advances the stream)."""
+    """Sample alpha, the beta seeds, and SP1's public-values challenge.
+
+    The public-values challenge advances the stream on every consumer (it is
+    sampled in the schedule's fixed slot); the prover discards its value, the
+    verifier keeps it to fold the public-values constraints in the output
+    cumulative-sum leg."""
 
     def __init__(self, num_betas: int) -> None:
         self._num_betas = num_betas
@@ -90,7 +98,7 @@ class HeadChallengesRound(Round):
         for _ in range(log2_ceil_usize(self._num_betas)):
             transcript, seed = sample_challenge(transcript, EF, EF_LIMBS)
             seeds.append(seed)
-        transcript, _ = sample_challenge(transcript, EF, EF_LIMBS)
+        transcript, pv_challenge = sample_challenge(transcript, EF, EF_LIMBS)
         one = jnp.ones((), dtype=EF)
         if seeds:
             beta_seeds = jnp.stack(seeds)
@@ -98,7 +106,7 @@ class HeadChallengesRound(Round):
         else:
             beta_seeds = jnp.zeros((0,), EF)
             betas = one[None]
-        return carry, transcript, HeadChallenges(alpha, beta_seeds, betas)
+        return carry, transcript, HeadChallenges(alpha, beta_seeds, betas, pv_challenge)
 
 
 class OutputBindRound(Round):

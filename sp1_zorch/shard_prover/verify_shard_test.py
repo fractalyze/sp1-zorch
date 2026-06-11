@@ -158,6 +158,10 @@ class VerifyShardChainTest(absltest.TestCase):
             carry, transcript
         )
 
+        # Synthetic shard, 8-element random public values, no real
+        # public-values bus: the structural / stage-dual mirror this test pins
+        # is orthogonal to the output-layer balance leg, which is covered on a
+        # real shard in logup_gkr/public_values_test.
         cls.dual = verify_shard_chain(
             vk=vk,
             chip_metadata=metadata,
@@ -168,6 +172,7 @@ class VerifyShardChainTest(absltest.TestCase):
             num_betas=_NUM_BETAS,
             num_row_variables=_NUM_ROW_VARIABLES,
             max_log_row_count=_MAX_LOG_ROW_COUNT,
+            verify_public_values=False,
         )
         cls.dual_carry, cls.dual_transcript, cls.dual_ok = cls.dual(
             ShardVerifierCarry(public_values),
