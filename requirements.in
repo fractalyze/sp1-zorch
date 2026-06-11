@@ -12,10 +12,14 @@ absl-py
 numpy
 # Lockstep with the zorch git pin in MODULE.bazel (zkx marker contract) —
 # bump both together; the rationale lives on the git_override there.
-jax==0.0.5.dev20260610045259
-jaxlib==0.0.5.dev20260610045259
-jax-cuda12-plugin==0.0.5.dev20260610045259
-zkx-cuda-pjrt==0.0.5.dev20260610045259
+# This build also carries the zkx GPU NTT fix (fractalyze/zkx#630): the
+# earlier dev20260610045259 wheel emits wrong codewords for lax.fft compiled
+# inside a jit module at >= 2^21 codeword length, which the trace-commit @jit
+# zone hits at rsp scale. Do not drop below this timestamp.
+jax==0.0.5.dev20260610144555
+jaxlib==0.0.5.dev20260610144555
+jax-cuda12-plugin==0.0.5.dev20260610144555
+zkx-cuda-pjrt==0.0.5.dev20260610144555
 
 # SP1 chip definitions (constraints + LogUp interactions) exported from
 # riscv-witness; consumed by the shard fixture loader. Same pin as whir-zorch.
