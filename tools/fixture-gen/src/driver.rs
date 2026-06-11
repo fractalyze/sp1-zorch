@@ -149,9 +149,12 @@ pub async fn prove_and_capture() -> Captured {
             .setup_and_prove_shard(program, record, None, ProverSemaphore::new(1))
             .await;
 
+        // The prove builds the challenger via `default_challenger()`, which
+        // registers a log; a missing one is a broken capture contract, so fail
+        // here rather than serialize an empty (positionally-invalid) cache.
         let log = last_log()
             .map(|h| std::mem::take(&mut *h.lock().unwrap()))
-            .unwrap_or_default();
+            .expect("recording challenger did not register a transcript log");
         let chip_names = machine
             .chips()
             .iter()
