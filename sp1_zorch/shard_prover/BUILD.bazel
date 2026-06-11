@@ -70,7 +70,10 @@ py_test(
     name = "prove_shard_test",
     # medium: the GKR and zerocheck legs run eager composite dispatch on CPU
     # (same cost shape as logup_gkr:prover_test).
+    # timeout long: ~170s locally; overruns the medium 300s cap on a loaded
+    # shared CI runner (2-3x slower under parallel test load).
     size = "medium",
+    timeout = "long",
     srcs = ["prove_shard_test.py"],
     deps = [
         ":prove_shard",

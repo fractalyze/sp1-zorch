@@ -30,11 +30,16 @@ math. The chain wiring itself is unit-tested against a synthetic reference in
 ``prove_shard_test``.
 
 Real-block data (~1.5 GB/shard) plus the GPU trace commit keep this a
-runnable, not a unit test. Needs a CUDA GPU and the same pins as
-``verify_trace_commit --stage=main`` (fractalyze/sp1-zorch#17).
+runnable, not a unit test. Needs a CUDA GPU.
 
     bazel run //sp1_zorch/shard_prover:verify_prove_shard -- \\
         --shard_dir=/path/to/rsp_dump/shardN
+
+Wall-clock is dominated by XLA/zkx GPU compiles, not kernel runtime — the
+per-stage timings printed during the run show the split. For iteration,
+set ``JAX_COMPILATION_CACHE_DIR`` to a per-toolchain directory so every
+run after the first skips the compiles; leave it unset for byte-match
+gates (a cache shared across toolchains has served wrong executables).
 
 Exits non-zero on any mismatch.
 """
@@ -45,6 +50,7 @@ import sys
 import time
 from pathlib import Path
 
+import jax
 import jax.numpy as jnp
 from absl import app, flags
 from zk_dtypes import koalabear_mont as F
@@ -76,6 +82,7 @@ from zorch.hash.compression import Compression, CompressionParams
 from zorch.hash.poseidon2.poseidon2 import Poseidon2
 from zorch.hash.sponge import Sponge, SpongeParams
 from zorch.poly.univariate import eval_coeffs
+from zorch.round import Round
 
 # SP1 core machine parameters (whir-zorch prove_shard_benchmark): 4x blowup.
 _LOG_BLOWUP = 2
@@ -97,6 +104,29 @@ _FFI_VERIFY = flags.DEFINE_bool(
     False,
     "Assemble the bincode wire and verify it with SP1's sp1_verify_shard FFI.",
 )
+
+
+class _TimedRound(Round):
+    """Print each stage's wall-clock so the compile-vs-runtime split is
+    visible on every run (async dispatch makes unblocked timings lie, so
+    block on the stage's output first). Proof messages that are plain
+    dataclasses are opaque to ``block_until_ready``; work that only feeds
+    such a message (the jagged open's query gathers) attributes to the
+    next timed section instead."""
+
+    def __init__(self, inner: Round) -> None:
+        self._inner = inner
+
+    def __call__(self, carry, transcript):
+        t0 = time.monotonic()
+        out = self._inner(carry, transcript)
+        jax.block_until_ready(out)
+        print(
+            f"[stage {type(self._inner).__name__}] "
+            f"{time.monotonic() - t0:.1f}s",
+            flush=True,
+        )
+        return out
 
 
 def main(argv) -> None:
@@ -131,7 +161,12 @@ def main(argv) -> None:
         open_num_queries=_OPEN_NUM_QUERIES.value,
         open_pow_bits=_OPEN_POW_BITS.value,
         witness=jnp.array(int(gkr_state["witness"]), F),
+        # Required at rsp scale for the commit (see sp1_zorch.commit
+        # .trace_commit); also keeps each GKR layer's composite intact and
+        # its compile reusable across runs via the compilation cache.
+        jit=True,
     )
+    chain.rounds = [_TimedRound(rnd) for rnd in chain.rounds]
 
     t0 = time.monotonic()
     carry, _, msgs = chain(

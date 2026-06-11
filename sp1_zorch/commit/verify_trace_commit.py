@@ -9,8 +9,7 @@ Exits non-zero on any mismatch so it still gates scripts/CI.
     bazel run //sp1_zorch/commit:verify_trace_commit -- \\
         --shard_dir=/path/to/rsp_dump/shardN --stage=prep
 
-``--stage=main`` needs a CUDA GPU and currently also the CompositeOp jax pin
-(jax#164) + fractalyze/zkx#506 — see fractalyze/sp1-zorch#17.
+``--stage=main`` needs a CUDA GPU.
 """
 
 from __future__ import annotations
@@ -46,14 +45,16 @@ _MAX_LOG_ROW_COUNT = 22
 _LOG_BLOWUP = 2
 
 
-def _commit(traces: dict, smcs: SingleMatrixCommitmentScheme) -> jnp.ndarray:
+def _commit(
+    traces: dict, smcs: SingleMatrixCommitmentScheme, *, jit: bool
+) -> jnp.ndarray:
     region = JaggedRegion.from_chips(
         [traces[name] for name in sorted(traces)],
         log_stacking_height=_LOG_STACKING_HEIGHT,
         max_log_row_count=_MAX_LOG_ROW_COUNT,
         chip_names=tuple(sorted(traces)),
     )
-    commitment, _ = commit_region(region, smcs, log_blowup=_LOG_BLOWUP)
+    commitment, _ = commit_region(region, smcs, log_blowup=_LOG_BLOWUP, jit=jit)
     return commitment
 
 
@@ -81,7 +82,8 @@ def main(argv: list[str]) -> None:
     ok = True
     if _STAGE.value in ("prep", "all"):
         t0 = time.monotonic()
-        got = _commit(dump.preprocessed, smcs)
+        # Small region: eager avoids paying the fused-pipeline compile.
+        got = _commit(dump.preprocessed, smcs, jit=False)
         ok &= _check("prep vs vk.preprocessed_commit", got, dump.vk.preprocessed_commit)
         print(f"  ({time.monotonic() - t0:.1f}s)")
     if _STAGE.value in ("main", "all"):
@@ -96,7 +98,9 @@ def main(argv: list[str]) -> None:
             )
             ok = False
         t0 = time.monotonic()
-        got = _commit(dump.traces, smcs)
+        # The @jit zone is what fits the rsp-scale main region on 32 GB
+        # (see sp1_zorch.commit.trace_commit).
+        got = _commit(dump.traces, smcs, jit=True)
         ok &= _check("main vs gpu_commitment.main_commit", got, want)
         print(f"  ({time.monotonic() - t0:.1f}s)")
     sys.exit(0 if ok else 1)
