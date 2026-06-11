@@ -1,13 +1,13 @@
-//! Phase 3 — fixture emission, ported stage-by-stage from `convert.py`.
+//! Fixture emission — one byte-match stage per function (zerocheck / jagged /
+//! open).
 //!
 //! Each function reproduces one fixture directory's `inputs/`, `outputs/` and
 //! `meta.json` from the in-process [`Captured`] data (proof struct + recorder log
 //! + dense buffer), matching the committed Montgomery-`u32` bytes exactly. The
-//! per-file contract below is the porting spec (see the `convert.py` map + the
-//! repo's `tools/fixture-gen/README.md`). Bodies are wired one stage at a time,
-//! each gated on a green byte-match (Tasks 4/5/6 on issue #86).
+//! per-file contract in each function's doc-comment is the spec (see also
+//! `tools/fixture-gen/README.md`).
 //!
-//! Shared conventions to preserve from `convert.py`:
+//! Shared conventions across all stages:
 //!  * **Montgomery** `u32` everywhere (device `.bin` buffers pass through; JSON/
 //!    txt-sourced field elements were canonical→Mont — here they come straight
 //!    from the proof struct, already Montgomery in memory).
@@ -33,7 +33,7 @@ use crate::recorder::RecorderLog;
 type Result = std::io::Result<()>;
 
 /// SMCS stacking height — every region is packed to a multiple of `2^this`, and
-/// the open folds the same message domain (mirrors `convert.py::LOG_STACKING_HEIGHT`).
+/// the open folds the same message domain (the SMCS stacking height).
 const LOG_STACKING_HEIGHT: usize = 21;
 
 /// `batching_challenge` (α), `gkr_opening_batch_challenge` (β) and `lambda` are
@@ -56,7 +56,7 @@ const ZC_LAMBDA_SAMPLE: usize = ZC_ALPHA_SAMPLE + 2;
 const JAGGED_Z_COL_SAMPLE: usize = 526;
 const JAGGED_Z_COL_LEN: usize = 11;
 
-/// `sp1_zorch/zerocheck/testdata/gpu_fibonacci/` — from `convert_zerocheck`.
+/// `sp1_zorch/zerocheck/testdata/gpu_fibonacci/` — the zerocheck fixture.
 ///
 /// meta.json: `chip_names`, `num_reals` (name→height).
 /// inputs/: `main_region.json`, `prep_region.json` (chip_starts/row_counts/
@@ -473,7 +473,7 @@ pub fn jagged(c: &Captured, dir: &Path) -> Result {
     )?;
 
     // challenges.npz — the jagged challenges; `open` re-emits this file with its
-    // basefold challenges appended (mirrors `convert` then `convert_open`).
+    // basefold challenges appended (the jagged stage then the open stage).
     let ef = ef_samples(&c.log);
     write_npz(
         &outputs.join("challenges.npz"),
@@ -483,7 +483,7 @@ pub fn jagged(c: &Captured, dir: &Path) -> Result {
     Ok(())
 }
 
-/// Stacked-open pieces — from `convert_open` (augments the jagged dir).
+/// Stacked-open pieces (augment the jagged dir).
 ///
 /// meta.json: rewritten to add `log_stacking_height` per round + a `basefold`
 ///   block {num_queries, pow_bits:0, log_blowup}.
@@ -684,8 +684,7 @@ fn jagged_challenge_entries(c: &Captured, ef: &[Ext]) -> Vec<NpzEntry> {
 
 /// One Merkle opening → its `.npz` members: `rows` (opened values `(Q, width)`)
 /// and per-level `proof_l{lvl}` path digests `(Q, 8)`. The path tensor is stored
-/// `(Q, levels)` of 8-wide digests; we transpose it to per-level `(Q, 8)` arrays
-/// (mirrors `convert.py::_openings`).
+/// `(Q, levels)` of 8-wide digests; we transpose it to per-level `(Q, 8)` arrays.
 fn opening_entries(
     values: &[Felt],
     values_sizes: &[usize],
@@ -710,8 +709,7 @@ fn opening_entries(
 /// `meta.json` for the jagged dir, byte-matching Python `json.dumps(indent=2)`
 /// (no trailing newline). `basefold = Some((num_queries, log_blowup))` adds the
 /// open augmentation — the per-round `log_stacking_height` and the `basefold`
-/// block; `None` writes the bare jagged rounds (`convert`'s pre-`convert_open`
-/// form).
+/// block; `None` writes the bare jagged rounds (no open augmentation).
 fn jagged_meta_json(rounds: &[Vec<(usize, usize)>], basefold: Option<(usize, usize)>) -> String {
     let mut s = String::from("{\n  \"rounds\": [\n");
     for (ri, round) in rounds.iter().enumerate() {

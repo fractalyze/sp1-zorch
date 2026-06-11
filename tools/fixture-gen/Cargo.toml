@@ -1,17 +1,19 @@
 # Rust fixture generator for the `gpu_fibonacci` byte-match fixtures.
 #
 # Drives the SP1 GPU shard prove in-process with a recording challenger and
-# emits the zerocheck + jagged(+open) fixtures directly — superseding the
-# `dump + convert.py` pipeline (sp1-zorch #76 / PR #83) and the fork's
+# emits the zerocheck + jagged(+open) fixtures directly — superseding the prior
+# dump-and-Python-convert pipeline (sp1-zorch #76 / PR #83) and the fork's
 # `fri.rs` Fiat-Shamir dumps (sp1 #29). See README.md / issue #86.
 #
 # ── DEP SOURCING ─────────────────────────────────────────────────────────
-# These are LOCAL path deps into the sibling fork checkout `envs/zorch4/sp1`
-# for iterative dev. They are NOT committable as-is (layout-fragile). Before
-# the PR, convert to git deps on `fractalyze/sp1` pinned at the fork ref
-# (mirroring openvm-zorch's `tools/fixture-gen`, which git-pins the backend),
-# using the post-`#29`-removal ref decided in Phase 4. Build needs the SP1
-# CUDA toolchain (CUDA 12.x, `CUDA_ARCHS=120` for the RTX 5090).
+# These are LOCAL path deps into a sibling SP1 fork checkout for iterative dev.
+# They are NOT the committed form: once the fork ref is pushed, replace them
+# with git deps on `fractalyze/sp1` pinned at
+# `b2eb920754af9145a9a01d96732aefa700f7eb75` — base + the
+# `Poseidon2SP1Field16Kernels`-over-GC generalization, the sole fork change #86
+# needs (the #29 `fri.rs` dumps are dropped) — mirroring openvm-zorch's
+# `tools/fixture-gen`, which git-pins its backend. Build needs the SP1 CUDA
+# toolchain (CUDA 12.x, `CUDA_ARCHS=120` for the RTX 5090).
 [package]
 name = "fixture-gen"
 version = "0.1.0"

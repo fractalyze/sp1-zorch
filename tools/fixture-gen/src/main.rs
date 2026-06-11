@@ -2,10 +2,10 @@
 //!
 //! Drives the SP1 GPU shard prove once, in-process, with a recording challenger,
 //! then emits the zerocheck and jagged(+open) fixtures directly — replacing the
-//! `dump + convert.py` pipeline (sp1-zorch #76 / PR #83) and the fork's `fri.rs`
-//! Fiat-Shamir dumps (sp1 #29). See issue #86 and `README.md`.
+//! prior dump-and-Python-convert pipeline (sp1-zorch #76 / PR #83) and the fork's
+//! `fri.rs` Fiat-Shamir dumps (sp1 #29). See issue #86 and `README.md`.
 //!
-//! CLI (mirrors `convert.py`, minus `--dump` since the prove is in-process):
+//! CLI (the prove is in-process, so there is no separate `--dump` step):
 //! ```text
 //! fixture-gen --zerocheck-out <zerocheck/testdata/gpu_fibonacci>
 //!             --out           <jagged/testdata/gpu_fibonacci>
