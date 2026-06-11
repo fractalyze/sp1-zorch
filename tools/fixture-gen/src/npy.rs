@@ -6,7 +6,6 @@
 //! (see the repo `CLAUDE.md`: "Compare Montgomery-form u32 bytes directly").
 
 use std::fs;
-use std::io::Write;
 use std::path::Path;
 
 use slop_algebra::AbstractExtensionField;
@@ -115,11 +114,6 @@ pub fn write_npy_u32(path: &Path, shape: &[usize], data: &[u32]) -> std::io::Res
     fs::write(path, npy_bytes("<u4", 4, shape, &u32_payload(data)))
 }
 
-/// `|u1` array (raw device-buffer bytes already in Montgomery form).
-pub fn write_npy_u8(path: &Path, shape: &[usize], data: &[u8]) -> std::io::Result<()> {
-    fs::write(path, npy_bytes("|u1", 1, shape, data))
-}
-
 /// `<i8` array (e.g. `chip_final_lens`).
 pub fn write_npy_i64(path: &Path, shape: &[usize], data: &[i64]) -> std::io::Result<()> {
     fs::write(path, npy_bytes("<i8", 8, shape, &i64_payload(data)))
@@ -147,21 +141,103 @@ impl NpzEntry {
     }
 }
 
-/// Write `entries` as an uncompressed, reproducible `.npz` (each array stored as
-/// `<key>.npy`, matching `numpy.savez`). All members are `<u4`.
-pub fn write_npz(path: &Path, entries: &[NpzEntry]) -> std::io::Result<()> {
-    let file = fs::File::create(path)?;
-    let mut zip = zip::ZipWriter::new(file);
-    // ZIP_STORED + a fixed DOS timestamp → deterministic across runs.
-    let opts: zip::write::FileOptions<()> = zip::write::FileOptions::default()
-        .compression_method(zip::CompressionMethod::Stored)
-        .last_modified_time(zip::DateTime::default());
-    for e in entries {
-        zip.start_file(format!("{}.npy", e.key), opts)
-            .map_err(|err| std::io::Error::other(err.to_string()))?;
-        zip.write_all(&npy_bytes("<u4", 4, &e.shape, &u32_payload(&e.data)))?;
+/// CRC-32 (IEEE 802.3, the ZIP checksum) of `data`.
+fn crc32(data: &[u8]) -> u32 {
+    let mut crc = 0xFFFF_FFFFu32;
+    for &byte in data {
+        crc ^= u32::from(byte);
+        for _ in 0..8 {
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ 0xEDB8_8320
+            } else {
+                crc >> 1
+            };
+        }
     }
-    zip.finish()
-        .map_err(|err| std::io::Error::other(err.to_string()))?;
-    Ok(())
+    !crc
+}
+
+/// Write `entries` as an uncompressed, reproducible `.npz` (each array stored as
+/// `<key>.npy`, all `<u4`), byte-identical to `numpy.savez`.
+///
+/// numpy opens every member with `force_zip64=True`, which produces an asymmetric
+/// layout we reproduce by hand (the `zip` crate's `large_file` Zip64s the central
+/// directory too, which numpy does not):
+///  * each **local** header is Zip64 — version-needed 45, sizes written as the
+///    `0xffffffff` sentinel, followed by a 20-byte Zip64 extra field carrying the
+///    real (uncompressed, compressed) `u64` sizes;
+///  * each **central directory** record keeps the real 32-bit sizes and *no*
+///    extra field, with `version-made-by = 0x032d` (Unix host, v4.5) and
+///    `external_attr = 0x01800000` — the exact constants CPython's `zipfile`
+///    emits for a freshly-named member.
+/// Stored (no compression), fixed 1980-01-01 timestamp → deterministic output.
+pub fn write_npz(path: &Path, entries: &[NpzEntry]) -> std::io::Result<()> {
+    const DOS_DATE_1980: u16 = 0x0021;
+    let mut out: Vec<u8> = Vec::new();
+    let mut central: Vec<u8> = Vec::new();
+
+    for e in entries {
+        let name = format!("{}.npy", e.key);
+        let data = npy_bytes("<u4", 4, &e.shape, &u32_payload(&e.data));
+        let crc = crc32(&data);
+        let offset = out.len() as u32;
+        let size = data.len();
+
+        // Local file header — Zip64-forced (sizes deferred to the extra field).
+        out.extend_from_slice(b"PK\x03\x04");
+        out.extend_from_slice(&45u16.to_le_bytes()); // version needed (Zip64)
+        out.extend_from_slice(&0u16.to_le_bytes()); // general-purpose flags
+        out.extend_from_slice(&0u16.to_le_bytes()); // compression = stored
+        out.extend_from_slice(&0u16.to_le_bytes()); // mod time
+        out.extend_from_slice(&DOS_DATE_1980.to_le_bytes()); // mod date
+        out.extend_from_slice(&crc.to_le_bytes());
+        out.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes()); // compressed size sentinel
+        out.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes()); // uncompressed size sentinel
+        out.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        out.extend_from_slice(&20u16.to_le_bytes()); // Zip64 extra field length
+        out.extend_from_slice(name.as_bytes());
+        // Zip64 extra field: id 0x0001, 16-byte payload (uncompressed, compressed).
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&16u16.to_le_bytes());
+        out.extend_from_slice(&(size as u64).to_le_bytes());
+        out.extend_from_slice(&(size as u64).to_le_bytes());
+        out.extend_from_slice(&data);
+
+        // Central directory record — real 32-bit sizes, no extra field.
+        central.extend_from_slice(b"PK\x01\x02");
+        central.extend_from_slice(&0x032du16.to_le_bytes()); // version made by (Unix, 45)
+        central.extend_from_slice(&45u16.to_le_bytes()); // version needed
+        central.extend_from_slice(&0u16.to_le_bytes()); // flags
+        central.extend_from_slice(&0u16.to_le_bytes()); // compression = stored
+        central.extend_from_slice(&0u16.to_le_bytes()); // mod time
+        central.extend_from_slice(&DOS_DATE_1980.to_le_bytes()); // mod date
+        central.extend_from_slice(&crc.to_le_bytes());
+        central.extend_from_slice(&(size as u32).to_le_bytes());
+        central.extend_from_slice(&(size as u32).to_le_bytes());
+        central.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        central.extend_from_slice(&0u16.to_le_bytes()); // extra field length
+        central.extend_from_slice(&0u16.to_le_bytes()); // comment length
+        central.extend_from_slice(&0u16.to_le_bytes()); // disk number start
+        central.extend_from_slice(&0u16.to_le_bytes()); // internal attributes
+        central.extend_from_slice(&0x0180_0000u32.to_le_bytes()); // external attributes
+        central.extend_from_slice(&offset.to_le_bytes());
+        central.extend_from_slice(name.as_bytes());
+    }
+
+    let cd_offset = out.len() as u32;
+    let cd_size = central.len() as u32;
+    out.extend_from_slice(&central);
+
+    // End of central directory record (all sizes/counts fit in 32/16 bits, so no
+    // Zip64 EOCD — matching numpy for these small archives).
+    out.extend_from_slice(b"PK\x05\x06");
+    out.extend_from_slice(&0u16.to_le_bytes()); // disk number
+    out.extend_from_slice(&0u16.to_le_bytes()); // disk with central dir
+    out.extend_from_slice(&(entries.len() as u16).to_le_bytes()); // entries this disk
+    out.extend_from_slice(&(entries.len() as u16).to_le_bytes()); // entries total
+    out.extend_from_slice(&cd_size.to_le_bytes());
+    out.extend_from_slice(&cd_offset.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes()); // comment length
+
+    fs::write(path, out)
 }

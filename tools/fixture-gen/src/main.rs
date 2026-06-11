@@ -18,11 +18,6 @@
 //! `--from-cache` lets the emit stages be iterated offline (the GPU prove is the
 //! slow, shared-resource step); `--dump-cache` captures one prove for reuse.
 
-// Scaffold (issue #86): the npy/recorder helpers forward-declare the API that
-// Phase-3 emission consumes; remove this once `emit::{zerocheck,jagged,open}`
-// are wired and exercise them.
-#![allow(dead_code)]
-
 mod components;
 mod driver;
 mod emit;
