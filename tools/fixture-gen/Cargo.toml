@@ -7,9 +7,12 @@
 #
 # ── DEP SOURCING ─────────────────────────────────────────────────────────
 # git-pinned to the SP1 fork `fractalyze/sp1` @
-# `b2eb920754af9145a9a01d96732aefa700f7eb75` — the upstream base plus the
-# `Poseidon2SP1Field16Kernels`-over-GC generalization (the sole fork change #86
-# needs; a phantom-param change, no behavior shift) — mirroring openvm-zorch's
+# `c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55` — the upstream base plus two fork
+# changes: the `Poseidon2SP1Field16Kernels`-over-GC generalization (a
+# phantom-param change, no behavior shift) and the retirement of the dead
+# `SP1_DUMP_PHASES`/`SP1_DUMP_ZC_BUFFERS` writes whose only consumer was the
+# deleted `convert.py`. Fixtures come from the recording challenger, not the
+# env-gated dumps, so output is unchanged — mirroring openvm-zorch's
 # `tools/fixture-gen`, which git-pins its backend. Same pin → byte-identical
 # fixtures. Build needs the SP1 CUDA toolchain (CUDA 12.x, `CUDA_ARCHS=120` for
 # the RTX 5090).
@@ -28,38 +31,38 @@ path = "src/main.rs"
 
 [dependencies]
 # --- slop primitives ---
-slop-algebra = { git = "https://github.com/fractalyze/sp1.git", rev = "b2eb920754af9145a9a01d96732aefa700f7eb75" }
-slop-challenger = { git = "https://github.com/fractalyze/sp1.git", rev = "b2eb920754af9145a9a01d96732aefa700f7eb75" }
-slop-koala-bear = { git = "https://github.com/fractalyze/sp1.git", rev = "b2eb920754af9145a9a01d96732aefa700f7eb75" }
-slop-basefold = { git = "https://github.com/fractalyze/sp1.git", rev = "b2eb920754af9145a9a01d96732aefa700f7eb75" }
-slop-sumcheck = { git = "https://github.com/fractalyze/sp1.git", rev = "b2eb920754af9145a9a01d96732aefa700f7eb75" }
-slop-jagged = { git = "https://github.com/fractalyze/sp1.git", rev = "b2eb920754af9145a9a01d96732aefa700f7eb75" }
-slop-stacked = { git = "https://github.com/fractalyze/sp1.git", rev = "b2eb920754af9145a9a01d96732aefa700f7eb75" }
-slop-multilinear = { git = "https://github.com/fractalyze/sp1.git", rev = "b2eb920754af9145a9a01d96732aefa700f7eb75" }
-slop-commit = { git = "https://github.com/fractalyze/sp1.git", rev = "b2eb920754af9145a9a01d96732aefa700f7eb75" }
-slop-alloc = { git = "https://github.com/fractalyze/sp1.git", rev = "b2eb920754af9145a9a01d96732aefa700f7eb75" }
-slop-futures = { git = "https://github.com/fractalyze/sp1.git", rev = "b2eb920754af9145a9a01d96732aefa700f7eb75" }
+slop-algebra = { git = "https://github.com/fractalyze/sp1.git", rev = "c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55" }
+slop-challenger = { git = "https://github.com/fractalyze/sp1.git", rev = "c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55" }
+slop-koala-bear = { git = "https://github.com/fractalyze/sp1.git", rev = "c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55" }
+slop-basefold = { git = "https://github.com/fractalyze/sp1.git", rev = "c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55" }
+slop-sumcheck = { git = "https://github.com/fractalyze/sp1.git", rev = "c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55" }
+slop-jagged = { git = "https://github.com/fractalyze/sp1.git", rev = "c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55" }
+slop-stacked = { git = "https://github.com/fractalyze/sp1.git", rev = "c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55" }
+slop-multilinear = { git = "https://github.com/fractalyze/sp1.git", rev = "c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55" }
+slop-commit = { git = "https://github.com/fractalyze/sp1.git", rev = "c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55" }
+slop-alloc = { git = "https://github.com/fractalyze/sp1.git", rev = "c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55" }
+slop-futures = { git = "https://github.com/fractalyze/sp1.git", rev = "c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55" }
 
 # --- SP1 core ---
-sp1-primitives = { git = "https://github.com/fractalyze/sp1.git", rev = "b2eb920754af9145a9a01d96732aefa700f7eb75" }
-sp1-hypercube = { git = "https://github.com/fractalyze/sp1.git", rev = "b2eb920754af9145a9a01d96732aefa700f7eb75" }
-sp1-core-machine = { git = "https://github.com/fractalyze/sp1.git", rev = "b2eb920754af9145a9a01d96732aefa700f7eb75" }
-test-artifacts = { git = "https://github.com/fractalyze/sp1.git", rev = "b2eb920754af9145a9a01d96732aefa700f7eb75" }
+sp1-primitives = { git = "https://github.com/fractalyze/sp1.git", rev = "c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55" }
+sp1-hypercube = { git = "https://github.com/fractalyze/sp1.git", rev = "c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55" }
+sp1-core-machine = { git = "https://github.com/fractalyze/sp1.git", rev = "c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55" }
+test-artifacts = { git = "https://github.com/fractalyze/sp1.git", rev = "c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55" }
 
 # --- SP1 GPU ---
-sp1-gpu-shard-prover = { git = "https://github.com/fractalyze/sp1.git", rev = "b2eb920754af9145a9a01d96732aefa700f7eb75" }
-sp1-gpu-challenger = { git = "https://github.com/fractalyze/sp1.git", rev = "b2eb920754af9145a9a01d96732aefa700f7eb75" }
-sp1-gpu-basefold = { git = "https://github.com/fractalyze/sp1.git", rev = "b2eb920754af9145a9a01d96732aefa700f7eb75" }
-sp1-gpu-jagged-assist = { git = "https://github.com/fractalyze/sp1.git", rev = "b2eb920754af9145a9a01d96732aefa700f7eb75" }
-sp1-gpu-jagged-tracegen = { git = "https://github.com/fractalyze/sp1.git", rev = "b2eb920754af9145a9a01d96732aefa700f7eb75", features = [
+sp1-gpu-shard-prover = { git = "https://github.com/fractalyze/sp1.git", rev = "c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55" }
+sp1-gpu-challenger = { git = "https://github.com/fractalyze/sp1.git", rev = "c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55" }
+sp1-gpu-basefold = { git = "https://github.com/fractalyze/sp1.git", rev = "c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55" }
+sp1-gpu-jagged-assist = { git = "https://github.com/fractalyze/sp1.git", rev = "c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55" }
+sp1-gpu-jagged-tracegen = { git = "https://github.com/fractalyze/sp1.git", rev = "c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55", features = [
     "test-utils",
 ] }
-sp1-gpu-logup-gkr = { git = "https://github.com/fractalyze/sp1.git", rev = "b2eb920754af9145a9a01d96732aefa700f7eb75" }
-sp1-gpu-air = { git = "https://github.com/fractalyze/sp1.git", rev = "b2eb920754af9145a9a01d96732aefa700f7eb75" }
-sp1-gpu-merkle-tree = { git = "https://github.com/fractalyze/sp1.git", rev = "b2eb920754af9145a9a01d96732aefa700f7eb75" }
-sp1-gpu-zerocheck = { git = "https://github.com/fractalyze/sp1.git", rev = "b2eb920754af9145a9a01d96732aefa700f7eb75" }
-sp1-gpu-cudart = { git = "https://github.com/fractalyze/sp1.git", rev = "b2eb920754af9145a9a01d96732aefa700f7eb75" }
-sp1-gpu-utils = { git = "https://github.com/fractalyze/sp1.git", rev = "b2eb920754af9145a9a01d96732aefa700f7eb75" }
+sp1-gpu-logup-gkr = { git = "https://github.com/fractalyze/sp1.git", rev = "c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55" }
+sp1-gpu-air = { git = "https://github.com/fractalyze/sp1.git", rev = "c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55" }
+sp1-gpu-merkle-tree = { git = "https://github.com/fractalyze/sp1.git", rev = "c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55" }
+sp1-gpu-zerocheck = { git = "https://github.com/fractalyze/sp1.git", rev = "c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55" }
+sp1-gpu-cudart = { git = "https://github.com/fractalyze/sp1.git", rev = "c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55" }
+sp1-gpu-utils = { git = "https://github.com/fractalyze/sp1.git", rev = "c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55" }
 
 # --- utility ---
 serde = { version = "1", features = ["derive"] }

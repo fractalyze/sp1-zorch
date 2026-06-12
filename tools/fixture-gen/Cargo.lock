@@ -2614,7 +2614,7 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 [[package]]
 name = "slop-air"
 version = "6.0.1"
-source = "git+https://github.com/fractalyze/sp1.git?rev=b2eb920754af9145a9a01d96732aefa700f7eb75#b2eb920754af9145a9a01d96732aefa700f7eb75"
+source = "git+https://github.com/fractalyze/sp1.git?rev=c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55#c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55"
 dependencies = [
  "p3-air",
 ]
@@ -2622,7 +2622,7 @@ dependencies = [
 [[package]]
 name = "slop-algebra"
 version = "6.0.1"
-source = "git+https://github.com/fractalyze/sp1.git?rev=b2eb920754af9145a9a01d96732aefa700f7eb75#b2eb920754af9145a9a01d96732aefa700f7eb75"
+source = "git+https://github.com/fractalyze/sp1.git?rev=c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55#c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55"
 dependencies = [
  "itertools 0.14.0",
  "p3-field",
@@ -2632,7 +2632,7 @@ dependencies = [
 [[package]]
 name = "slop-alloc"
 version = "6.0.1"
-source = "git+https://github.com/fractalyze/sp1.git?rev=b2eb920754af9145a9a01d96732aefa700f7eb75#b2eb920754af9145a9a01d96732aefa700f7eb75"
+source = "git+https://github.com/fractalyze/sp1.git?rev=c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55#c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55"
 dependencies = [
  "serde",
  "slop-algebra",
@@ -2642,7 +2642,7 @@ dependencies = [
 [[package]]
 name = "slop-baby-bear"
 version = "6.0.1"
-source = "git+https://github.com/fractalyze/sp1.git?rev=b2eb920754af9145a9a01d96732aefa700f7eb75#b2eb920754af9145a9a01d96732aefa700f7eb75"
+source = "git+https://github.com/fractalyze/sp1.git?rev=c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55#c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55"
 dependencies = [
  "lazy_static",
  "p3-baby-bear",
@@ -2656,7 +2656,7 @@ dependencies = [
 [[package]]
 name = "slop-basefold"
 version = "6.0.1"
-source = "git+https://github.com/fractalyze/sp1.git?rev=b2eb920754af9145a9a01d96732aefa700f7eb75#b2eb920754af9145a9a01d96732aefa700f7eb75"
+source = "git+https://github.com/fractalyze/sp1.git?rev=c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55#c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55"
 dependencies = [
  "derive-where",
  "itertools 0.14.0",
@@ -2678,7 +2678,7 @@ dependencies = [
 [[package]]
 name = "slop-basefold-prover"
 version = "6.0.1"
-source = "git+https://github.com/fractalyze/sp1.git?rev=b2eb920754af9145a9a01d96732aefa700f7eb75#b2eb920754af9145a9a01d96732aefa700f7eb75"
+source = "git+https://github.com/fractalyze/sp1.git?rev=c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55#c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55"
 dependencies = [
  "derive-where",
  "itertools 0.14.0",
@@ -2704,7 +2704,7 @@ dependencies = [
 [[package]]
 name = "slop-bn254"
 version = "6.0.1"
-source = "git+https://github.com/fractalyze/sp1.git?rev=b2eb920754af9145a9a01d96732aefa700f7eb75#b2eb920754af9145a9a01d96732aefa700f7eb75"
+source = "git+https://github.com/fractalyze/sp1.git?rev=c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55#c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55"
 dependencies = [
  "ff 0.13.1",
  "p3-bn254-fr",
@@ -2719,7 +2719,7 @@ dependencies = [
 [[package]]
 name = "slop-challenger"
 version = "6.0.1"
-source = "git+https://github.com/fractalyze/sp1.git?rev=b2eb920754af9145a9a01d96732aefa700f7eb75#b2eb920754af9145a9a01d96732aefa700f7eb75"
+source = "git+https://github.com/fractalyze/sp1.git?rev=c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55#c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55"
 dependencies = [
  "futures",
  "p3-challenger",
@@ -2731,7 +2731,7 @@ dependencies = [
 [[package]]
 name = "slop-commit"
 version = "6.0.1"
-source = "git+https://github.com/fractalyze/sp1.git?rev=b2eb920754af9145a9a01d96732aefa700f7eb75#b2eb920754af9145a9a01d96732aefa700f7eb75"
+source = "git+https://github.com/fractalyze/sp1.git?rev=c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55#c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55"
 dependencies = [
  "p3-commit",
  "serde",
@@ -2741,7 +2741,7 @@ dependencies = [
 [[package]]
 name = "slop-dft"
 version = "6.0.1"
-source = "git+https://github.com/fractalyze/sp1.git?rev=b2eb920754af9145a9a01d96732aefa700f7eb75#b2eb920754af9145a9a01d96732aefa700f7eb75"
+source = "git+https://github.com/fractalyze/sp1.git?rev=c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55#c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55"
 dependencies = [
  "p3-dft",
  "serde",
@@ -2754,7 +2754,7 @@ dependencies = [
 [[package]]
 name = "slop-fri"
 version = "6.0.1"
-source = "git+https://github.com/fractalyze/sp1.git?rev=b2eb920754af9145a9a01d96732aefa700f7eb75#b2eb920754af9145a9a01d96732aefa700f7eb75"
+source = "git+https://github.com/fractalyze/sp1.git?rev=c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55#c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55"
 dependencies = [
  "p3-fri",
 ]
@@ -2762,7 +2762,7 @@ dependencies = [
 [[package]]
 name = "slop-futures"
 version = "6.0.1"
-source = "git+https://github.com/fractalyze/sp1.git?rev=b2eb920754af9145a9a01d96732aefa700f7eb75#b2eb920754af9145a9a01d96732aefa700f7eb75"
+source = "git+https://github.com/fractalyze/sp1.git?rev=c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55#c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55"
 dependencies = [
  "crossbeam",
  "futures",
@@ -2776,7 +2776,7 @@ dependencies = [
 [[package]]
 name = "slop-jagged"
 version = "6.0.1"
-source = "git+https://github.com/fractalyze/sp1.git?rev=b2eb920754af9145a9a01d96732aefa700f7eb75#b2eb920754af9145a9a01d96732aefa700f7eb75"
+source = "git+https://github.com/fractalyze/sp1.git?rev=c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55#c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55"
 dependencies = [
  "clap",
  "derive-where",
@@ -2810,7 +2810,7 @@ dependencies = [
 [[package]]
 name = "slop-keccak-air"
 version = "6.0.1"
-source = "git+https://github.com/fractalyze/sp1.git?rev=b2eb920754af9145a9a01d96732aefa700f7eb75#b2eb920754af9145a9a01d96732aefa700f7eb75"
+source = "git+https://github.com/fractalyze/sp1.git?rev=c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55#c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55"
 dependencies = [
  "p3-keccak-air",
 ]
@@ -2818,7 +2818,7 @@ dependencies = [
 [[package]]
 name = "slop-koala-bear"
 version = "6.0.1"
-source = "git+https://github.com/fractalyze/sp1.git?rev=b2eb920754af9145a9a01d96732aefa700f7eb75#b2eb920754af9145a9a01d96732aefa700f7eb75"
+source = "git+https://github.com/fractalyze/sp1.git?rev=c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55#c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55"
 dependencies = [
  "lazy_static",
  "p3-koala-bear",
@@ -2832,7 +2832,7 @@ dependencies = [
 [[package]]
 name = "slop-matrix"
 version = "6.0.1"
-source = "git+https://github.com/fractalyze/sp1.git?rev=b2eb920754af9145a9a01d96732aefa700f7eb75#b2eb920754af9145a9a01d96732aefa700f7eb75"
+source = "git+https://github.com/fractalyze/sp1.git?rev=c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55#c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55"
 dependencies = [
  "p3-matrix",
 ]
@@ -2840,7 +2840,7 @@ dependencies = [
 [[package]]
 name = "slop-maybe-rayon"
 version = "6.0.1"
-source = "git+https://github.com/fractalyze/sp1.git?rev=b2eb920754af9145a9a01d96732aefa700f7eb75#b2eb920754af9145a9a01d96732aefa700f7eb75"
+source = "git+https://github.com/fractalyze/sp1.git?rev=c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55#c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55"
 dependencies = [
  "p3-maybe-rayon",
 ]
@@ -2848,7 +2848,7 @@ dependencies = [
 [[package]]
 name = "slop-merkle-tree"
 version = "6.0.1"
-source = "git+https://github.com/fractalyze/sp1.git?rev=b2eb920754af9145a9a01d96732aefa700f7eb75#b2eb920754af9145a9a01d96732aefa700f7eb75"
+source = "git+https://github.com/fractalyze/sp1.git?rev=c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55#c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55"
 dependencies = [
  "derive-where",
  "ff 0.13.1",
@@ -2874,7 +2874,7 @@ dependencies = [
 [[package]]
 name = "slop-multilinear"
 version = "6.0.1"
-source = "git+https://github.com/fractalyze/sp1.git?rev=b2eb920754af9145a9a01d96732aefa700f7eb75#b2eb920754af9145a9a01d96732aefa700f7eb75"
+source = "git+https://github.com/fractalyze/sp1.git?rev=c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55#c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55"
 dependencies = [
  "derive-where",
  "futures",
@@ -2894,7 +2894,7 @@ dependencies = [
 [[package]]
 name = "slop-poseidon2"
 version = "6.0.1"
-source = "git+https://github.com/fractalyze/sp1.git?rev=b2eb920754af9145a9a01d96732aefa700f7eb75#b2eb920754af9145a9a01d96732aefa700f7eb75"
+source = "git+https://github.com/fractalyze/sp1.git?rev=c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55#c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55"
 dependencies = [
  "p3-poseidon2",
 ]
@@ -2902,7 +2902,7 @@ dependencies = [
 [[package]]
 name = "slop-primitives"
 version = "6.0.1"
-source = "git+https://github.com/fractalyze/sp1.git?rev=b2eb920754af9145a9a01d96732aefa700f7eb75#b2eb920754af9145a9a01d96732aefa700f7eb75"
+source = "git+https://github.com/fractalyze/sp1.git?rev=c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55#c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55"
 dependencies = [
  "slop-algebra",
 ]
@@ -2910,7 +2910,7 @@ dependencies = [
 [[package]]
 name = "slop-stacked"
 version = "6.0.1"
-source = "git+https://github.com/fractalyze/sp1.git?rev=b2eb920754af9145a9a01d96732aefa700f7eb75#b2eb920754af9145a9a01d96732aefa700f7eb75"
+source = "git+https://github.com/fractalyze/sp1.git?rev=c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55#c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55"
 dependencies = [
  "derive-where",
  "futures",
@@ -2932,7 +2932,7 @@ dependencies = [
 [[package]]
 name = "slop-sumcheck"
 version = "6.0.1"
-source = "git+https://github.com/fractalyze/sp1.git?rev=b2eb920754af9145a9a01d96732aefa700f7eb75#b2eb920754af9145a9a01d96732aefa700f7eb75"
+source = "git+https://github.com/fractalyze/sp1.git?rev=c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55#c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55"
 dependencies = [
  "futures",
  "itertools 0.14.0",
@@ -2949,7 +2949,7 @@ dependencies = [
 [[package]]
 name = "slop-symmetric"
 version = "6.0.1"
-source = "git+https://github.com/fractalyze/sp1.git?rev=b2eb920754af9145a9a01d96732aefa700f7eb75#b2eb920754af9145a9a01d96732aefa700f7eb75"
+source = "git+https://github.com/fractalyze/sp1.git?rev=c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55#c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55"
 dependencies = [
  "p3-symmetric",
 ]
@@ -2957,7 +2957,7 @@ dependencies = [
 [[package]]
 name = "slop-tensor"
 version = "6.0.1"
-source = "git+https://github.com/fractalyze/sp1.git?rev=b2eb920754af9145a9a01d96732aefa700f7eb75#b2eb920754af9145a9a01d96732aefa700f7eb75"
+source = "git+https://github.com/fractalyze/sp1.git?rev=c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55#c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55"
 dependencies = [
  "arrayvec",
  "derive-where",
@@ -2976,7 +2976,7 @@ dependencies = [
 [[package]]
 name = "slop-uni-stark"
 version = "6.0.1"
-source = "git+https://github.com/fractalyze/sp1.git?rev=b2eb920754af9145a9a01d96732aefa700f7eb75#b2eb920754af9145a9a01d96732aefa700f7eb75"
+source = "git+https://github.com/fractalyze/sp1.git?rev=c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55#c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55"
 dependencies = [
  "p3-uni-stark",
 ]
@@ -2984,7 +2984,7 @@ dependencies = [
 [[package]]
 name = "slop-utils"
 version = "6.0.1"
-source = "git+https://github.com/fractalyze/sp1.git?rev=b2eb920754af9145a9a01d96732aefa700f7eb75#b2eb920754af9145a9a01d96732aefa700f7eb75"
+source = "git+https://github.com/fractalyze/sp1.git?rev=c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55#c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55"
 dependencies = [
  "p3-util",
  "tracing-forest",
@@ -2994,7 +2994,7 @@ dependencies = [
 [[package]]
 name = "slop-whir"
 version = "6.0.1"
-source = "git+https://github.com/fractalyze/sp1.git?rev=b2eb920754af9145a9a01d96732aefa700f7eb75#b2eb920754af9145a9a01d96732aefa700f7eb75"
+source = "git+https://github.com/fractalyze/sp1.git?rev=c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55#c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55"
 dependencies = [
  "derive-where",
  "futures",
@@ -3052,7 +3052,7 @@ dependencies = [
 [[package]]
 name = "sp1-build"
 version = "6.0.1"
-source = "git+https://github.com/fractalyze/sp1.git?rev=b2eb920754af9145a9a01d96732aefa700f7eb75#b2eb920754af9145a9a01d96732aefa700f7eb75"
+source = "git+https://github.com/fractalyze/sp1.git?rev=c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55#c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55"
 dependencies = [
  "anyhow",
  "cargo_metadata",
@@ -3065,7 +3065,7 @@ dependencies = [
 [[package]]
 name = "sp1-core-executor"
 version = "6.0.1"
-source = "git+https://github.com/fractalyze/sp1.git?rev=b2eb920754af9145a9a01d96732aefa700f7eb75#b2eb920754af9145a9a01d96732aefa700f7eb75"
+source = "git+https://github.com/fractalyze/sp1.git?rev=c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55#c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55"
 dependencies = [
  "bincode",
  "bytemuck",
@@ -3104,7 +3104,7 @@ dependencies = [
 [[package]]
 name = "sp1-core-machine"
 version = "6.0.1"
-source = "git+https://github.com/fractalyze/sp1.git?rev=b2eb920754af9145a9a01d96732aefa700f7eb75#b2eb920754af9145a9a01d96732aefa700f7eb75"
+source = "git+https://github.com/fractalyze/sp1.git?rev=c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55#c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55"
 dependencies = [
  "bincode",
  "cfg-if",
@@ -3154,7 +3154,7 @@ dependencies = [
 [[package]]
 name = "sp1-curves"
 version = "6.0.1"
-source = "git+https://github.com/fractalyze/sp1.git?rev=b2eb920754af9145a9a01d96732aefa700f7eb75#b2eb920754af9145a9a01d96732aefa700f7eb75"
+source = "git+https://github.com/fractalyze/sp1.git?rev=c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55#c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55"
 dependencies = [
  "cfg-if",
  "dashu",
@@ -3174,7 +3174,7 @@ dependencies = [
 [[package]]
 name = "sp1-derive"
 version = "6.0.1"
-source = "git+https://github.com/fractalyze/sp1.git?rev=b2eb920754af9145a9a01d96732aefa700f7eb75#b2eb920754af9145a9a01d96732aefa700f7eb75"
+source = "git+https://github.com/fractalyze/sp1.git?rev=c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55#c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3184,7 +3184,7 @@ dependencies = [
 [[package]]
 name = "sp1-gpu-air"
 version = "6.0.1"
-source = "git+https://github.com/fractalyze/sp1.git?rev=b2eb920754af9145a9a01d96732aefa700f7eb75#b2eb920754af9145a9a01d96732aefa700f7eb75"
+source = "git+https://github.com/fractalyze/sp1.git?rev=c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55#c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55"
 dependencies = [
  "itertools 0.14.0",
  "lazy_static",
@@ -3203,7 +3203,7 @@ dependencies = [
 [[package]]
 name = "sp1-gpu-basefold"
 version = "6.0.1"
-source = "git+https://github.com/fractalyze/sp1.git?rev=b2eb920754af9145a9a01d96732aefa700f7eb75#b2eb920754af9145a9a01d96732aefa700f7eb75"
+source = "git+https://github.com/fractalyze/sp1.git?rev=c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55#c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55"
 dependencies = [
  "itertools 0.14.0",
  "rand",
@@ -3236,7 +3236,7 @@ dependencies = [
 [[package]]
 name = "sp1-gpu-challenger"
 version = "6.0.1"
-source = "git+https://github.com/fractalyze/sp1.git?rev=b2eb920754af9145a9a01d96732aefa700f7eb75#b2eb920754af9145a9a01d96732aefa700f7eb75"
+source = "git+https://github.com/fractalyze/sp1.git?rev=c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55#c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55"
 dependencies = [
  "slop-algebra",
  "slop-alloc",
@@ -3251,7 +3251,7 @@ dependencies = [
 [[package]]
 name = "sp1-gpu-commit"
 version = "6.0.1"
-source = "git+https://github.com/fractalyze/sp1.git?rev=b2eb920754af9145a9a01d96732aefa700f7eb75#b2eb920754af9145a9a01d96732aefa700f7eb75"
+source = "git+https://github.com/fractalyze/sp1.git?rev=c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55#c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55"
 dependencies = [
  "itertools 0.14.0",
  "rand",
@@ -3279,7 +3279,7 @@ dependencies = [
 [[package]]
 name = "sp1-gpu-cudart"
 version = "6.0.1"
-source = "git+https://github.com/fractalyze/sp1.git?rev=b2eb920754af9145a9a01d96732aefa700f7eb75#b2eb920754af9145a9a01d96732aefa700f7eb75"
+source = "git+https://github.com/fractalyze/sp1.git?rev=c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55#c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55"
 dependencies = [
  "crossbeam",
  "futures",
@@ -3308,7 +3308,7 @@ dependencies = [
 [[package]]
 name = "sp1-gpu-jagged-assist"
 version = "6.0.1"
-source = "git+https://github.com/fractalyze/sp1.git?rev=b2eb920754af9145a9a01d96732aefa700f7eb75#b2eb920754af9145a9a01d96732aefa700f7eb75"
+source = "git+https://github.com/fractalyze/sp1.git?rev=c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55#c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55"
 dependencies = [
  "futures",
  "itertools 0.14.0",
@@ -3334,7 +3334,7 @@ dependencies = [
 [[package]]
 name = "sp1-gpu-jagged-sumcheck"
 version = "6.0.1"
-source = "git+https://github.com/fractalyze/sp1.git?rev=b2eb920754af9145a9a01d96732aefa700f7eb75#b2eb920754af9145a9a01d96732aefa700f7eb75"
+source = "git+https://github.com/fractalyze/sp1.git?rev=c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55#c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55"
 dependencies = [
  "futures",
  "itertools 0.14.0",
@@ -3356,7 +3356,7 @@ dependencies = [
 [[package]]
 name = "sp1-gpu-jagged-tracegen"
 version = "6.0.1"
-source = "git+https://github.com/fractalyze/sp1.git?rev=b2eb920754af9145a9a01d96732aefa700f7eb75#b2eb920754af9145a9a01d96732aefa700f7eb75"
+source = "git+https://github.com/fractalyze/sp1.git?rev=c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55#c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55"
 dependencies = [
  "futures",
  "itertools 0.14.0",
@@ -3384,7 +3384,7 @@ dependencies = [
 [[package]]
 name = "sp1-gpu-logup-gkr"
 version = "6.0.1"
-source = "git+https://github.com/fractalyze/sp1.git?rev=b2eb920754af9145a9a01d96732aefa700f7eb75#b2eb920754af9145a9a01d96732aefa700f7eb75"
+source = "git+https://github.com/fractalyze/sp1.git?rev=c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55#c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55"
 dependencies = [
  "futures",
  "itertools 0.14.0",
@@ -3422,7 +3422,7 @@ dependencies = [
 [[package]]
 name = "sp1-gpu-merkle-tree"
 version = "6.0.1"
-source = "git+https://github.com/fractalyze/sp1.git?rev=b2eb920754af9145a9a01d96732aefa700f7eb75#b2eb920754af9145a9a01d96732aefa700f7eb75"
+source = "git+https://github.com/fractalyze/sp1.git?rev=c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55#c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55"
 dependencies = [
  "clap",
  "slop-algebra",
@@ -3449,7 +3449,7 @@ dependencies = [
 [[package]]
 name = "sp1-gpu-shard-prover"
 version = "6.0.1"
-source = "git+https://github.com/fractalyze/sp1.git?rev=b2eb920754af9145a9a01d96732aefa700f7eb75#b2eb920754af9145a9a01d96732aefa700f7eb75"
+source = "git+https://github.com/fractalyze/sp1.git?rev=c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55#c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55"
 dependencies = [
  "bincode",
  "clap",
@@ -3494,7 +3494,7 @@ dependencies = [
 [[package]]
 name = "sp1-gpu-sys"
 version = "6.0.1"
-source = "git+https://github.com/fractalyze/sp1.git?rev=b2eb920754af9145a9a01d96732aefa700f7eb75#b2eb920754af9145a9a01d96732aefa700f7eb75"
+source = "git+https://github.com/fractalyze/sp1.git?rev=c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55#c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55"
 dependencies = [
  "cbindgen",
  "clap",
@@ -3514,7 +3514,7 @@ dependencies = [
 [[package]]
 name = "sp1-gpu-tracegen"
 version = "6.0.1"
-source = "git+https://github.com/fractalyze/sp1.git?rev=b2eb920754af9145a9a01d96732aefa700f7eb75#b2eb920754af9145a9a01d96732aefa700f7eb75"
+source = "git+https://github.com/fractalyze/sp1.git?rev=c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55#c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55"
 dependencies = [
  "futures",
  "rayon",
@@ -3539,7 +3539,7 @@ dependencies = [
 [[package]]
 name = "sp1-gpu-tracing"
 version = "6.0.1"
-source = "git+https://github.com/fractalyze/sp1.git?rev=b2eb920754af9145a9a01d96732aefa700f7eb75#b2eb920754af9145a9a01d96732aefa700f7eb75"
+source = "git+https://github.com/fractalyze/sp1.git?rev=c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55#c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55"
 dependencies = [
  "sp1-gpu-cudart",
  "tracing",
@@ -3549,7 +3549,7 @@ dependencies = [
 [[package]]
 name = "sp1-gpu-utils"
 version = "6.0.1"
-source = "git+https://github.com/fractalyze/sp1.git?rev=b2eb920754af9145a9a01d96732aefa700f7eb75#b2eb920754af9145a9a01d96732aefa700f7eb75"
+source = "git+https://github.com/fractalyze/sp1.git?rev=c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55#c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55"
 dependencies = [
  "slop-algebra",
  "slop-alloc",
@@ -3562,7 +3562,7 @@ dependencies = [
 [[package]]
 name = "sp1-gpu-zerocheck"
 version = "6.0.1"
-source = "git+https://github.com/fractalyze/sp1.git?rev=b2eb920754af9145a9a01d96732aefa700f7eb75#b2eb920754af9145a9a01d96732aefa700f7eb75"
+source = "git+https://github.com/fractalyze/sp1.git?rev=c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55#c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55"
 dependencies = [
  "itertools 0.14.0",
  "rand",
@@ -3593,7 +3593,7 @@ dependencies = [
 [[package]]
 name = "sp1-hypercube"
 version = "6.0.1"
-source = "git+https://github.com/fractalyze/sp1.git?rev=b2eb920754af9145a9a01d96732aefa700f7eb75#b2eb920754af9145a9a01d96732aefa700f7eb75"
+source = "git+https://github.com/fractalyze/sp1.git?rev=c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55#c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55"
 dependencies = [
  "arrayref",
  "deepsize2",
@@ -3640,7 +3640,7 @@ dependencies = [
 [[package]]
 name = "sp1-jit"
 version = "6.0.1"
-source = "git+https://github.com/fractalyze/sp1.git?rev=b2eb920754af9145a9a01d96732aefa700f7eb75#b2eb920754af9145a9a01d96732aefa700f7eb75"
+source = "git+https://github.com/fractalyze/sp1.git?rev=c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55#c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55"
 dependencies = [
  "dynasmrt",
  "hashbrown 0.14.5",
@@ -3654,7 +3654,7 @@ dependencies = [
 [[package]]
 name = "sp1-primitives"
 version = "6.0.1"
-source = "git+https://github.com/fractalyze/sp1.git?rev=b2eb920754af9145a9a01d96732aefa700f7eb75#b2eb920754af9145a9a01d96732aefa700f7eb75"
+source = "git+https://github.com/fractalyze/sp1.git?rev=c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55#c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55"
 dependencies = [
  "bincode",
  "blake3",
@@ -3677,7 +3677,7 @@ dependencies = [
 [[package]]
 name = "sp1-recursion-executor"
 version = "6.0.1"
-source = "git+https://github.com/fractalyze/sp1.git?rev=b2eb920754af9145a9a01d96732aefa700f7eb75#b2eb920754af9145a9a01d96732aefa700f7eb75"
+source = "git+https://github.com/fractalyze/sp1.git?rev=c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55#c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55"
 dependencies = [
  "backtrace",
  "cfg-if",
@@ -3700,7 +3700,7 @@ dependencies = [
 [[package]]
 name = "sp1-recursion-machine"
 version = "6.0.1"
-source = "git+https://github.com/fractalyze/sp1.git?rev=b2eb920754af9145a9a01d96732aefa700f7eb75#b2eb920754af9145a9a01d96732aefa700f7eb75"
+source = "git+https://github.com/fractalyze/sp1.git?rev=c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55#c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55"
 dependencies = [
  "itertools 0.14.0",
  "rand",
@@ -3851,7 +3851,7 @@ dependencies = [
 [[package]]
 name = "test-artifacts"
 version = "6.0.1"
-source = "git+https://github.com/fractalyze/sp1.git?rev=b2eb920754af9145a9a01d96732aefa700f7eb75#b2eb920754af9145a9a01d96732aefa700f7eb75"
+source = "git+https://github.com/fractalyze/sp1.git?rev=c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55#c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55"
 dependencies = [
  "sp1-build",
 ]
