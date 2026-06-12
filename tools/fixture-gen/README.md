@@ -13,10 +13,13 @@ PR #83 and the fork's `fri.rs` Fiat-Shamir dumps of sp1 #29.)
 ## Pin
 
 SP1 fork `fractalyze/sp1` @ `ref` =
-`b2eb920754af9145a9a01d96732aefa700f7eb75` — the upstream base plus one change:
+`c8b528bbc3cd4ee15b1e5f7ffa4b4ca697453c55` — the upstream base plus two changes:
 `refactor(merkle): generalize Poseidon2SP1Field16Kernels over GC` (a phantom-param
 generalization, no behavior change) so a downstream `IopCtx` — the recording
-challenger — can instantiate the shard prover without forking prover source.
+challenger — can instantiate the shard prover without forking prover source; and
+`chore(sp1-gpu): retire dead SP1_DUMP_PHASES/SP1_DUMP_ZC_BUFFERS writes` (removes
+debug dumps whose only consumer was the deleted `convert.py`; fixtures come from
+the recording challenger, not the dumps, so output is unchanged).
 Determinism: the basefold prover is built with FRI `pow_bits = 0`, so the prove
 (and therefore the fixtures) is byte-identical run to run.
 
