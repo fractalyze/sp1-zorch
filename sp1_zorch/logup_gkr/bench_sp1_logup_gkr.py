@@ -1,91 +1,65 @@
-"""GPU benchmark — SP1-shaped dense LogUp-GKR prove.
+# Copyright 2026 The sp1-zorch Authors. SPDX-License-Identifier: Apache-2.0
+"""LogUp-GKR prove benchmark over a real rsp shard (GPU).
 
-The SP1-specific consumer of zorch's agnostic dense prover
-(``@zorch//zorch/logup_gkr``): only SP1 sizing/config lives here, the prover
-stays in zorch (no scheme-agnostic fork). Knobs and defaults mirror SP1's
-reference bench, pinned so future readers can diff against it:
-https://github.com/fractalyze/sp1/blob/e2c02f376/sp1-gpu/crates/logup_gkr/bin/logup_gkr_zkbench.rs
+Drives the production jagged prover (``prove_logup_gkr``) on a captured SP1
+shard and reports the warm wall-clock -- the number the LogUp-GKR A/B is
+judged on. The scope matches whir-zorch's ``_phase("logup_gkr")`` (its
+``prove_logup_gkr``): the full stage including the per-chip trace evaluation
+at the final GKR point and its Fiat-Shamir absorb, not the bare sumcheck
+chain. The batched PCS *opening proof* is a separate post-zerocheck stage
+(``JaggedEvalRound``) and is out of scope here.
 
-SP1 sizes the first layer by ``(num_interactions, row_variables)``; zorch's
-prover by ``(num_interaction_variables, num_row_variables)``. The bridge:
-``iv = log2(next_pow2(num_interactions))`` (SP1 pads interactions to a power of
-two) and ``rv = row_variables``.
+This replaces an earlier dense/synthetic sweep that drove zorch's uniform
+prover at SP1 dimensions: that was not a valid A/B -- the dense envelope is
+~14x the jagged work and byte-matches nothing. The bench now drives the same
+jagged path the shard prover ships, on real interaction traces.
 
-Times the whole dense prove (trace gen + the per-layer sumcheck chain) traced
-into one fused ``@jit`` program, so the launch-bound eager dispatch wall
-collapses to a single compilation. Not eager op-by-op, not a single layer
-reduction. The ``lower`` thunk lets zkbench split the phase grid: compile
-(``compile_time`` / ``compile_memory``) vs runtime (``latency`` / ``memory``).
+Byte-anchor: before timing, the head challenges (alpha, beta seeds) are
+re-derived through the prover's own glue Rounds
+(``sp1_zorch.logup_gkr.head``) and checked against the dump, so a drifted
+preamble/witness aborts before timing the wrong computation. The definitive
+full-stream byte-match is the separate ``verify_gkr_prove`` runnable (its
+``post_gkr_diag`` scalar seals every round poly, opening, and trace eval).
 
-The Fiat-Shamir / MLE field is koalabearx4 — the production workload: real
-logup denominators are extension-field, which is where the "XLA materializes
-EF intermediates to HBM" register pressure this bench exists to measure
-actually lives. The fused prove is built here rather than reusing ``zorch``'s
-``prove_gkr_jitted``, which hardcodes a base-field transcript; parameterizing
-that upstream (and moving this bench onto the marked poseidon2 transcript) is
-the follow-up.
+The cold prove is a multi-minute XLA compile cascade; zkbench's warmup
+absorbs it and the timed iterations are warm. The staged prove has no single
+``lowered.compile()``, so the bench carries no compile metric -- observe
+compile out of band.
 
-A ``py_binary`` (manual ``bazel run``), not a ``py_test``: the blocks segfault
-under ``@jit`` on the ZKX CPU backend, so the bench is GPU-only. It also needs
-a ZKX plugin that round-trips >int64 field constants through HLO text
-(fractalyze/zkx#569).
+A ``py_binary`` (manual ``bazel run``), GPU-only: the blocks segfault under
+``@jit`` on the ZKX CPU backend.
 
-    bazel run //sp1_zorch/logup_gkr:bench_sp1_logup_gkr -- --row-variables 16 18 20
+    bazel run //sp1_zorch/logup_gkr:bench_sp1_logup_gkr -- \\
+        --shard-dir=/data/sp1_dumps/rsp_21740136_sp1/shard17
 """
 
 import argparse
-import functools
-from collections.abc import Iterable, Sequence
+import sys
+from collections.abc import Iterable
+from pathlib import Path
 
-import jax
 import jax.numpy as jnp
-import numpy as np
-import zk_dtypes
-from jax import Array
+from zk_dtypes import koalabear_mont as F
 from zkbench import BenchmarkConfig, BenchmarkOp, JaxBenchmark
 
-from zorch.logup_gkr.circuit import GkrLayer
-from zorch.logup_gkr.testing import prove_gkr_with_transcript
-from zorch.testkit.transcript import cheap_transcript
+from sp1_zorch.logup_gkr.circuit import build_gkr_chips
+from sp1_zorch.logup_gkr.head import GrindRound, HeadChallengesRound
+from sp1_zorch.logup_gkr.prover import num_beta_values, prove_logup_gkr
+from sp1_zorch.shard_prover.fixture_loader import (
+    _parse_ef_list,
+    _parse_kv_lines,
+    check_match,
+    load_fixture_shard,
+)
+from sp1_zorch.shard_prover.replay import (
+    MAX_LOG_ROW_COUNT,
+    preamble_transcript,
+    shard_regions,
+)
 
-# The production Fiat-Shamir / MLE field: real logup denominators are
-# extension-field (koalabearx4).
-EF = zk_dtypes.koalabearx4_mont
-
-
-def _rand_field(seed: int, shape: Sequence[int]) -> Array:
-    """Inlined copy of zorch's ``testkit.random_field.rand_field`` — that target
-    is visible only to ``//zorch:__subpackages__``, so an external consumer can't
-    dep it. Draw canonical ints in ``[0, 2**30)`` (< every supported prime); the
-    field dtype Montgomery-encodes them on cast (extension fields fill the
-    leading limb, the rest stay zero — enough to exercise EF arithmetic)."""
-    ints = np.random.default_rng(seed).integers(0, 1 << 30, size=shape, dtype=np.int64)
-    return jnp.array(ints, dtype=EF)
-
-
-def _first_layer_mles(seed: int, iv: int, rv: int) -> tuple[Array, Array, Array, Array]:
-    """The four random dense first-layer MLEs (n0, n1, d0, d1), ``2**(iv + rv)``
-    wide; four distinct seeds so they don't alias. Fixed-length so the arity
-    flowing into the prove is checkable, not a star-tuple."""
-    width = 1 << (iv + rv)
-    return (
-        _rand_field(seed, (width,)),
-        _rand_field(seed + 1, (width,)),
-        _rand_field(seed + 2, (width,)),
-        _rand_field(seed + 3, (width,)),
-    )
-
-
-@functools.partial(jax.jit, static_argnums=(4,))
-def _prove(n0: Array, n1: Array, d0: Array, d1: Array, iv: int) -> Array:
-    """The whole dense GKR prove fused into one program. The four first-layer
-    MLEs are the traced inputs; `iv` (static) fixes the pyramid height, hence
-    the unrolled layer count. Returns the last proved layer's round
-    polynomials — the tail of the sequential carry, so it transitively forces
-    the whole prove."""
-    first = GkrLayer(n0, n1, d0, d1, num_interaction_variables=iv)
-    proofs = prove_gkr_with_transcript(first, cheap_transcript(EF))[2]
-    return proofs[-1].round_polys
+# SP1 hardcodes GKR_GRINDING_BITS = 12; the witness is replayed from the dump,
+# so the grind search itself is never timed here.
+_GKR_POW_BITS = 12
 
 
 class Sp1LogupGkrBenchmark(JaxBenchmark):
@@ -93,54 +67,98 @@ class Sp1LogupGkrBenchmark(JaxBenchmark):
         return BenchmarkConfig(
             implementation="sp1-zorch",
             version="0.1.0",
-            # 5/3 mirrors SP1's logup_gkr_zkbench so the harness config matches.
             default_iterations=5,
-            default_warmup=3,
+            # One warmup absorbs the multi-minute cold compile; the round zone
+            # (zorch#249) then makes every subsequent iteration warm.
+            default_warmup=1,
         )
 
     def add_custom_args(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument(
-            "--row-variables",
-            type=int,
-            nargs="+",
-            default=[18],
-            help="log2 rows folded by the GKR pyramid (SP1 default: 18)",
-        )
-        parser.add_argument(
-            "--num-interactions",
-            type=int,
-            default=64,
-            help="interactions at the floor, padded to a power of two (SP1 default: 64)",
-        )
-        parser.add_argument(
-            "--seed",
-            type=int,
-            default=42,
-            help="PRNG seed (SP1 default: 42)",
+            "--shard-dir",
+            type=str,
+            required=True,
+            help="rsp shard dump directory (e.g. .../rsp_dump/shard17).",
         )
 
     def get_ops(self, args: argparse.Namespace) -> Iterable[BenchmarkOp]:
-        # SP1 pads interactions to a power of two before counting interaction vars.
-        iv = (args.num_interactions - 1).bit_length()
-        for rv in args.row_variables:
-            # iv is static (fixes the pyramid height); the four MLEs are the
-            # traced inputs.
-            op_args = (*_first_layer_mles(args.seed, iv, rv), iv)
-            yield BenchmarkOp(
-                # Op id matches SP1's logup_gkr_zkbench so the dashboard joins them.
-                name=f"logup_gkr_r{rv}_i{args.num_interactions}_total",
-                fn=functools.partial(_prove, *op_args),
-                lower=functools.partial(_prove.lower, *op_args),
-                metadata={
-                    "field": "koalabearx4",
-                    "interaction_variables": str(iv),
-                    "row_variables": str(rv),
-                    "num_interactions": str(args.num_interactions),
-                    "seed": str(args.seed),
-                },
-                throughput_unit="evals/s",
-                throughput_count=1 << (iv + rv),
+        # The harness runs each op as it is yielded, so file IO, region
+        # assembly, and the anchor gate below -- everything up to the yield --
+        # happen before any timing starts.
+        shard_dir = Path(args.shard_dir)
+        shard = load_fixture_shard(shard_dir)
+        state = _parse_kv_lines(
+            (shard_dir / "gpu_gkr_state.txt").read_text(), skip_unkeyed=True
+        )
+
+        traces = shard.main_trace_data.traces
+        order = traces.chip_order
+        main_region, prep_region = shard_regions(shard)
+        num_betas = num_beta_values(shard.main_trace_data.chips)
+        gkr_chips = build_gkr_chips(shard.main_trace_data.chips, order)
+        num_row_variables = MAX_LOG_ROW_COUNT - 1
+        preamble = preamble_transcript(shard, shard_dir)
+        witness = jnp.array(int(state["witness"]), F)
+
+        # Byte-anchor the head (alpha + beta seeds) through the prover's own
+        # glue Rounds so a drifted preamble/witness aborts before timing the
+        # wrong computation. This is the cheap head leg, not the full prove --
+        # the definitive full-stream match is verify_gkr_prove's job.
+        ok = True
+        _, transcript, _ = GrindRound(witness, pow_bits=_GKR_POW_BITS)(None, preamble)
+        _, _, head = HeadChallengesRound(num_betas)(None, transcript)
+        ok &= check_match("alpha", head.alpha, _parse_ef_list(state["alpha"])[0])
+        for i in range(head.beta_seeds.shape[0]):
+            ok &= check_match(
+                f"beta_seed[{i}]",
+                head.beta_seeds[i],
+                _parse_ef_list(state[f"beta_seed[{i}]"])[0],
             )
+        if not ok:
+            sys.exit("head anchors diverged from the dump; aborting")
+
+        def _prove():
+            # jit=True keeps the `zorch.sumcheck` composite intact for the
+            # vendor's register-resident emitter; with the module-level
+            # shape-keyed round zone (zorch#249) warm iterations cache-hit
+            # instead of re-tracing each layer. The chain is rebuilt per call
+            # so the lazy one-live-layer release holds -- peak residency is a
+            # single pyramid layer, not the whole pyramid.
+            _, proof = prove_logup_gkr(
+                gkr_chips,
+                main_region,
+                prep_region,
+                preamble,
+                num_betas=num_betas,
+                num_row_variables=num_row_variables,
+                pow_bits=_GKR_POW_BITS,
+                witness=witness,
+                jit=True,
+            )
+            # Block on arrays that transitively force the whole stage: the
+            # final eval point carries the sequential round chain, and the
+            # per-chip openings carry the trace evaluation at that point.
+            return proof.eval_point, [
+                ev.all_evals() for ev in proof.chip_openings.values()
+            ]
+
+        total_rows = sum(traces.per_chip[n].num_real for n in order)
+        yield BenchmarkOp(
+            # The real-shard logup-gkr stage time, joinable on the dashboard
+            # with whir-zorch's `_phase("logup_gkr")`.
+            name="logup_gkr_total",
+            fn=_prove,
+            metadata={
+                "shard": shard_dir.name,
+                "field": "koalabear",
+                "num_chips": str(len(order)),
+                "num_gkr_chips": str(len(gkr_chips)),
+                "num_betas": str(num_betas),
+                "num_row_variables": str(num_row_variables),
+            },
+            throughput_unit="rows/s",
+            throughput_count=total_rows,
+        )
 
 
 def main() -> int:

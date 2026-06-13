@@ -152,42 +152,19 @@ py_binary(
     ],
 )
 
-# LogUp-GKR stage phase ablation over a local rsp capture. GPU manual tool
+# LogUp-GKR prove benchmark over a real rsp shard. GPU-only manual tool
 # (bazel run), not a CI test — needs the external shard dump:
-#   bazel run //sp1_zorch/logup_gkr:bench_logup_gkr_phases -- \
+#   bazel run //sp1_zorch/logup_gkr:bench_sp1_logup_gkr -- \
 #       --shard-dir=/path/to/rsp_dump/shardN
-py_binary(
-    name = "bench_logup_gkr_phases",
-    srcs = ["bench_logup_gkr_phases.py"],
-    deps = [
-        ":logup_gkr",
-        "//sp1_zorch/shard_prover",
-        "//sp1_zorch/shard_prover:replay",
-        "@zorch//zorch:round",
-        "@zorch//zorch:transcript",
-        "@zorch//zorch/logup_gkr",
-        "@zorch//zorch/poly",
-        "@zorch//zorch/utils:bits",
-        requirement("jax"),
-        requirement("jax_cuda12_plugin"),
-        requirement("zk_dtypes"),
-        requirement("zkbench"),
-        requirement("zkx_cuda_pjrt"),
-    ],
-)
-
-# SP1-shaped LogUp-GKR benchmark over zorch's agnostic dense prover.
-# GPU-only manual tool (bazel run), not a CI test — see the module docstring.
 py_binary(
     name = "bench_sp1_logup_gkr",
     srcs = ["bench_sp1_logup_gkr.py"],
     deps = [
-        "@zorch//zorch/logup_gkr",
-        "@zorch//zorch/logup_gkr/testing",
-        "@zorch//zorch/testkit:transcript",
+        ":logup_gkr",
+        "//sp1_zorch/shard_prover",
+        "//sp1_zorch/shard_prover:replay",
         requirement("jax"),
         requirement("jax_cuda12_plugin"),
-        requirement("numpy"),
         requirement("zk_dtypes"),
         requirement("zkbench"),
         requirement("zkx_cuda_pjrt"),
