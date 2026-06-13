@@ -24,7 +24,7 @@ bazel_dep(name = "zorch", version = "0.0.0")
 git_override(
     module_name = "zorch",
     remote = "https://github.com/fractalyze/zorch.git",
-    # main @ layer-proof point retention + namespaced poseidon2 marker:
+    # main @ shared jit zone for same-shape jagged GKR rounds:
     #   - JaggedLayerProof carries the bound sumcheck point
     #     (fractalyze/zorch#213), so the wire serializer reads it off the
     #     proof instead of peeking the chain carry.
@@ -32,7 +32,11 @@ git_override(
     #     (fractalyze/zorch#212). This is a hard cut on the zkx side, so the
     #     pip wheel set (requirements.in) must stay >= 0.0.5.dev20260610045259
     #     in lockstep with this pin.
-    commit = "997d4e841ab005bfaf8156a7ff453464f07bf274",
+    #   - JaggedGkrLayerRound routes each round through a module-level
+    #     shape-keyed jit zone (fractalyze/zorch#249), so a warm
+    #     prove_logup_gkr reuses the per-layer executables instead of
+    #     re-tracing (282 s -> 0.63 s warm on a real shard).
+    commit = "873f949ef01746534366528f9353fd87be8d58fd",
 )
 
 python = use_extension("@rules_python//python/extensions:python.bzl", "python")
