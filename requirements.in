@@ -19,10 +19,10 @@ numpy
 # (Each dev<timestamp> wheel is a fractalyze/jax build that bakes in jax's zkx
 # pin as of that build, so to pull a specific zkx fix pick a wheel timestamped
 # after that zkx PR merged; CPU-only CI cannot catch a wrong GPU codeword.)
-jax==0.0.5.dev20260616020033
-jaxlib==0.0.5.dev20260616020033
-jax-cuda12-plugin==0.0.5.dev20260616020033
-zkx-cuda-pjrt==0.0.5.dev20260616020033
+jax==0.0.5.dev20260616032217
+jaxlib==0.0.5.dev20260616032217
+jax-cuda12-plugin==0.0.5.dev20260616032217
+zkx-cuda-pjrt==0.0.5.dev20260616032217
 # zk_dtypes ships the native field dtypes jax lowers. It arrives transitively
 # via jax, but the resolver leaves it at the lowest compatible version, which
 # lags the jax build: the dev20260612090739 EF bitcast lowering reads
