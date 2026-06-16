@@ -34,6 +34,7 @@ from sp1_zorch.logup_gkr.prover import (
 )
 from sp1_zorch.shard_prover.chip_loader import make_chip_stub
 from zorch.logup_gkr.circuit import JaggedGkrLayer, jagged_layer_transition
+from zorch.logup_gkr.jagged_prover import JaggedLayerProof
 from zorch.logup_gkr.jagged_verifier import JaggedGkrLayerRound as VerifierRound
 from zorch.round import VerifyChain
 from zorch.testkit.transcript import cheap_transcript
@@ -129,7 +130,7 @@ class ExtractSp1OutputsTest(absltest.TestCase):
 
 
 class ProveLogupGkrTest(absltest.TestCase):
-    def _prove(self, *, jit: bool = False):
+    def _prove(self, *, jit: bool = False, rolled: bool = False):
         main_a, main_b = _main(24), _main(4, offset=100)
         gkr_chips = [
             GkrChip("A", (_interaction(0, 1),)),
@@ -145,8 +146,49 @@ class ProveLogupGkrTest(absltest.TestCase):
             num_betas=3,
             num_row_variables=4,
             jit=jit,
+            rolled=rolled,
         )
         return proof
+
+    def test_rolled_pyramid_byte_matches_unrolled_chain(self) -> None:
+        # rolled=True proves the pyramid as ONE lax.scan (prove_jagged_pyramid),
+        # the sp1-zorch#55 gate: byte-identical to the unrolled ProveChain. The
+        # cheap (unmarked) transcript makes the marker decompose inline.
+        want = self._prove(rolled=False)
+        got = self._prove(rolled=True)
+
+        self.assertTrue(
+            bool(jnp.all(got.eval_point == want.eval_point)), "eval_point diverged"
+        )
+        for arr in ("numerator", "denominator"):
+            self.assertTrue(
+                bool(
+                    jnp.all(
+                        getattr(got.circuit_output, arr)
+                        == getattr(want.circuit_output, arr)
+                    )
+                ),
+                f"circuit_output.{arr} diverged",
+            )
+        self.assertEqual(len(got.round_proofs), len(want.round_proofs))
+        for i, (g, w) in enumerate(
+            zip(got.round_proofs, want.round_proofs, strict=True)
+        ):
+            for fld in fields(JaggedLayerProof):
+                self.assertTrue(
+                    bool(jnp.all(getattr(g, fld.name) == getattr(w, fld.name))),
+                    f"round_proofs[{i}].{fld.name} diverged",
+                )
+        self.assertEqual(set(got.chip_openings), set(want.chip_openings))
+        for name in want.chip_openings:
+            self.assertTrue(
+                bool(
+                    jnp.all(
+                        got.chip_openings[name].main == want.chip_openings[name].main
+                    )
+                ),
+                f"chip_openings[{name}].main diverged",
+            )
 
     def test_stream_replays_through_the_zorch_verifier_dual(self) -> None:
         # The glue's per-layer carry threading must be byte-for-byte the

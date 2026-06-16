@@ -47,7 +47,11 @@ from zorch.logup_gkr.circuit import (
     extract_jagged_outputs,
     jagged_layer_transition,
 )
-from zorch.logup_gkr.jagged_prover import JaggedGkrLayerRound, JaggedLayerProof
+from zorch.logup_gkr.jagged_prover import (
+    JaggedGkrLayerRound,
+    JaggedLayerProof,
+    prove_jagged_pyramid,
+)
 from zorch.round import ProveChain, Round
 from zorch.transcript import Transcript
 
@@ -268,6 +272,7 @@ def prove_logup_gkr(
     pow_bits: int = 0,
     witness: Array | None = None,
     jit: bool = False,
+    rolled: bool = False,
 ) -> tuple[Transcript, LogupGkrProof]:
     """Run the LogUp-GKR stage on a transcript positioned after the shard
     preamble (vk, public values, main commitment, chip metadata).
@@ -305,14 +310,23 @@ def prove_logup_gkr(
     output = extract_sp1_outputs(layers[-1])
     carry, transcript, _ = OutputBindRound(output)(None, transcript)
 
-    # layers.pop() walks output to input; the lazily consumed chain builds
-    # each round on demand and releases it once proved, so at most one layer
-    # of the pyramid stays live -- the planes sum to gigabytes at shard scale.
-    chain = ProveChain(
-        JaggedGkrLayerRound(layers.pop(), EF_LIMBS, jit=jit)
-        for _ in range(len(layers))
-    )
-    (_, _, eval_point), transcript, round_proofs = chain(carry, transcript)
+    # `rolled` proves the pyramid as ONE lax.scan (prove_jagged_pyramid), O(1)
+    # in the layer count -- the marked path collapses the per-layer compile
+    # (sp1-zorch#55), but stacks every layer's planes at once. The unrolled
+    # ProveChain stays the default: layers.pop() walks output to input, building
+    # each round on demand and releasing it once proved, so at most one layer of
+    # the pyramid stays live -- the planes sum to gigabytes at shard scale.
+    if rolled:
+        proved = [layers.pop() for _ in range(len(layers))]
+        (_, _, eval_point), transcript, round_proofs = prove_jagged_pyramid(
+            proved, carry, transcript, challenge_limbs=EF_LIMBS
+        )
+    else:
+        chain = ProveChain(
+            JaggedGkrLayerRound(layers.pop(), EF_LIMBS, jit=jit)
+            for _ in range(len(layers))
+        )
+        (_, _, eval_point), transcript, round_proofs = chain(carry, transcript)
 
     transcript, chip_openings = open_traces(
         main_region,
