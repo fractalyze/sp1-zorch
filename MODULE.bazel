@@ -24,19 +24,14 @@ bazel_dep(name = "zorch", version = "0.0.0")
 git_override(
     module_name = "zorch",
     remote = "https://github.com/fractalyze/zorch.git",
-    # main @ shared jit zone for same-shape jagged GKR rounds:
-    #   - JaggedLayerProof carries the bound sumcheck point
-    #     (fractalyze/zorch#213), so the wire serializer reads it off the
-    #     proof instead of peeking the chain carry.
-    #   - the poseidon2 marker is zorch.poseidon2 + composite.attributes
-    #     (fractalyze/zorch#212). This is a hard cut on the zkx side, so the
-    #     pip wheel set (requirements.in) must stay >= 0.0.5.dev20260610045259
-    #     in lockstep with this pin.
-    #   - JaggedGkrLayerRound routes each round through a module-level
-    #     shape-keyed jit zone (fractalyze/zorch#249), so a warm
-    #     prove_logup_gkr reuses the per-layer executables instead of
-    #     re-tracing (282 s -> 0.63 s warm on a real shard).
-    commit = "873f949ef01746534366528f9353fd87be8d58fd",
+    # main @ the rolled-pyramid jit-safe schedule fix (fractalyze/zorch#266):
+    # prove_jagged_pyramid's host-side schedule is numpy-pure, so
+    # prove_logup_gkr(rolled=True) jits (the rolled pyramid is the sp1-zorch#55
+    # gate). Carries the prior pin's content too -- JaggedLayerProof bound point
+    # (#213), the zorch.poseidon2 marker (#212, so the wheel set in
+    # requirements.in must stay >= 0.0.5.dev20260610045259 in lockstep), and the
+    # shape-keyed per-layer jit zone (#249).
+    commit = "6178c3eacdc313d7e2ce9890c9ee0d5b67a27595",
 )
 
 python = use_extension("@rules_python//python/extensions:python.bzl", "python")
