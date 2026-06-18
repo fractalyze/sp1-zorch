@@ -80,6 +80,7 @@ from sp1_zorch.shard_prover.prove_shard import (
 )
 from sp1_zorch.shard_prover.replay import (
     MAX_LOG_ROW_COUNT,
+    clone_diag,
     fresh_transcript,
     shard_regions,
 )
@@ -118,6 +119,14 @@ _RUNS = flags.DEFINE_integer(
     "compiles); runs 2+ are warm (the compiled executables are reused), so the "
     "warm per-stage times are the ones to compare against SP1's native prover. "
     "Golden checks run on the final pass.",
+)
+_STOP_AFTER_GKR = flags.DEFINE_bool(
+    "stop_after_gkr",
+    False,
+    "Run + byte-check the chain only through the LogUp-GKR stage (trace commit "
+    "+ LogUp-GKR), sidestepping the downstream zerocheck Global-chip compile "
+    "cliff (fractalyze/sp1-zorch#123). Checks the commitment and the in-chain "
+    "post_gkr_diag seal; skips the zerocheck/jagged checks and --ffi_verify.",
 )
 
 
@@ -186,6 +195,11 @@ def main(argv) -> None:
         # host copy can't run under a trace. Byte-identical.
         offload_commit_rounds=True,
     )
+    if _STOP_AFTER_GKR.value:
+        # Validate + time only through the LogUp-GKR stage (trace commit +
+        # LogUp-GKR), sidestepping the zerocheck Global-chip compile cliff
+        # (fractalyze/sp1-zorch#123).
+        chain.rounds = chain.rounds[:2]
     chain.rounds = [_TimedRound(rnd) for rnd in chain.rounds]
 
     # Prove ``--runs`` times. Run 1 pays the XLA/zkx compile; warm runs reuse
@@ -197,17 +211,37 @@ def main(argv) -> None:
         kind = "cold" if i == 0 else "warm"
         print(f"=== prove pass {i + 1}/{runs} ({kind}) ===", flush=True)
         t0 = time.monotonic()
-        carry, _, msgs = chain(
+        carry, last_transcript, msgs = chain(
             ShardCarry(main_region, prep_region, main.public_values),
             fresh_transcript(),
         )
         print(f"chain run: {(time.monotonic() - t0) * 1e3:.1f}ms", flush=True)
-    commitment, gkr, zc, jagged = msgs
 
     # The trace commit the chain computed must equal SP1's dumped commitment;
     # gpu_commitment.txt carries canonical integers, so encode to compare.
     commit_kv = _parse_kv_lines((shard_dir / "gpu_commitment.txt").read_text())
     want_commit = jnp.array(_parse_int_list(commit_kv["main_commit"]), F)
+
+    if _STOP_AFTER_GKR.value:
+        commitment, _gkr = msgs
+        ok = check_match(
+            "commitment vs gpu_commitment.main_commit", commitment, want_commit
+        )
+        # The post-GKR transcript seal is the challenger after every GKR round
+        # poly + opening absorbed, so matching it seals the chain through this
+        # stage (the same scalar verify_gkr_prove pins on the replay path).
+        post = _parse_kv_lines((shard_dir / "gpu_post_gkr_diag.txt").read_text())
+        ok &= check_match(
+            "post_gkr_diag (in-chain GKR seal)",
+            clone_diag(last_transcript),
+            int(post["post_gkr_diag"]),
+        )
+        if not ok:
+            sys.exit(1)
+        print("prove_shard chain byte-match (through LogUp-GKR): ALL OK")
+        return
+
+    commitment, gkr, zc, jagged = msgs
     ok = check_match(
         "commitment vs gpu_commitment.main_commit", commitment, want_commit
     )
