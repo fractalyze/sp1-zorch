@@ -20,6 +20,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax import Array
 from zk_dtypes import koalabear_mont as F
+from zk_dtypes import koalabearx4_mont as EF
 
 from sp1_zorch.commit.region import JaggedRegion
 from sp1_zorch.logup_gkr.circuit import build_gkr_chips
@@ -34,7 +35,7 @@ from sp1_zorch.shard_prover.fixture_loader import _parse_int_list, _parse_kv_lin
 from sp1_zorch.shard_prover.prove_shard import PreambleRound, preamble_chip_metadata
 from sp1_zorch.shard_prover.types import ShardData
 from zorch.hash.poseidon2.poseidon2 import Poseidon2
-from zorch.transcript import DuplexTranscript, Transcript
+from zorch.transcript import DuplexState, DuplexTranscript, Transcript
 
 # SP1 core machine parameters.
 LOG_STACKING_HEIGHT = 21
@@ -104,6 +105,59 @@ def clone_diag(transcript: Transcript) -> int:
     transcript makes the clone free."""
     _, sample = transcript.sample(1)
     return int(sample[0])
+
+
+def save_gkr_cache(
+    path: Path,
+    eval_point: Array,
+    openings: dict[str, ChipEvaluation],
+    transcript: DuplexTranscript,
+) -> None:
+    """Persist the post-GKR zerocheck inputs (eval point, per-chip openings,
+    live sponge state) as an npz. Shared by the zerocheck bench and
+    ``verify_zerocheck`` so a cache seeded by either tool loads in the other."""
+    st = transcript.state
+    data: dict[str, np.ndarray] = {
+        "eval_point": to_u32(eval_point),
+        "chips": np.array(sorted(openings)),
+        "t_input": to_u32(st.input_buffer),
+        "t_output": to_u32(st.output_buffer),
+        "t_sponge": to_u32(st.sponge_state),
+        "t_in_pos": np.int32(int(st.in_pos)),
+        "t_out_pos": np.int32(int(st.out_pos)),
+    }
+    for name, ev in openings.items():
+        data[f"main:{name}"] = to_u32(ev.main)
+        if ev.preprocessed is not None:
+            data[f"prep:{name}"] = to_u32(ev.preprocessed)
+    np.savez(path, **data)
+
+
+def load_gkr_cache(
+    path: Path,
+) -> tuple[Array, dict[str, ChipEvaluation], Transcript]:
+    """Inverse of ``save_gkr_cache``: the eval point, per-chip openings, and a
+    transcript restored to the saved sponge state."""
+    with np.load(path) as z:
+        eval_point = from_u32(z["eval_point"], EF)
+        openings = {
+            str(name): ChipEvaluation(
+                main=from_u32(z[f"main:{name}"], EF),
+                preprocessed=(
+                    from_u32(z[f"prep:{name}"], EF) if f"prep:{name}" in z else None
+                ),
+            )
+            for name in z["chips"]
+        }
+        state = DuplexState(
+            input_buffer=from_u32(z["t_input"], F),
+            output_buffer=from_u32(z["t_output"], F),
+            sponge_state=from_u32(z["t_sponge"], F),
+            in_pos=jnp.int32(int(z["t_in_pos"])),
+            out_pos=jnp.int32(int(z["t_out_pos"])),
+        )
+    base = fresh_transcript()
+    return eval_point, openings, DuplexTranscript(base.permutation, base.rate, state)
 
 
 def replay_gkr(

@@ -40,10 +40,8 @@ import jax.numpy as jnp
 import numpy as np
 from absl import app, flags
 from jax import Array
-from zk_dtypes import koalabear_mont as F
 from zk_dtypes import koalabearx4_mont as EF
 
-from sp1_zorch.logup_gkr.prover import ChipEvaluation
 from sp1_zorch.shard_prover.fixture_loader import (
     _parse_ef_list,
     _parse_kv_lines,
@@ -53,15 +51,14 @@ from sp1_zorch.shard_prover.fixture_loader import (
 from sp1_zorch.shard_prover.replay import (
     MAX_LOG_ROW_COUNT,
     clone_diag,
-    fresh_transcript,
-    from_u32,
+    load_gkr_cache,
     replay_gkr,
+    save_gkr_cache,
     shard_regions,
     to_u32,
 )
 from sp1_zorch.zerocheck.stage import ZerocheckProof, prove_shard_zerocheck
 from zorch.poly.univariate import eval_coeffs
-from zorch.transcript import DuplexState, DuplexTranscript, Transcript
 
 _SHARD_DIR = flags.DEFINE_string(
     "shard_dir", None, "rsp shard dump directory (e.g. .../rsp_dump/shard1)."
@@ -77,54 +74,6 @@ _GKR_POW_BITS = flags.DEFINE_integer(
     12,
     "GKR grind bits (SP1 hardcodes GKR_GRINDING_BITS = 12).",
 )
-
-
-def _save_gkr_cache(
-    path: Path,
-    eval_point: Array,
-    openings: dict[str, ChipEvaluation],
-    transcript: DuplexTranscript,
-) -> None:
-    st = transcript.state
-    data: dict[str, np.ndarray] = {
-        "eval_point": to_u32(eval_point),
-        "chips": np.array(sorted(openings)),
-        "t_input": to_u32(st.input_buffer),
-        "t_output": to_u32(st.output_buffer),
-        "t_sponge": to_u32(st.sponge_state),
-        "t_in_pos": np.int32(int(st.in_pos)),
-        "t_out_pos": np.int32(int(st.out_pos)),
-    }
-    for name, ev in openings.items():
-        data[f"main:{name}"] = to_u32(ev.main)
-        if ev.preprocessed is not None:
-            data[f"prep:{name}"] = to_u32(ev.preprocessed)
-    np.savez(path, **data)
-
-
-def _load_gkr_cache(
-    path: Path,
-) -> tuple[Array, dict[str, ChipEvaluation], Transcript]:
-    z = np.load(path)
-    eval_point = from_u32(z["eval_point"], EF)
-    openings = {
-        str(name): ChipEvaluation(
-            main=from_u32(z[f"main:{name}"], EF),
-            preprocessed=(
-                from_u32(z[f"prep:{name}"], EF) if f"prep:{name}" in z else None
-            ),
-        )
-        for name in z["chips"]
-    }
-    base = fresh_transcript()
-    state = DuplexState(
-        input_buffer=from_u32(z["t_input"], F),
-        output_buffer=from_u32(z["t_output"], F),
-        sponge_state=from_u32(z["t_sponge"], F),
-        in_pos=jnp.int32(int(z["t_in_pos"])),
-        out_pos=jnp.int32(int(z["t_out_pos"])),
-    )
-    return eval_point, openings, DuplexTranscript(base.permutation, base.rate, state)
 
 
 def _replay_gkr(shard, shard_dir: Path, main_region, prep_region):
@@ -255,13 +204,13 @@ def main(argv) -> None:
         cache = cache.with_name(cache.name + ".npz")
     if cache is not None and cache.exists():
         print(f"loading GKR outputs from {cache}")
-        eval_point, openings, transcript = _load_gkr_cache(cache)
+        eval_point, openings, transcript = load_gkr_cache(cache)
     else:
         eval_point, openings, transcript = _replay_gkr(
             shard, shard_dir, main_region, prep_region
         )
         if cache is not None:
-            _save_gkr_cache(cache, eval_point, openings, transcript)
+            save_gkr_cache(cache, eval_point, openings, transcript)
             print(f"saved GKR outputs to {cache}")
 
     transcript, zc = prove_shard_zerocheck(
