@@ -7,11 +7,15 @@ composition against the reference:
 
 - the commitment the chain's ``TraceCommitRound`` computes must equal the
   dump's ``main_commit`` (``gpu_commitment.txt``);
-- the zerocheck sumcheck point must equal ``gpu_z_row.txt``. Each zerocheck
-  challenge is a sponge image of every byte the chain observed before it, so
-  this one match transitively pins the whole composed stream -- preamble (vk,
-  public values, commitment, chip metadata), the GKR leg, and the zerocheck
-  rounds -- proving the Round wiring reproduces SP1's transcript.
+- the GKR evaluation point's row tail (SP1's ``zeta``) must equal
+  ``gpu_z_row.txt``. ``zeta`` is a sponge image of every byte the chain
+  observed through the LogUp-GKR leg, so this one match transitively pins the
+  preamble (vk, public values, commitment, chip metadata) and the GKR leg,
+  proving the Round wiring reproduces SP1's transcript. The zerocheck sumcheck
+  point is not dumped to a txt (it lives only in the proof JSON); ``final_eval``
+  below pins the zerocheck rounds instead. ``gpu_z_row.txt`` is SP1's ``zeta``,
+  not the zerocheck point -- see ``zerocheck/verify_zerocheck.py``, the
+  authoritative per-stage check.
 - the jagged eval's outer sumcheck claim must equal
   ``phase4_sumcheck_claim``, sealing the eval stage's z_col sampling and
   per-column claim assembly.
@@ -209,12 +213,18 @@ def main(argv) -> None:
         "commitment vs gpu_commitment.main_commit", commitment, want_commit
     )
 
-    # z_row is the zerocheck point (challenge list reversed, SP1's jagged_point
-    # order). Each challenge is a sponge image of every byte observed before it,
-    # so this match seals the whole composed stream.
+    # gpu_z_row.txt is SP1's `zeta` -- the LogUp-GKR evaluation point's row tail
+    # (eval_point[-MAX_LOG_ROW_COUNT:], the GKR logup_evaluations.point), NOT the
+    # zerocheck sumcheck point. zeta is a sponge image of every byte observed
+    # through the GKR leg, so matching it seals the preamble + GKR leg; the
+    # zerocheck rounds are sealed by final_eval below (the zerocheck point itself
+    # is not dumped to a txt). Mirrors zerocheck/verify_zerocheck.py's `zeta
+    # (z_row)` check, the authoritative per-stage version.
     z_row = _parse_ef_list((shard_dir / "gpu_z_row.txt").read_text())
     ok &= check_match(
-        "zc point (z_row) seals the chain", zc.msgs.challenge[::-1], z_row
+        "zeta (gkr eval-point row tail) vs gpu_z_row",
+        gkr.eval_point[-MAX_LOG_ROW_COUNT:],
+        z_row,
     )
     state = _parse_kv_lines(
         (shard_dir / "gpu_zerocheck_state.txt").read_text().split("\nchip ")[0]
