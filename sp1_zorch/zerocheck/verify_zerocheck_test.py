@@ -19,12 +19,13 @@ from zk_dtypes import koalabear_mont, koalabearx4_mont
 from zorch.transcript import sample_challenge
 
 from sp1_zorch.logup_gkr.prover import ChipEvaluation
-from sp1_zorch.shard_prover.replay import fresh_transcript, to_u32
-from sp1_zorch.zerocheck.verify_zerocheck import (
-    _load_gkr_cache,
-    _parse_phase3,
-    _save_gkr_cache,
+from sp1_zorch.shard_prover.replay import (
+    fresh_transcript,
+    load_gkr_cache,
+    save_gkr_cache,
+    to_u32,
 )
+from sp1_zorch.zerocheck.verify_zerocheck import _parse_phase3
 
 BF = koalabear_mont
 EF = koalabearx4_mont
@@ -57,8 +58,8 @@ class GkrCacheRoundtripTest(absltest.TestCase):
             "B": ChipEvaluation(main=_rand_ef(4, (1,)), preprocessed=None),
         }
         path = pathlib.Path(self.create_tempdir().full_path) / "cache.npz"
-        _save_gkr_cache(path, eval_point, openings, t)
-        ep2, op2, t2 = _load_gkr_cache(path)
+        save_gkr_cache(path, eval_point, openings, t)
+        ep2, op2, t2 = load_gkr_cache(path)
 
         np.testing.assert_array_equal(_u32(ep2), _u32(eval_point))
         self.assertEqual(sorted(op2), sorted(openings))

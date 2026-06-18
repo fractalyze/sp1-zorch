@@ -161,7 +161,7 @@ def _proof_digest(proof: object) -> str:
 
 
 class ProveLogupGkrTest(absltest.TestCase):
-    def _prove(self):
+    def _prove(self, *, witness=None):
         main_a, main_b = _main(24), _main(4, offset=100)
         gkr_chips = [
             GkrChip("A", (_interaction(0, 1),)),
@@ -176,6 +176,7 @@ class ProveLogupGkrTest(absltest.TestCase):
             transcript,
             num_betas=3,
             num_row_variables=4,
+            witness=witness,
         )
         return proof
 
@@ -246,6 +247,25 @@ class ProveLogupGkrTest(absltest.TestCase):
                 num_row_variables=3,
                 pow_bits=12,
             )
+
+    def test_pow_bits_zero_keeps_a_passed_witness(self) -> None:
+        # pow_bits == 0 with no witness defaults to a zero that only advances
+        # the stream. A *passed* witness at pow_bits == 0 is a recorded-witness
+        # replay: the zero-bit GrindRound still observes it into the transcript
+        # (only the proof-of-work verdict host-read is gated on pow_bits > 0),
+        # so it must reach the sponge. Zeroing a passed witness diverged that
+        # replay from the judged pow_bits > 0 path.
+        zero = self._prove()
+        self.assertTrue(bool(jnp.all(zero.witness == jnp.zeros((), F))))
+
+        passed = jnp.ones((), F)
+        proof = self._prove(witness=passed)
+        # Kept, not discarded: the proof carries exactly the witness observed.
+        self.assertTrue(bool(jnp.all(proof.witness == passed)))
+        # And observing it perturbs the post-grind sponge, so the head
+        # challenges -- and the eval_point they drive -- diverge from the
+        # zero-witness run.
+        self.assertFalse(bool(jnp.all(proof.eval_point == zero.eval_point)))
 
 
 class ChipOpeningsRoundTest(absltest.TestCase):

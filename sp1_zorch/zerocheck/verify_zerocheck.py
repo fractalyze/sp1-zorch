@@ -9,9 +9,10 @@ stage value against the reference dump (stage / dump-file vocabulary:
 - ``gpu_zerocheck_state.txt`` -- batching + GKR opening-batch challenges,
   the joint claimed sum, round count, final eval;
 - ``phase3_lambda.txt`` -- the chip-RLC lambda;
-- ``gpu_z_row.txt`` -- the full sumcheck point. Each challenge is a sponge
-  image of every byte observed before it, so 22 matches transitively pin the
-  whole round-poly stream the prover emitted;
+- ``gpu_z_row.txt`` -- SP1's ``zeta``: the LogUp-GKR evaluation point's row
+  tail (``eval_point[-max_log_row_count:]``), the point the zerocheck stage
+  reduces the constraint sum onto. (Not the zerocheck sumcheck point -- that is
+  pinned by ``claimed_sum``/``final_eval``/the per-chip openings below.)
 - ``phase3_chip_opened_values_full.txt`` -- per-chip main/prep opened values;
 - ``gpu_univariate.txt`` -- per-round poly values (rounds 1..21; SP1 does not
   log round 0 here). The dump's 4-value-per-round encoding is not pinned by
@@ -39,10 +40,8 @@ import jax.numpy as jnp
 import numpy as np
 from absl import app, flags
 from jax import Array
-from zk_dtypes import koalabear_mont as F
 from zk_dtypes import koalabearx4_mont as EF
 
-from sp1_zorch.logup_gkr.prover import ChipEvaluation
 from sp1_zorch.shard_prover.fixture_loader import (
     _parse_ef_list,
     _parse_kv_lines,
@@ -52,15 +51,14 @@ from sp1_zorch.shard_prover.fixture_loader import (
 from sp1_zorch.shard_prover.replay import (
     MAX_LOG_ROW_COUNT,
     clone_diag,
-    fresh_transcript,
-    from_u32,
+    load_gkr_cache,
     replay_gkr,
+    save_gkr_cache,
     shard_regions,
     to_u32,
 )
 from sp1_zorch.zerocheck.stage import ZerocheckProof, prove_shard_zerocheck
 from zorch.poly.univariate import eval_coeffs
-from zorch.transcript import DuplexState, DuplexTranscript, Transcript
 
 _SHARD_DIR = flags.DEFINE_string(
     "shard_dir", None, "rsp shard dump directory (e.g. .../rsp_dump/shard1)."
@@ -76,54 +74,6 @@ _GKR_POW_BITS = flags.DEFINE_integer(
     12,
     "GKR grind bits (SP1 hardcodes GKR_GRINDING_BITS = 12).",
 )
-
-
-def _save_gkr_cache(
-    path: Path,
-    eval_point: Array,
-    openings: dict[str, ChipEvaluation],
-    transcript: DuplexTranscript,
-) -> None:
-    st = transcript.state
-    data: dict[str, np.ndarray] = {
-        "eval_point": to_u32(eval_point),
-        "chips": np.array(sorted(openings)),
-        "t_input": to_u32(st.input_buffer),
-        "t_output": to_u32(st.output_buffer),
-        "t_sponge": to_u32(st.sponge_state),
-        "t_in_pos": np.int32(int(st.in_pos)),
-        "t_out_pos": np.int32(int(st.out_pos)),
-    }
-    for name, ev in openings.items():
-        data[f"main:{name}"] = to_u32(ev.main)
-        if ev.preprocessed is not None:
-            data[f"prep:{name}"] = to_u32(ev.preprocessed)
-    np.savez(path, **data)
-
-
-def _load_gkr_cache(
-    path: Path,
-) -> tuple[Array, dict[str, ChipEvaluation], Transcript]:
-    z = np.load(path)
-    eval_point = from_u32(z["eval_point"], EF)
-    openings = {
-        str(name): ChipEvaluation(
-            main=from_u32(z[f"main:{name}"], EF),
-            preprocessed=(
-                from_u32(z[f"prep:{name}"], EF) if f"prep:{name}" in z else None
-            ),
-        )
-        for name in z["chips"]
-    }
-    base = fresh_transcript()
-    state = DuplexState(
-        input_buffer=from_u32(z["t_input"], F),
-        output_buffer=from_u32(z["t_output"], F),
-        sponge_state=from_u32(z["t_sponge"], F),
-        in_pos=jnp.int32(int(z["t_in_pos"])),
-        out_pos=jnp.int32(int(z["t_out_pos"])),
-    )
-    return eval_point, openings, DuplexTranscript(base.permutation, base.rate, state)
 
 
 def _replay_gkr(shard, shard_dir: Path, main_region, prep_region):
@@ -254,13 +204,13 @@ def main(argv) -> None:
         cache = cache.with_name(cache.name + ".npz")
     if cache is not None and cache.exists():
         print(f"loading GKR outputs from {cache}")
-        eval_point, openings, transcript = _load_gkr_cache(cache)
+        eval_point, openings, transcript = load_gkr_cache(cache)
     else:
         eval_point, openings, transcript = _replay_gkr(
             shard, shard_dir, main_region, prep_region
         )
         if cache is not None:
-            _save_gkr_cache(cache, eval_point, openings, transcript)
+            save_gkr_cache(cache, eval_point, openings, transcript)
             print(f"saved GKR outputs to {cache}")
 
     transcript, zc = prove_shard_zerocheck(
@@ -301,10 +251,13 @@ def main(argv) -> None:
     ok &= check_match(
         "claimed_sum", p0[0] + jnp.sum(p0), _parse_ef_list(state["claimed_sum"])[0]
     )
-    # z_row is the challenge list reversed (SP1's jagged_point order). Every
-    # challenge is a sponge image of all bytes observed before it, so 22
-    # matches pin the entire emitted round-poly stream, round 0 included.
-    ok &= check_match("zc_sumcheck_point (z_row)", zc.msgs.challenge[::-1], z_row)
+    # gpu_z_row.txt is SP1's `zeta` -- the LogUp-GKR evaluation point's row tail
+    # (`eval_point[-max_log_row_count:]`, the GKR `logup_evaluations.point`), NOT
+    # the zerocheck sumcheck point. The zerocheck sumcheck point lives in the
+    # proof JSON (`zerocheck_proof.point_and_eval[0].values`), not a dump txt; it
+    # is already pinned here by `claimed_sum` (round 0), `final_eval` (round 21),
+    # and the per-chip openings folded through every round.
+    ok &= check_match("zeta (z_row)", eval_point[-MAX_LOG_ROW_COUNT:], z_row)
     ok &= check_match(
         "final_eval",
         eval_coeffs(zc.msgs.round_poly[-1], zc.msgs.challenge[-1]),

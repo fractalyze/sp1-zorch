@@ -282,7 +282,13 @@ def prove_logup_gkr(
     if pow_bits > 0:
         if witness is None:
             raise ValueError("pow_bits > 0 needs a witness (grinding not built)")
-    else:
+    elif witness is None:
+        # pow_bits == 0 with no witness: a dummy zero just advances the stream.
+        # A *passed* witness at pow_bits == 0 is a recorded-witness replay -- the
+        # zero-bit GrindRound gate observes it (the transcript's `message`)
+        # without host-reading the verdict, so the stage stays jit-traceable AND
+        # the transcript matches the judged pow_bits > 0 path. Zeroing it here
+        # would diverge that transcript, so keep the caller's witness.
         witness = jnp.zeros((), dtype=bf_dtype)
     # The head schedule (grind, challenges, output binding) runs as the
     # shared glue Rounds -- the byte-match harness and the phase benchmark
