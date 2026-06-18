@@ -89,3 +89,46 @@ A block's shards differ in size by >30×: for `rsp_21740136`, shard0 = 38.6 M
 first-layer rows, shard17 = 1.16 M (`gpu_first_layer.txt: height`). Always run
 **both provers on the same `--shard_dir`**; never compare across shards. (A
 relayed "SP1 ~81 ms" was shard0; an earlier sp1-zorch number was shard17.)
+## Reporting discipline — the provenance every number must carry
+
+The premise above (same data / same scope / same output) is what makes a
+*cross-implementation* comparison valid. Two further rules keep any single number
+**citable and comparable across sessions, commits, and people**.
+
+**1. Execution regime: eager ≠ jit'd — never compare across them.** A bench that
+drives a prover stage directly (e.g. `bench_sp1_logup_gkr`) runs it **without an
+outer `@jit`** by default. An eager warm number is **host-dispatch-bound**: the
+wall-clock is the host orchestrating per-stage / per-transition dispatches (GPU can
+sit ~0 % util with zero compiles in the timed window), not device sumcheck work. For
+the *same* computation it can be 100×+ a device-bound (outer-`@jit`'d) number, so the
+two **must never be subtracted or ratio'd**. Always record whether a number was eager
+or under one outer `@jit`. A fusion/dispatch lever (e.g. a per-transition `@jit`
+island) can even *invert* the ordering between the two regimes — measure such a lever
+under the regime it actually ships in.
+
+**2. Every reported number carries its provenance tuple.** A number missing any field
+is not comparable and should not be quoted:
+
+- **bench target + file** — the canonical bench for that stage; anything else is
+  non-canonical by definition.
+- **shard identity** — dump name + shard index. Never compare across shards (see the
+  size caveat above).
+- **scope** — which stages, and whether openings / grind / head are in or out.
+- **warm or cold** (+ warmup count). Never report a cold number as warm.
+- **execution mode** — eager or outer-`@jit` (rule 1).
+- **A/B variable held** — exactly what changed, with everything else pinned. For a
+  zorch-commit A/B: the two zorch SHAs, with the jax wheel **and** the zkx plugin
+  build pinned identical across arms (ideally byte-identical — verify by `sha256`).
+- **plugin + pin** — zkx plugin provenance. A from-source `treatment.so` swapped via
+  `ZKX_GPU_PLUGIN_PATH` is **not interchangeable** with a bumped-pin wheel number.
+- **device** + a same-shell `nvidia-smi` before/after for any memory/perf-sensitive
+  run.
+- **golden status** — whether byte-match was verified for the measured config
+  (`verify_gkr_prove`, `--ffi_verify`).
+
+**3. A merged perf-lever change needs a completed warm A/B first.** "Byte-identical by
+construction" is a *correctness* claim, not a perf measurement. A code or pin change
+merged as a performance lever must have a completed warm A/B — carrying the tuple above
+— posted to its tracking issue **before** the lever is treated as quantified. Deferring
+the measurement past merge is how an unmeasured (or silently regressing) "optimization"
+lands.
