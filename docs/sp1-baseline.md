@@ -96,15 +96,18 @@ The premise above (same data / same scope / same output) is what makes a
 *cross-implementation* comparison valid. Two further rules keep any single number
 **citable and comparable across sessions, commits, and people**.
 
-**1. Execution regime: eager ≠ jit'd — never compare across them.** A bench that
-drives a prover stage directly (e.g. `bench_sp1_logup_gkr`) runs it **without an
-outer `@jit`** by default. An eager warm number is **host-dispatch-bound**: the
-wall-clock is the host orchestrating per-stage / per-transition dispatches (GPU can
-sit ~0 % util with zero compiles in the timed window), not device sumcheck work. For
-the *same* computation it can be 100×+ a device-bound (outer-`@jit`'d) number, so the
-two **must never be subtracted or ratio'd**. A fusion/dispatch lever (e.g. a
-per-transition `@jit` island) can even *invert* the ordering between the two regimes —
-so measure such a lever under the regime it actually ships in.
+**1. Attribute the wall-clock by per-stage measurement, not by code structure.**
+Where a stage's time goes is *not* obvious from the call graph. A number that looks
+like host-dispatch scaffolding (a 20-deep eager build loop, per-transition dispatch)
+can turn out to be ~99 % one device-bound sub-stage (the sumcheck), and a "GPU ~0 %
+util" sample can be the **cold XLA compile** (CPU-side, GPU idle), not the warm exec.
+Instrument the stages with per-stage `jax.block_until_ready` timing and let the numbers
+say where the time is — inferring the hotspot from structure has been wrong here more
+than once. Relatedly, eager and outer-`@jit` are different regimes: a bench that drives
+a stage directly runs it **without an outer `@jit`** by default, and an eager run can
+carry async-dispatch/scheduling overhead a jit'd run does not (a per-transition `@jit`
+island can even *invert* the eager-vs-jit ordering). Record which regime a number is;
+never subtract or ratio across eager and jit'd numbers.
 
 **2. Every reported number carries its provenance tuple.** A number missing any field
 is not comparable and should not be quoted:
