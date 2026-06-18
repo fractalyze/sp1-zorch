@@ -238,47 +238,63 @@ class LogupGkrRound(Round):
         witness: Array | None = None,
         jit: bool = False,
     ) -> None:
-        self._gkr_chips = gkr_chips
+        self._gkr_chips = tuple(gkr_chips)
         self._num_betas = num_betas
         self._num_row_variables = num_row_variables
         self._pow_bits = pow_bits
         self._witness = witness
-        # Compile the body once so warm chain runs reuse the executable (a fresh
-        # `jax.jit` per call would recompile every run). Regions + the post-grind
-        # transcript trace as args; chip metadata / counts are closed over as
-        # static. `LogUpGkrOutput` is not a registered pytree, so the body
-        # returns its two array leaves and `__call__` rebuilds it -- everything
-        # else (transcript, round_proofs, openings) already crosses jit.
-        self._body = self._compile_body() if jit else None
-
-    def _compile_body(self):
-        gkr_chips = self._gkr_chips
-        num_betas = self._num_betas
-        num_row_variables = self._num_row_variables
-
-        @jax.jit
-        def body(main_region, prep_region, transcript, witness):
-            transcript, proof = prove_logup_gkr_body(
-                gkr_chips,
-                main_region,
-                prep_region,
-                transcript,
-                witness,
+        # Bind the static config to the *class-level* jitted body so every
+        # LogupGkrRound shares one `jax.jit` wrapper. JAX's compile cache lives on
+        # the wrapper object, so a fresh-per-shard instance (the chain rebuilds
+        # with each shard's witness) reuses the compiled executable instead of
+        # recompiling. `gkr_chips` is a tuple of frozen GkrChips, so it keys the
+        # cache by value -- same machine config, one compile.
+        self._body = (
+            partial(
+                self._jit_body,
+                gkr_chips=self._gkr_chips,
                 num_betas=num_betas,
                 num_row_variables=num_row_variables,
             )
-            out = proof.circuit_output
-            return (
-                transcript,
-                proof.witness,
-                out.numerator,
-                out.denominator,
-                proof.round_proofs,
-                proof.eval_point,
-                proof.chip_openings,
-            )
+            if jit
+            else None
+        )
 
-        return body
+    @staticmethod
+    @partial(jax.jit, static_argnames=("gkr_chips", "num_betas", "num_row_variables"))
+    def _jit_body(
+        main_region,
+        prep_region,
+        transcript,
+        witness,
+        *,
+        gkr_chips,
+        num_betas,
+        num_row_variables,
+    ):
+        # Regions + the post-grind transcript trace as args. `LogUpGkrOutput` is
+        # not a registered pytree, so return its two array leaves and let
+        # `__call__` rebuild it -- everything else (transcript, round_proofs,
+        # openings) already crosses jit.
+        transcript, proof = prove_logup_gkr_body(
+            gkr_chips,
+            main_region,
+            prep_region,
+            transcript,
+            witness,
+            num_betas=num_betas,
+            num_row_variables=num_row_variables,
+        )
+        out = proof.circuit_output
+        return (
+            transcript,
+            proof.witness,
+            out.numerator,
+            out.denominator,
+            proof.round_proofs,
+            proof.eval_point,
+            proof.chip_openings,
+        )
 
     def __call__(
         self, carry: ShardCarry, transcript: Transcript
