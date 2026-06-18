@@ -225,6 +225,21 @@ class ProveShardChainTest(absltest.TestCase):
             max_log_row_count=_MAX_LOG_ROW_COUNT,
             open_num_queries=_OPEN_NUM_QUERIES,
         )
+        # A jit=True twin for the lowering smoke (sp1-zorch#119): same wiring,
+        # the LogUp-GKR body staged under one outer @jit.
+        cls.jit_chain = prove_shard_chain(
+            smcs=smcs,
+            log_blowup=_LOG_BLOWUP,
+            vk=vk,
+            chip_metadata=metadata,
+            gkr_chips=gkr_chips,
+            chips=chips,
+            num_betas=_NUM_BETAS,
+            num_row_variables=_NUM_ROW_VARIABLES,
+            max_log_row_count=_MAX_LOG_ROW_COUNT,
+            open_num_queries=_OPEN_NUM_QUERIES,
+            jit=True,
+        )
         # The full four-stage chain runs eagerly on CPU: the jagged-eval
         # stage's base->extension embeds keep its EF->PF converts off the CPU
         # path (jax#168), so the open executes. The hand replay stops at
@@ -307,6 +322,25 @@ class ProveShardChainTest(absltest.TestCase):
                 replace(self.main_region, dense=dense), self.prep_region, public_values
             )
             _, out_transcript, _ = self.chain(carry, transcript)
+            return out_transcript
+
+        lowered = jax.jit(run).lower(
+            self.main_region.dense, self.public_values, cheap_transcript(BF)
+        )
+        self.assertIn("func", lowered.as_text())
+
+    def test_jit_chain_lowers_with_logup_gkr_staged(self) -> None:
+        """``prove_shard_chain(jit=True)`` stages the grind-free LogUp-GKR body
+        under one outer ``@jit`` (sp1-zorch#119). Execution stays GPU's job (CPU
+        jit miscompiles field dots, jax#168 -- see the test above), so smoke that
+        the jit=True chain still lowers: the body traces cleanly with no stray
+        host-side ``bool(ok)`` leaking past the eager grind."""
+
+        def run(dense, public_values, transcript):
+            carry = ShardCarry(
+                replace(self.main_region, dense=dense), self.prep_region, public_values
+            )
+            _, out_transcript, _ = self.jit_chain(carry, transcript)
             return out_transcript
 
         lowered = jax.jit(run).lower(

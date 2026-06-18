@@ -43,10 +43,13 @@ from sp1_zorch.logup_gkr.prover import (
     ChipEvaluation,
     LogupGkrProof,
     prove_logup_gkr,
+    prove_logup_gkr_body,
+    resolve_witness_and_grind,
 )
 from sp1_zorch.shard_prover.types import MachineVerifyingKey
 from sp1_zorch.zerocheck.stage import ZerocheckProof, prove_shard_zerocheck
 from zorch.coding.reed_solomon import BitReversedReedSolomon
+from zorch.logup_gkr.circuit import LogUpGkrOutput
 from zorch.round import ProveChain, Round
 from zorch.transcript import GrindingTranscript, Transcript
 from zorch.utils.bits import log2_ceil_usize
@@ -215,7 +218,15 @@ class TraceCommitRound(Round):
 
 class LogupGkrRound(Round):
     """LogUp-GKR stage over ``prove_logup_gkr``; writes the final evaluation
-    point and per-chip openings onto the carry for zerocheck."""
+    point and per-chip openings onto the carry for zerocheck.
+
+    With ``jit=True`` the grind-free body (head challenges, circuit build, the
+    rolled pyramid sumcheck, trace openings) runs under one cached outer ``@jit``
+    so the warm prove's ~thousands of op-by-op dispatches collapse into a single
+    program -- the host-dispatch wall that otherwise leaves the GPU ~idle at
+    shard scale (sp1-zorch#119). The grind stays eager so its ``pow_bits > 0``
+    host-side PoW verdict is legal; ``@jit`` is byte-transparent, so the proof is
+    identical to the eager path either way."""
 
     def __init__(
         self,
@@ -225,26 +236,91 @@ class LogupGkrRound(Round):
         num_row_variables: int,
         pow_bits: int = 0,
         witness: Array | None = None,
+        jit: bool = False,
     ) -> None:
         self._gkr_chips = gkr_chips
         self._num_betas = num_betas
         self._num_row_variables = num_row_variables
         self._pow_bits = pow_bits
         self._witness = witness
+        # Compile the body once so warm chain runs reuse the executable (a fresh
+        # `jax.jit` per call would recompile every run). Regions + the post-grind
+        # transcript trace as args; chip metadata / counts are closed over as
+        # static. `LogUpGkrOutput` is not a registered pytree, so the body
+        # returns its two array leaves and `__call__` rebuilds it -- everything
+        # else (transcript, round_proofs, openings) already crosses jit.
+        self._body = self._compile_body() if jit else None
+
+    def _compile_body(self):
+        gkr_chips = self._gkr_chips
+        num_betas = self._num_betas
+        num_row_variables = self._num_row_variables
+
+        @jax.jit
+        def body(main_region, prep_region, transcript, witness):
+            transcript, proof = prove_logup_gkr_body(
+                gkr_chips,
+                main_region,
+                prep_region,
+                transcript,
+                witness,
+                num_betas=num_betas,
+                num_row_variables=num_row_variables,
+            )
+            out = proof.circuit_output
+            return (
+                transcript,
+                proof.witness,
+                out.numerator,
+                out.denominator,
+                proof.round_proofs,
+                proof.eval_point,
+                proof.chip_openings,
+            )
+
+        return body
 
     def __call__(
         self, carry: ShardCarry, transcript: Transcript
     ) -> tuple[ShardCarry, Transcript, LogupGkrProof]:
-        transcript, proof = prove_logup_gkr(
-            self._gkr_chips,
-            carry.main_region,
-            carry.prep_region,
-            transcript,
-            num_betas=self._num_betas,
-            num_row_variables=self._num_row_variables,
-            pow_bits=self._pow_bits,
-            witness=self._witness,
-        )
+        if self._body is None:
+            transcript, proof = prove_logup_gkr(
+                self._gkr_chips,
+                carry.main_region,
+                carry.prep_region,
+                transcript,
+                num_betas=self._num_betas,
+                num_row_variables=self._num_row_variables,
+                pow_bits=self._pow_bits,
+                witness=self._witness,
+            )
+        else:
+            # Grind eagerly (its pow_bits > 0 verdict is a host-side bool(ok));
+            # the grind-free body then dispatches as one program.
+            transcript, witness = resolve_witness_and_grind(
+                transcript,
+                pow_bits=self._pow_bits,
+                witness=self._witness,
+                bf_dtype=carry.main_region.dense.dtype,
+            )
+            (
+                transcript,
+                witness,
+                numerator,
+                denominator,
+                round_proofs,
+                eval_point,
+                chip_openings,
+            ) = self._body(carry.main_region, carry.prep_region, transcript, witness)
+            proof = LogupGkrProof(
+                witness=witness,
+                circuit_output=LogUpGkrOutput(
+                    numerator=numerator, denominator=denominator
+                ),
+                round_proofs=round_proofs,
+                eval_point=eval_point,
+                chip_openings=chip_openings,
+            )
         carry = replace(
             carry,
             gkr_eval_point=proof.eval_point,
@@ -437,8 +513,10 @@ def prove_shard_chain(
     benchmark, the byte-match runnables, and proof assembly cannot drift
     on it.
 
-    ``jit`` runs the trace-commit tail under ``jax.jit`` (required at rsp scale,
-    see ``sp1_zorch.commit.trace_commit``). Byte-identical either way.
+    ``jit`` stages the heavy per-stage work under ``jax.jit``: the trace-commit
+    tail (required at rsp scale, see ``sp1_zorch.commit.trace_commit``) and the
+    LogUp-GKR body, whose warm prove is otherwise host-dispatch-bound and leaves
+    the GPU ~idle (sp1-zorch#119). Byte-identical either way.
 
     ``offload_commit_rounds`` parks the committed witness on host between the
     commit and the open so its codeword + digest buffers do not stay device-
@@ -464,6 +542,7 @@ def prove_shard_chain(
                 num_row_variables=num_row_variables,
                 pow_bits=pow_bits,
                 witness=witness,
+                jit=jit,
             ),
             ShardZerocheckRound(chips, max_log_row_count=max_log_row_count),
             ShardJaggedEvalRound(
