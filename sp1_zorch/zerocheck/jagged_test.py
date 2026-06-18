@@ -304,15 +304,20 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
         num_reals = [5, 2]
         nchips = len(num_reals)
         calls, bounded = self._constraint_markers(3, num_reals)
-        # The only unbounded markers are the per-chip C_alpha(0_row) probes.
-        self.assertEqual(len(calls) - len(bounded), nchips, calls)
+        # EVERY constraint_eval marker is live-width-bounded — including the
+        # per-chip C_alpha(0_row) probe. Its single live row makes live_width=1
+        # a no-op mask, but the bound routes it through the compact loop-form
+        # emitter instead of the monolithic CSE unroll (the Global compile
+        # cliff, fractalyze/zkx#702).
+        self.assertEqual(len(calls), len(bounded), calls)
         # One rolled round body: 3 t-points per chip (round 0's t=0 is masked,
-        # not dropped, so the kernel still emits exactly once).
-        self.assertEqual(len(bounded), 3 * nchips)
+        # not dropped, so the kernel still emits exactly once), plus the one
+        # C_alpha(0_row) probe per chip.
+        self.assertEqual(len(bounded), 4 * nchips)
         shapes = {re.search(r"tensor<(\d+x\d+)x", c).group(1) for c in bounded}  # type: ignore[union-attr]
-        # One trace shape per chip — pad4(5)/2 = 4 and pad4(2)/2 = 2 pairs —
-        # never one per round.
-        self.assertEqual(shapes, {"4x3", "2x3"})
+        # One round trace shape per chip — pad4(5)/2 = 4 and pad4(2)/2 = 2
+        # pairs, never one per round — plus the 1-row C_alpha(0_row) probe.
+        self.assertEqual(shapes, {"4x3", "2x3", "1x3"})
 
     @absltest.skipUnless(_HAS_COMPOSITE_OP, "jaxlib lacks stablehlo.CompositeOp")
     def test_round_loop_stays_rolled(self) -> None:
