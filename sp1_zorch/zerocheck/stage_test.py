@@ -216,6 +216,19 @@ class ProveZerocheckTest(absltest.TestCase):
     def test_zeta_is_eval_point_tail(self):
         _assert_bytes_equal(self.proof.zeta, self.zeta)
 
+    def test_zeta_is_not_the_sumcheck_point(self):
+        # verify_zerocheck checks SP1's gpu_z_row.txt -- which is zeta, the
+        # eval_point row-tail -- against `proof.zeta`, NOT against the zerocheck
+        # sumcheck point (`msgs.challenge`). Both index the row variables, so on
+        # a real shard they share a length and an earlier harness conflated
+        # them: the shape check passed while the values mismatched. Pin that
+        # they are distinct vectors so the check can't regress to the sumcheck
+        # point.
+        zeta = _u32(self.proof.zeta)
+        sumcheck_point = _u32(self.proof.msgs.challenge[::-1])
+        self.assertEqual(zeta.shape, sumcheck_point.shape)
+        self.assertFalse(np.array_equal(zeta, sumcheck_point))
+
     def test_challenges_sampled_in_sp1_order(self):
         for name, got, want in (
             ("batching_challenge", self.proof.batching_challenge, self.alpha),
