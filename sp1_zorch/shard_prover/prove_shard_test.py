@@ -113,7 +113,10 @@ def _flatten_arrays(x) -> list:
     if isinstance(x, (list, tuple)):
         return [a for e in x for a in _flatten_arrays(e)]
     if isinstance(x, dict):
-        return [a for v in x.values() for a in _flatten_arrays(v)]
+        # Sort keys so the leaf order is independent of dict construction order
+        # (the two chains compared here build their openings dicts identically,
+        # but a sorted walk makes the helper robust regardless).
+        return [a for k in sorted(x) for a in _flatten_arrays(x[k])]
     if dataclasses.is_dataclass(x):
         return [
             a for f in dataclasses.fields(x) for a in _flatten_arrays(getattr(x, f.name))
@@ -452,12 +455,14 @@ class ProveShardChainTest(absltest.TestCase):
         for parked, resident in zip(
             carry.commit_rounds, self.carry.commit_rounds, strict=True
         ):
-            self.assertIsInstance(parked.codeword, np.ndarray)  # host, not device
-            _assert_bytes_equal(parked.codeword, resident.codeword, "parked codeword")
-            for parked_layer, resident_layer in zip(
-                parked.digest_layers, resident.digest_layers, strict=True
-            ):
-                _assert_bytes_equal(parked_layer, resident_layer, "parked digest")
+            # Every retained array (mle, codeword, each digest layer) is parked
+            # on host (numpy, not device); a partial offload that left any on
+            # device would pin buffers through GKR + zerocheck and fail here.
+            leaves = _flatten_arrays(parked)
+            self.assertNotEmpty(leaves)
+            for leaf in leaves:
+                self.assertIsInstance(leaf, np.ndarray)
+            _assert_proof_byte_equal(parked, resident, "parked witness")
 
     def test_zerocheck_round_rejects_a_chain_without_gkr(self) -> None:
         round_ = ShardZerocheckRound(

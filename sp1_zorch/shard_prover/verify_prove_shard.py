@@ -180,11 +180,10 @@ def main(argv) -> None:
         # .trace_commit). The GKR stage keeps its `zorch.sumcheck` composite via
         # the rolled marker, independent of this flag.
         jit=True,
-        # Park the committed witness on host through the GKR + zerocheck stages
-        # so its codeword + digest buffers do not pin ~0.65 GiB that tips rsp
-        # shard17's full chain over a 32 GiB card (fractalyze/sp1-zorch#55,
-        # #124). This runnable drives the chain eagerly (host-orchestrated), so
-        # the offload's device_get is valid here. Byte-identical.
+        # Park the committed witness on host through GKR + zerocheck to clear the
+        # rsp shard17 full-chain OOM (see prove_shard_chain's docstring / #55,
+        # #124). Valid here because this runnable drives the chain eagerly -- a
+        # host copy can't run under a trace. Byte-identical.
         offload_commit_rounds=True,
     )
     chain.rounds = [_TimedRound(rnd) for rnd in chain.rounds]
