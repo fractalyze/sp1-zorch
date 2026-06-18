@@ -89,12 +89,3 @@ A block's shards differ in size by >30×: for `rsp_21740136`, shard0 = 38.6 M
 first-layer rows, shard17 = 1.16 M (`gpu_first_layer.txt: height`). Always run
 **both provers on the same `--shard_dir`**; never compare across shards. (A
 relayed "SP1 ~81 ms" was shard0; an earlier sp1-zorch number was shard17.)
-
-## Secondary tool — `sp1_zorch/tools/sp1_baseline.py`
-
-Extracts a shard's real first-layer counts / commit dims into SP1's *synthetic*
-micro-bench inputs (`logup_gkr_bench` / `merkle_bench`). Useful as a
-**structural** cross-check (does SP1's kernel cost scale as expected for this
-shard's shape) — but it is **not** the apples-to-apples benchmark (synthetic
-values, single-stage scope, no golden equivalence). The per-stage full-prove
-comparison above is the source of truth.
