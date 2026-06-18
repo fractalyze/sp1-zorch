@@ -274,16 +274,21 @@ def prove_jagged_zerocheck(
 
     # C_alpha(0_row), the constant every padded row contributes — probed once
     # per chip; num_real == 0 and constraint-less chips never trace their
-    # constraint formula. live_width=1 keeps the single probe row (0 < 1) so
-    # the value is byte-identical, but declaring the bound routes this eval
-    # through the compact loop-form emitter instead of the monolithic CSE
-    # unroll a non-bounded wide circuit triggers (fractalyze/zkx#702).
+    # constraint formula. The zero-row constant is identical for any number of
+    # rows, so the probe height is free: it is padded to a multi-row block and
+    # bounded at live_width=1 (only row 0 is live, the rest mask to zero, and we
+    # keep [0]) purely to engage the compact loop-form GPU emitter. That emitter
+    # only fires on a multi-row trace — a size-1 leading dim is simplified away
+    # and falls back to the monolithic CSE unroll, the koalabear Global compile
+    # cliff (one 271k-instr kernel, >660s). With the multi-row block it lowers
+    # to ~785 instrs and Global cold-compiles in ~5s. See fractalyze/zkx#702.
+    probe_rows = 8
     adjs = [
         zero
         if nrs[i] == 0 or alphas[i].shape[-1] == 0
         else constraint_eval(
             eval_fns[i],
-            jnp.zeros((1, traces[i].shape[0]), dtype=ef),
+            jnp.zeros((probe_rows, traces[i].shape[0]), dtype=ef),
             alphas[i],
             live_width=1,
         )[0]
