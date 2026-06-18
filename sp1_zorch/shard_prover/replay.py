@@ -63,6 +63,7 @@ class JitPermutation:
     compile here collapses that to a single dispatch."""
 
     def __init__(self, inner: Poseidon2) -> None:
+        self._inner = inner
         self.width: int = inner.width
         self.dtype: Any = inner.dtype
         self.has_dedicated_fusion: bool = inner.has_dedicated_fusion
@@ -70,6 +71,21 @@ class JitPermutation:
 
     def permute(self, state: Array) -> Array:
         return self._permute(state)
+
+    # Value identity from the wrapped permutation. JitPermutation rides as a
+    # static meta_field in DuplexTranscript, so it keys the jit cache whenever a
+    # transcript is a jit argument (the production LogUp-GKR stage,
+    # LogupGkrRound(jit=True)). Without value-equality every fresh_transcript()
+    # is a fresh wrapper -> a new cache key -> the whole-stage @jit recompiles on
+    # every prove. Poseidon2 already carries value-equality for this exact
+    # reason (zorch#214); the wrapper must forward it.
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, JitPermutation):
+            return NotImplemented
+        return self._inner == other._inner
+
+    def __hash__(self) -> int:
+        return hash(self._inner)
 
 
 def fresh_transcript() -> DuplexTranscript:

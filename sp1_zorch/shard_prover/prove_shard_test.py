@@ -39,6 +39,7 @@ from sp1_zorch.shard_prover.prove_shard import (
     preamble_chip_metadata,
     prove_shard_chain,
 )
+from sp1_zorch.shard_prover.replay import JitPermutation
 from sp1_zorch.shard_prover.types import MachineVerifyingKey
 from sp1_zorch.zerocheck.stage import prove_shard_zerocheck
 
@@ -119,7 +120,9 @@ def _flatten_arrays(x) -> list:
         return [a for k in sorted(x) for a in _flatten_arrays(x[k])]
     if dataclasses.is_dataclass(x):
         return [
-            a for f in dataclasses.fields(x) for a in _flatten_arrays(getattr(x, f.name))
+            a
+            for f in dataclasses.fields(x)
+            for a in _flatten_arrays(getattr(x, f.name))
         ]
     return []
 
@@ -556,6 +559,26 @@ class PreambleChipMetadataTest(absltest.TestCase):
         got = preamble_chip_metadata(("ab", "c"), (6, 4), dtype=BF)
         want = jnp.array([2, 6, 2, ord("a"), ord("b"), 4, 1, ord("c")], dtype=BF)
         _assert_bytes_equal(got, want, "chip metadata")
+
+
+class JitPermutationTest(absltest.TestCase):
+    """JitPermutation rides as a static meta_field in DuplexTranscript, so it
+    keys the jit cache whenever a transcript is a jit argument (the production
+    LogUp-GKR stage, LogupGkrRound(jit=True)). Value-equality forwarded from the
+    inner Poseidon2 is what lets a fresh same-config transcript reuse the
+    compiled stage instead of recompiling per prove -- without it every
+    fresh_transcript() is a new cache key."""
+
+    def test_same_config_wrappers_are_equal_and_hash_equal(self) -> None:
+        a = JitPermutation(Poseidon2(koalabear16_params()))
+        b = JitPermutation(Poseidon2(koalabear16_params()))
+        self.assertIsNot(a, b)  # distinct objects, as fresh_transcript() builds
+        self.assertEqual(a, b)
+        self.assertEqual(hash(a), hash(b))
+
+    def test_distinct_from_a_non_jitpermutation(self) -> None:
+        p = Poseidon2(koalabear16_params())
+        self.assertNotEqual(JitPermutation(p), p)
 
 
 if __name__ == "__main__":

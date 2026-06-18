@@ -129,6 +129,7 @@ py_test(
     srcs = ["prove_shard_test.py"],
     deps = [
         ":prove_shard",
+        ":replay",
         ":shard_prover",
         "//sp1_zorch/commit:region",
         "//sp1_zorch/commit:smcs",
