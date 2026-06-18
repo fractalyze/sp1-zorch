@@ -145,6 +145,44 @@ py_binary(
     ],
 )
 
+# Localizes the zerocheck compile cliff (sp1-zorch#123): times each chip's
+# constraint_eval NVPTX codegen in isolation. Needs the cuda plugin so the
+# zkx emitter runs; --shard-dir supplies the chip set + widths (no GKR replay).
+py_binary(
+    name = "probe_chip_compile",
+    srcs = ["probe_chip_compile.py"],
+    deps = [
+        ":zerocheck",
+        "//sp1_zorch/shard_prover",
+        "//sp1_zorch/shard_prover:replay",
+        "@zorch//zorch:constraint_eval",
+        requirement("jax"),
+        requirement("jax_cuda12_plugin"),
+        requirement("zk_dtypes"),
+        requirement("zkx_cuda_pjrt"),
+    ],
+)
+
+# Compiles the real prove_jagged_zerocheck (lax.scan body) per chip subset to
+# attribute the >12 min zerocheck cliff (sp1-zorch#123) -- the scan-embedded
+# form, not bare constraint_eval (probe_chip_compile). Abstract trace shapes,
+# no GKR replay.
+py_binary(
+    name = "probe_round_compile",
+    srcs = ["probe_round_compile.py"],
+    deps = [
+        ":zerocheck",
+        "//sp1_zorch/shard_prover",
+        "//sp1_zorch/shard_prover:replay",
+        "@zorch//zorch:constraint_eval",
+        "@zorch//zorch/testkit:transcript",
+        requirement("jax"),
+        requirement("jax_cuda12_plugin"),
+        requirement("zk_dtypes"),
+        requirement("zkx_cuda_pjrt"),
+    ],
+)
+
 py_test(
     name = "verify_zerocheck_test",
     size = "medium",
