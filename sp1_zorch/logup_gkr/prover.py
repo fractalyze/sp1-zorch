@@ -277,6 +277,10 @@ def resolve_witness_and_grind(
     body's thousands -- so keeping it eager costs nothing and preserves the
     judged ``pow_bits > 0`` path exactly.
     """
+    if pow_bits < 0:
+        # Fail closed at the stage boundary: a negative bit count is nonsense,
+        # and the branch below would otherwise treat it as the zero-bit replay.
+        raise ValueError("pow_bits must be non-negative")
     if pow_bits > 0:
         if witness is None:
             raise ValueError("pow_bits > 0 needs a witness (grinding not built)")
