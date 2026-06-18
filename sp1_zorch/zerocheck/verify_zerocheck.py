@@ -9,9 +9,10 @@ stage value against the reference dump (stage / dump-file vocabulary:
 - ``gpu_zerocheck_state.txt`` -- batching + GKR opening-batch challenges,
   the joint claimed sum, round count, final eval;
 - ``phase3_lambda.txt`` -- the chip-RLC lambda;
-- ``gpu_z_row.txt`` -- the full sumcheck point. Each challenge is a sponge
-  image of every byte observed before it, so 22 matches transitively pin the
-  whole round-poly stream the prover emitted;
+- ``gpu_z_row.txt`` -- SP1's ``zeta``: the LogUp-GKR evaluation point's row
+  tail (``eval_point[-max_log_row_count:]``), the point the zerocheck stage
+  reduces the constraint sum onto. (Not the zerocheck sumcheck point -- that is
+  pinned by ``claimed_sum``/``final_eval``/the per-chip openings below.)
 - ``phase3_chip_opened_values_full.txt`` -- per-chip main/prep opened values;
 - ``gpu_univariate.txt`` -- per-round poly values (rounds 1..21; SP1 does not
   log round 0 here). The dump's 4-value-per-round encoding is not pinned by
@@ -301,10 +302,13 @@ def main(argv) -> None:
     ok &= check_match(
         "claimed_sum", p0[0] + jnp.sum(p0), _parse_ef_list(state["claimed_sum"])[0]
     )
-    # z_row is the challenge list reversed (SP1's jagged_point order). Every
-    # challenge is a sponge image of all bytes observed before it, so 22
-    # matches pin the entire emitted round-poly stream, round 0 included.
-    ok &= check_match("zc_sumcheck_point (z_row)", zc.msgs.challenge[::-1], z_row)
+    # gpu_z_row.txt is SP1's `zeta` -- the LogUp-GKR evaluation point's row tail
+    # (`eval_point[-max_log_row_count:]`, the GKR `logup_evaluations.point`), NOT
+    # the zerocheck sumcheck point. The zerocheck sumcheck point lives in the
+    # proof JSON (`zerocheck_proof.point_and_eval[0].values`), not a dump txt; it
+    # is already pinned here by `claimed_sum` (round 0), `final_eval` (round 21),
+    # and the per-chip openings folded through every round.
+    ok &= check_match("zeta (z_row)", eval_point[-MAX_LOG_ROW_COUNT:], z_row)
     ok &= check_match(
         "final_eval",
         eval_coeffs(zc.msgs.round_poly[-1], zc.msgs.challenge[-1]),
