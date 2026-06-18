@@ -162,8 +162,8 @@ def main(argv) -> None:
         open_pow_bits=_OPEN_POW_BITS.value,
         witness=jnp.array(int(gkr_state["witness"]), F),
         # Required at rsp scale for the commit (see sp1_zorch.commit
-        # .trace_commit); also keeps each GKR layer's composite intact and
-        # its compile reusable across runs via the compilation cache.
+        # .trace_commit). The GKR stage keeps its `zorch.sumcheck` composite via
+        # the rolled marker, independent of this flag.
         jit=True,
     )
     chain.rounds = [_TimedRound(rnd) for rnd in chain.rounds]

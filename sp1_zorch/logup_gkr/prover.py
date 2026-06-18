@@ -48,11 +48,10 @@ from zorch.logup_gkr.circuit import (
     jagged_layer_transition,
 )
 from zorch.logup_gkr.jagged_prover import (
-    JaggedGkrLayerRound,
     JaggedLayerProof,
     prove_jagged_pyramid,
 )
-from zorch.round import ProveChain, Round
+from zorch.round import Round
 from zorch.transcript import Transcript
 
 
@@ -271,20 +270,12 @@ def prove_logup_gkr(
     num_row_variables: int,
     pow_bits: int = 0,
     witness: Array | None = None,
-    jit: bool = False,
-    rolled: bool = True,
 ) -> tuple[Transcript, LogupGkrProof]:
     """Run the LogUp-GKR stage on a transcript positioned after the shard
     preamble (vk, public values, main commitment, chip metadata).
 
     Returns the advanced transcript and the proof; the caller opens the
     traces at ``proof.eval_point``.
-
-    ``jit`` wraps each layer's prove in ``jax.jit`` (see
-    ``JaggedGkrLayerRound``). Beyond caching, the jit boundary is what keeps
-    the ``zorch.sumcheck`` composite intact for the vendor's register-resident
-    emitter -- eager dispatch decomposes it. Output is byte-identical either
-    way.
     """
     bf_dtype = main_region.dense.dtype
 
@@ -310,26 +301,17 @@ def prove_logup_gkr(
     output = extract_sp1_outputs(layers[-1])
     carry, transcript, _ = OutputBindRound(output)(None, transcript)
 
-    # `rolled` proves the pyramid as ONE lax.scan (prove_jagged_pyramid), O(1)
-    # in the layer count -- the marked path collapses the per-layer compile
-    # (sp1-zorch#55). It is the default: zorch#275 bounds its peak to
-    # O(plane_width) (independent of the layer count), so the per-layer plane
-    # stack no longer sums to gigabytes at shard scale. The unrolled ProveChain
-    # stays reachable via `rolled=False` -- it walks output to input, building
-    # each round on demand and releasing it once proved (one layer live at a
-    # time), and is the byte-match oracle for the rolled path
-    # (test_rolled_pyramid_byte_matches_unrolled_chain).
-    if rolled:
-        proved = [layers.pop() for _ in range(len(layers))]
-        (_, _, eval_point), transcript, round_proofs = prove_jagged_pyramid(
-            proved, carry, transcript, challenge_limbs=EF_LIMBS
-        )
-    else:
-        chain = ProveChain(
-            JaggedGkrLayerRound(layers.pop(), EF_LIMBS, jit=jit)
-            for _ in range(len(layers))
-        )
-        (_, _, eval_point), transcript, round_proofs = chain(carry, transcript)
+    # Prove the floor-outward layer chain as ONE lax.scan (prove_jagged_pyramid),
+    # O(1) in the layer count -- the marked path collapses the per-layer compile
+    # (sp1-zorch#55), and zorch#275 bounds its peak to O(plane_width) (independent
+    # of the layer count), so the per-layer plane stack stays bounded at shard
+    # scale. This is the sole prove path; its byte-match is gated by the SP1
+    # reference (verify_gkr_prove) and a captured CPU golden
+    # (test_rolled_pyramid_matches_golden).
+    proved = [layers.pop() for _ in range(len(layers))]
+    (_, _, eval_point), transcript, round_proofs = prove_jagged_pyramid(
+        proved, carry, transcript, challenge_limbs=EF_LIMBS
+    )
 
     transcript, chip_openings = open_traces(
         main_region,

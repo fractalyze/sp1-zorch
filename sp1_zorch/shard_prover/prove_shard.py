@@ -209,14 +209,12 @@ class LogupGkrRound(Round):
         num_row_variables: int,
         pow_bits: int = 0,
         witness: Array | None = None,
-        jit: bool = False,
     ) -> None:
         self._gkr_chips = gkr_chips
         self._num_betas = num_betas
         self._num_row_variables = num_row_variables
         self._pow_bits = pow_bits
         self._witness = witness
-        self._jit = jit
 
     def __call__(
         self, carry: ShardCarry, transcript: Transcript
@@ -230,7 +228,6 @@ class LogupGkrRound(Round):
             num_row_variables=self._num_row_variables,
             pow_bits=self._pow_bits,
             witness=self._witness,
-            jit=self._jit,
         )
         carry = replace(
             carry,
@@ -410,10 +407,8 @@ def prove_shard_chain(
     benchmark, the byte-match runnables, and proof assembly cannot drift
     on it.
 
-    ``jit`` runs every stage that supports it under ``jax.jit`` — the
-    trace-commit tail (required at rsp scale, see
-    ``sp1_zorch.commit.trace_commit``) and the per-layer GKR prove (see
-    ``prove_logup_gkr``). Byte-identical either way."""
+    ``jit`` runs the trace-commit tail under ``jax.jit`` (required at rsp scale,
+    see ``sp1_zorch.commit.trace_commit``). Byte-identical either way."""
     return ProveChain(
         [
             TraceCommitRound(
@@ -429,7 +424,6 @@ def prove_shard_chain(
                 num_row_variables=num_row_variables,
                 pow_bits=pow_bits,
                 witness=witness,
-                jit=jit,
             ),
             ShardZerocheckRound(chips, max_log_row_count=max_log_row_count),
             ShardJaggedEvalRound(
