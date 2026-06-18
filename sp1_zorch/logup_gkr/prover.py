@@ -260,25 +260,23 @@ def extract_sp1_outputs(floor: JaggedGkrLayer) -> LogUpGkrOutput:
     return extract_jagged_outputs(floor)
 
 
-def prove_logup_gkr(
-    gkr_chips: Sequence[GkrChip],
-    main_region: JaggedRegion,
-    prep_region: JaggedRegion | None,
+def resolve_witness_and_grind(
     transcript: Transcript,
     *,
-    num_betas: int,
-    num_row_variables: int,
-    pow_bits: int = 0,
-    witness: Array | None = None,
-) -> tuple[Transcript, LogupGkrProof]:
-    """Run the LogUp-GKR stage on a transcript positioned after the shard
-    preamble (vk, public values, main commitment, chip metadata).
+    pow_bits: int,
+    witness: Array | None,
+    bf_dtype: Any,
+) -> tuple[Transcript, Array]:
+    """Apply the witness-default policy and run the grind, returning the
+    post-grind transcript and the resolved witness.
 
-    Returns the advanced transcript and the proof; the caller opens the
-    traces at ``proof.eval_point``.
+    Split out from ``prove_logup_gkr`` so the production stage can run it
+    eagerly while jitting the grind-free body below (``LogupGkrRound(jit=True)``):
+    ``GrindRound``'s ``pow_bits > 0`` PoW verdict is a host-side ``bool(ok)``
+    (illegal under trace), and the grind is a handful of dispatches next to the
+    body's thousands -- so keeping it eager costs nothing and preserves the
+    judged ``pow_bits > 0`` path exactly.
     """
-    bf_dtype = main_region.dense.dtype
-
     if pow_bits > 0:
         if witness is None:
             raise ValueError("pow_bits > 0 needs a witness (grinding not built)")
@@ -294,6 +292,28 @@ def prove_logup_gkr(
     # shared glue Rounds -- the byte-match harness and the phase benchmark
     # thread the same definitions, so the three cannot drift.
     _, transcript, _ = GrindRound(witness, pow_bits=pow_bits)(None, transcript)
+    return transcript, witness
+
+
+def prove_logup_gkr_body(
+    gkr_chips: Sequence[GkrChip],
+    main_region: JaggedRegion,
+    prep_region: JaggedRegion | None,
+    transcript: Transcript,
+    witness: Array,
+    *,
+    num_betas: int,
+    num_row_variables: int,
+) -> tuple[Transcript, LogupGkrProof]:
+    """The grind-free LogUp-GKR body: head challenges, circuit build, the rolled
+    pyramid sumcheck, and the trace openings, on a post-grind transcript.
+
+    Pure traceable array work -- this is the island the production stage stages
+    into one outer ``@jit`` (``LogupGkrRound(jit=True)``) so the warm prove's
+    ~thousands of op-by-op dispatches (the host-bound wall that leaves the GPU
+    ~idle) collapse into one program. ``witness`` is threaded only onto the
+    returned proof.
+    """
     _, transcript, head = HeadChallengesRound(num_betas)(None, transcript)
 
     # No standalone binding for the first layer -- it is the largest, and a
@@ -334,3 +354,38 @@ def prove_logup_gkr(
         chip_openings=chip_openings,
     )
     return transcript, proof
+
+
+def prove_logup_gkr(
+    gkr_chips: Sequence[GkrChip],
+    main_region: JaggedRegion,
+    prep_region: JaggedRegion | None,
+    transcript: Transcript,
+    *,
+    num_betas: int,
+    num_row_variables: int,
+    pow_bits: int = 0,
+    witness: Array | None = None,
+) -> tuple[Transcript, LogupGkrProof]:
+    """Run the LogUp-GKR stage on a transcript positioned after the shard
+    preamble (vk, public values, main commitment, chip metadata).
+
+    Returns the advanced transcript and the proof; the caller opens the
+    traces at ``proof.eval_point``. The eager single-source for the stage;
+    ``LogupGkrRound(jit=True)`` runs the same two pieces with the body jitted.
+    """
+    transcript, witness = resolve_witness_and_grind(
+        transcript,
+        pow_bits=pow_bits,
+        witness=witness,
+        bf_dtype=main_region.dense.dtype,
+    )
+    return prove_logup_gkr_body(
+        gkr_chips,
+        main_region,
+        prep_region,
+        transcript,
+        witness,
+        num_betas=num_betas,
+        num_row_variables=num_row_variables,
+    )
