@@ -123,6 +123,28 @@ py_binary(
     ],
 )
 
+# Warm benchmark for the zerocheck stage in shard-prover context (GKR replay ->
+# timed prove_shard_zerocheck) — a runnable; mirrors logup_gkr:bench_sp1_logup_gkr.
+#   bazel run //sp1_zorch/zerocheck:bench_sp1_zerocheck -- \
+#       --shard-dir=/path/to/rsp_dump/shardN --gkr-cache=/path/to/cache.npz
+py_binary(
+    name = "bench_sp1_zerocheck",
+    srcs = ["bench_sp1_zerocheck.py"],
+    deps = [
+        ":zerocheck",
+        "//sp1_zorch/logup_gkr",
+        "//sp1_zorch/shard_prover",
+        "//sp1_zorch/shard_prover:replay",
+        "@zorch//zorch:transcript",
+        requirement("jax"),
+        requirement("jax_cuda12_plugin"),
+        requirement("numpy"),
+        requirement("zk_dtypes"),
+        requirement("zkbench"),
+        requirement("zkx_cuda_pjrt"),
+    ],
+)
+
 py_test(
     name = "verify_zerocheck_test",
     size = "medium",

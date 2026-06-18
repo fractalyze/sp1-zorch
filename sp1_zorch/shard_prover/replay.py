@@ -23,7 +23,12 @@ from zk_dtypes import koalabear_mont as F
 
 from sp1_zorch.commit.region import JaggedRegion
 from sp1_zorch.logup_gkr.circuit import build_gkr_chips
-from sp1_zorch.logup_gkr.prover import LogupGkrProof, num_beta_values, prove_logup_gkr
+from sp1_zorch.logup_gkr.prover import (
+    ChipEvaluation,
+    LogupGkrProof,
+    num_beta_values,
+    prove_logup_gkr,
+)
 from sp1_zorch.poseidon2.koalabear16 import koalabear16_params
 from sp1_zorch.shard_prover.fixture_loader import _parse_int_list, _parse_kv_lines
 from sp1_zorch.shard_prover.prove_shard import PreambleRound, preamble_chip_metadata
@@ -129,6 +134,51 @@ def replay_gkr(
         pow_bits=pow_bits,
         witness=jnp.array(int(state["witness"]), F),
     )
+
+
+def seed_gkr_outputs_rolled(
+    shard: ShardData,
+    shard_dir: Path,
+    main_region: JaggedRegion,
+    prep_region: JaggedRegion | None,
+) -> tuple[Transcript, Array, dict[str, ChipEvaluation]]:
+    """Fast GKR-output seed: the marked rolled prove compiled as one jit
+    (sp1-zorch#55) -- minutes vs ``replay_gkr``'s eager hours, byte-identical.
+
+    Returns only the zerocheck inputs (post-GKR transcript, eval point, per-chip
+    openings), NOT a ``LogupGkrProof`` -- the proof isn't a jit-returnable pytree
+    and the round proofs aren't needed downstream. The recorded witness replays
+    at ``pow_bits=0`` (the zero-bit GrindRound observes it without the host-read
+    that would break the single jit, so the transcript still matches the judged
+    path); the caller seals against the dump's post-GKR diag. Used to seed a
+    cache for the zerocheck bench (sp1-zorch#115)."""
+    state = _parse_kv_lines(
+        (shard_dir / "gpu_gkr_state.txt").read_text(), skip_unkeyed=True
+    )
+    preamble = preamble_transcript(shard, shard_dir)
+    order = shard.main_trace_data.traces.chip_order
+    gkr_chips = build_gkr_chips(shard.main_trace_data.chips, order)
+    num_betas = num_beta_values(shard.main_trace_data.chips)
+    num_row_variables = MAX_LOG_ROW_COUNT - 1
+    witness = jnp.array(int(state["witness"]), F)
+
+    # chips static via closure; regions/transcript/witness traced -- mirrors how
+    # the rolled bench jits the stage, keeping the zorch.sumcheck composite
+    # intact for the vendor emitter. Return arrays/pytrees, never the proof.
+    def _rolled(mr, pr, tr, w):
+        t, proof = prove_logup_gkr(
+            gkr_chips,
+            mr,
+            pr,
+            tr,
+            num_betas=num_betas,
+            num_row_variables=num_row_variables,
+            pow_bits=0,
+            witness=w,
+        )
+        return t, proof.eval_point, proof.chip_openings
+
+    return jax.jit(_rolled)(main_region, prep_region, preamble, witness)
 
 
 def shard_regions(shard: ShardData) -> tuple[JaggedRegion, JaggedRegion | None]:
