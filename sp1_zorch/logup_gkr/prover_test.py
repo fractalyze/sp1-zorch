@@ -8,10 +8,12 @@ zorch jagged verifier dual replays -- plus the SP1 floor handling and the
 beta-count rule.
 """
 
+import hashlib
 from dataclasses import fields
 from types import SimpleNamespace
 
 import jax.numpy as jnp
+import numpy as np
 from absl.testing import absltest
 from rw_constraints import Interaction, VirtualPairCol
 from zk_dtypes import koalabear_mont as F
@@ -129,8 +131,37 @@ class ExtractSp1OutputsTest(absltest.TestCase):
             extract_sp1_outputs(layer)
 
 
+# Golden digest of the rolled prove output (the sole prove path). Regenerate with
+# `print(_proof_digest(ProveLogupGkrTest()._prove()))` when the prove output
+# legitimately changes (e.g. a jax/zkx wheel bump that alters the field encoding).
+_ROLLED_PYRAMID_GOLDEN = (
+    "af801e4f09ae9c3a375f9cdc4613282ecd753e212129f5f91196a1494cd0cce4"
+)
+
+
+def _proof_digest(proof: object) -> str:
+    """SHA-256 over the proof's field bytes in a fixed order -- a compact CPU
+    regression guard. The full field-level oracle is the SP1 reference byte-match
+    (``verify_gkr_prove``, a GPU runnable)."""
+    leaves: dict[str, object] = {
+        "eval_point": proof.eval_point,
+        "numerator": proof.circuit_output.numerator,
+        "denominator": proof.circuit_output.denominator,
+    }
+    for i, rp in enumerate(proof.round_proofs):
+        for f in fields(JaggedLayerProof):
+            leaves[f"round_proofs.{i}.{f.name}"] = getattr(rp, f.name)
+    for name in sorted(proof.chip_openings):
+        leaves[f"chip_openings.{name}.main"] = proof.chip_openings[name].main
+    h = hashlib.sha256()
+    for key, arr in sorted(leaves.items()):
+        h.update(key.encode())
+        h.update(np.ascontiguousarray(np.asarray(jnp.asarray(arr))).tobytes())
+    return h.hexdigest()
+
+
 class ProveLogupGkrTest(absltest.TestCase):
-    def _prove(self, *, jit: bool = False, rolled: bool = False):
+    def _prove(self):
         main_a, main_b = _main(24), _main(4, offset=100)
         gkr_chips = [
             GkrChip("A", (_interaction(0, 1),)),
@@ -145,50 +176,15 @@ class ProveLogupGkrTest(absltest.TestCase):
             transcript,
             num_betas=3,
             num_row_variables=4,
-            jit=jit,
-            rolled=rolled,
         )
         return proof
 
-    def test_rolled_pyramid_byte_matches_unrolled_chain(self) -> None:
-        # rolled=True proves the pyramid as ONE lax.scan (prove_jagged_pyramid),
-        # the sp1-zorch#55 gate: byte-identical to the unrolled ProveChain. The
-        # cheap (unmarked) transcript makes the marker decompose inline.
-        want = self._prove(rolled=False)
-        got = self._prove(rolled=True)
-
-        self.assertTrue(
-            bool(jnp.all(got.eval_point == want.eval_point)), "eval_point diverged"
-        )
-        for arr in ("numerator", "denominator"):
-            self.assertTrue(
-                bool(
-                    jnp.all(
-                        getattr(got.circuit_output, arr)
-                        == getattr(want.circuit_output, arr)
-                    )
-                ),
-                f"circuit_output.{arr} diverged",
-            )
-        self.assertEqual(len(got.round_proofs), len(want.round_proofs))
-        for i, (g, w) in enumerate(
-            zip(got.round_proofs, want.round_proofs, strict=True)
-        ):
-            for fld in fields(JaggedLayerProof):
-                self.assertTrue(
-                    bool(jnp.all(getattr(g, fld.name) == getattr(w, fld.name))),
-                    f"round_proofs[{i}].{fld.name} diverged",
-                )
-        self.assertEqual(set(got.chip_openings), set(want.chip_openings))
-        for name in want.chip_openings:
-            self.assertTrue(
-                bool(
-                    jnp.all(
-                        got.chip_openings[name].main == want.chip_openings[name].main
-                    )
-                ),
-                f"chip_openings[{name}].main diverged",
-            )
+    def test_rolled_pyramid_matches_golden(self) -> None:
+        # The rolled prove (prove_jagged_pyramid) is the sole prove path; pin its
+        # output to a captured golden as the fast CPU regression guard. The
+        # independent value-level oracle is the SP1 reference byte-match
+        # (verify_gkr_prove), per the module docstring.
+        self.assertEqual(_proof_digest(self._prove()), _ROLLED_PYRAMID_GOLDEN)
 
     def test_stream_replays_through_the_zorch_verifier_dual(self) -> None:
         # The glue's per-layer carry threading must be byte-for-byte the
@@ -212,33 +208,6 @@ class ProveLogupGkrTest(absltest.TestCase):
         self.assertTrue(bool(ok))
         self.assertTrue(bool(jnp.all(point == proof.eval_point)))
         del num_eval, den_eval
-
-    def test_jit_prove_matches_eager(self) -> None:
-        # jit=True must be a pure dispatch change: the whole proof stream
-        # byte-identical to the eager prove. The cheap transcript keeps the
-        # layers unmarked -- compiling the marked `zorch.sumcheck` composite
-        # is a multi-minute XLA CPU compile, and jit(marked) parity already
-        # follows from zorch's JaggedGkrLayerRoundJitTest composed with its
-        # marked-vs-plain coverage.
-        eager = self._prove()
-        jitted = self._prove(jit=True)
-        self.assertTrue(bool(jnp.all(eager.eval_point == jitted.eval_point)))
-        self.assertTrue(
-            bool(
-                jnp.all(
-                    eager.circuit_output.numerator == jitted.circuit_output.numerator
-                )
-            )
-        )
-        self.assertEqual(len(eager.round_proofs), len(jitted.round_proofs))
-        for i, (e, j) in enumerate(zip(eager.round_proofs, jitted.round_proofs)):
-            for f in fields(e):
-                self.assertTrue(
-                    bool(jnp.all(getattr(e, f.name) == getattr(j, f.name))),
-                    f"round_proofs[{i}].{f.name} diverged under jit",
-                )
-        for name, ev in eager.chip_openings.items():
-            self.assertTrue(bool(jnp.all(ev.main == jitted.chip_openings[name].main)))
 
     def test_round_proofs_carry_layer_points(self) -> None:
         # The wire's per-layer point_and_eval reads rp.point; pin its coherence

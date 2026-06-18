@@ -118,12 +118,11 @@ class Sp1LogupGkrBenchmark(JaxBenchmark):
             sys.exit("head anchors diverged from the dump; aborting")
 
         def _prove():
-            # jit=True keeps the `zorch.sumcheck` composite intact for the
-            # vendor's register-resident emitter; with the module-level
-            # shape-keyed round zone (zorch#249) warm iterations cache-hit
-            # instead of re-tracing each layer. The chain is rebuilt per call
-            # so the lazy one-live-layer release holds -- peak residency is a
-            # single pyramid layer, not the whole pyramid.
+            # The rolled prove runs the whole pyramid as one lax.scan
+            # (prove_jagged_pyramid), keeping the `zorch.sumcheck` composite intact
+            # for the vendor's register-resident emitter. Warm iterations cache-hit
+            # the shape-keyed round zone (zorch#249) instead of re-tracing, and
+            # zorch#275 bounds peak residency to O(plane_width).
             _, proof = prove_logup_gkr(
                 gkr_chips,
                 main_region,
@@ -133,7 +132,6 @@ class Sp1LogupGkrBenchmark(JaxBenchmark):
                 num_row_variables=num_row_variables,
                 pow_bits=_GKR_POW_BITS,
                 witness=witness,
-                jit=True,
             )
             # Block on arrays that transitively force the whole stage: the
             # final eval point carries the sequential round chain, and the
