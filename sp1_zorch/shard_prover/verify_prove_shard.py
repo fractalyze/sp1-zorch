@@ -36,9 +36,12 @@ runnable, not a unit test. Needs a CUDA GPU.
         --shard_dir=/path/to/rsp_dump/shardN
 
 Wall-clock is dominated by XLA/zkx GPU compiles, not kernel runtime — the
-per-stage timings printed during the run show the split. For iteration,
-set ``JAX_COMPILATION_CACHE_DIR`` to a per-toolchain directory so every
-run after the first skips the compiles; leave it unset for byte-match
+per-stage timings printed during the run show the split. Pass ``--runs=N``
+to prove the chain N times in one process: run 1 is cold (compiles), runs
+2+ are warm (executables reused), so the warm per-stage ``[stage X] Yms``
+lines are the ones to compare against SP1's native prover. Across separate
+processes, set ``JAX_COMPILATION_CACHE_DIR`` to a per-toolchain directory so
+every run after the first skips the compiles; leave it unset for byte-match
 gates (a cache shared across toolchains has served wrong executables).
 
 Exits non-zero on any mismatch.
@@ -104,6 +107,14 @@ _FFI_VERIFY = flags.DEFINE_bool(
     False,
     "Assemble the bincode wire and verify it with SP1's sp1_verify_shard FFI.",
 )
+_RUNS = flags.DEFINE_integer(
+    "runs",
+    1,
+    "Prove the chain this many times. Run 1 is cold (pays the XLA/zkx "
+    "compiles); runs 2+ are warm (the compiled executables are reused), so the "
+    "warm per-stage times are the ones to compare against SP1's native prover. "
+    "Golden checks run on the final pass.",
+)
 
 
 class _TimedRound(Round):
@@ -123,7 +134,7 @@ class _TimedRound(Round):
         jax.block_until_ready(out)
         print(
             f"[stage {type(self._inner).__name__}] "
-            f"{time.monotonic() - t0:.1f}s",
+            f"{(time.monotonic() - t0) * 1e3:.1f}ms",
             flush=True,
         )
         return out
@@ -168,12 +179,21 @@ def main(argv) -> None:
     )
     chain.rounds = [_TimedRound(rnd) for rnd in chain.rounds]
 
-    t0 = time.monotonic()
-    carry, _, msgs = chain(
-        ShardCarry(main_region, prep_region, main.public_values), fresh_transcript()
-    )
+    # Prove ``--runs`` times. Run 1 pays the XLA/zkx compile; warm runs reuse
+    # the compiled executables, so their per-stage times are what's comparable
+    # to SP1's native prover (whose first compile is amortized too). The golden
+    # checks below run on the final pass's outputs.
+    runs = _RUNS.value
+    for i in range(runs):
+        kind = "cold" if i == 0 else "warm"
+        print(f"=== prove pass {i + 1}/{runs} ({kind}) ===", flush=True)
+        t0 = time.monotonic()
+        carry, _, msgs = chain(
+            ShardCarry(main_region, prep_region, main.public_values),
+            fresh_transcript(),
+        )
+        print(f"chain run: {(time.monotonic() - t0) * 1e3:.1f}ms", flush=True)
     commitment, gkr, zc, jagged = msgs
-    print(f"chain run: {time.monotonic() - t0:.1f}s")
 
     # The trace commit the chain computed must equal SP1's dumped commitment;
     # gpu_commitment.txt carries canonical integers, so encode to compare.
