@@ -102,10 +102,9 @@ outer `@jit`** by default. An eager warm number is **host-dispatch-bound**: the
 wall-clock is the host orchestrating per-stage / per-transition dispatches (GPU can
 sit ~0 % util with zero compiles in the timed window), not device sumcheck work. For
 the *same* computation it can be 100×+ a device-bound (outer-`@jit`'d) number, so the
-two **must never be subtracted or ratio'd**. Always record whether a number was eager
-or under one outer `@jit`. A fusion/dispatch lever (e.g. a per-transition `@jit`
-island) can even *invert* the ordering between the two regimes — measure such a lever
-under the regime it actually ships in.
+two **must never be subtracted or ratio'd**. A fusion/dispatch lever (e.g. a
+per-transition `@jit` island) can even *invert* the ordering between the two regimes —
+so measure such a lever under the regime it actually ships in.
 
 **2. Every reported number carries its provenance tuple.** A number missing any field
 is not comparable and should not be quoted:
