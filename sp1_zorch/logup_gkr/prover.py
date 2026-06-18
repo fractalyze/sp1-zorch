@@ -272,7 +272,7 @@ def prove_logup_gkr(
     pow_bits: int = 0,
     witness: Array | None = None,
     jit: bool = False,
-    rolled: bool = False,
+    rolled: bool = True,
 ) -> tuple[Transcript, LogupGkrProof]:
     """Run the LogUp-GKR stage on a transcript positioned after the shard
     preamble (vk, public values, main commitment, chip metadata).
@@ -312,10 +312,13 @@ def prove_logup_gkr(
 
     # `rolled` proves the pyramid as ONE lax.scan (prove_jagged_pyramid), O(1)
     # in the layer count -- the marked path collapses the per-layer compile
-    # (sp1-zorch#55), but stacks every layer's planes at once. The unrolled
-    # ProveChain stays the default: layers.pop() walks output to input, building
-    # each round on demand and releasing it once proved, so at most one layer of
-    # the pyramid stays live -- the planes sum to gigabytes at shard scale.
+    # (sp1-zorch#55). It is the default: zorch#275 bounds its peak to
+    # O(plane_width) (independent of the layer count), so the per-layer plane
+    # stack no longer sums to gigabytes at shard scale. The unrolled ProveChain
+    # stays reachable via `rolled=False` -- it walks output to input, building
+    # each round on demand and releasing it once proved (one layer live at a
+    # time), and is the byte-match oracle for the rolled path
+    # (test_rolled_pyramid_byte_matches_unrolled_chain).
     if rolled:
         proved = [layers.pop() for _ in range(len(layers))]
         (_, _, eval_point), transcript, round_proofs = prove_jagged_pyramid(
