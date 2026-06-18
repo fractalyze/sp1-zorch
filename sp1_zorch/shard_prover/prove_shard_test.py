@@ -312,44 +312,33 @@ class ProveShardChainTest(absltest.TestCase):
         _assert_bytes_equal(got.msgs.round_poly, want.msgs.round_poly, "round_poly")
         _assert_bytes_equal(got.msgs.challenge, want.msgs.challenge, "challenge")
 
-    def test_chain_lowers_under_single_jit(self) -> None:
-        """The whole chain traces as one ``@jit`` region: no stage forces a
-        host sync that would split it. The carry is built inside the traced
-        function (so this needs no pytree registration of ``ShardCarry``);
-        backend compile stays GPU's job — poseidon2 has no CPU fusion emitter
-        and CPU jit miscompiles field dots (fractalyze/jax#168) — so the smoke
-        stops at StableHLO lowering."""
-
+    def _assert_chain_lowers(self, chain) -> None:
+        # The carry is built inside the traced function (so this needs no pytree
+        # registration of ``ShardCarry``); backend compile stays GPU's job --
+        # poseidon2 has no CPU fusion emitter and CPU jit miscompiles field dots
+        # (fractalyze/jax#168) -- so the smoke stops at StableHLO lowering.
         def run(dense, public_values, transcript):
             carry = ShardCarry(
                 replace(self.main_region, dense=dense), self.prep_region, public_values
             )
-            _, out_transcript, _ = self.chain(carry, transcript)
+            _, out_transcript, _ = chain(carry, transcript)
             return out_transcript
 
         lowered = jax.jit(run).lower(
             self.main_region.dense, self.public_values, cheap_transcript(BF)
         )
         self.assertIn("func", lowered.as_text())
+
+    def test_chain_lowers_under_single_jit(self) -> None:
+        """The whole chain traces as one ``@jit`` region: no stage forces a host
+        sync that would split it."""
+        self._assert_chain_lowers(self.chain)
 
     def test_jit_chain_lowers_with_logup_gkr_staged(self) -> None:
         """``prove_shard_chain(jit=True)`` stages the grind-free LogUp-GKR body
-        under one outer ``@jit`` (sp1-zorch#119). Execution stays GPU's job (CPU
-        jit miscompiles field dots, jax#168 -- see the test above), so smoke that
-        the jit=True chain still lowers: the body traces cleanly with no stray
-        host-side ``bool(ok)`` leaking past the eager grind."""
-
-        def run(dense, public_values, transcript):
-            carry = ShardCarry(
-                replace(self.main_region, dense=dense), self.prep_region, public_values
-            )
-            _, out_transcript, _ = self.jit_chain(carry, transcript)
-            return out_transcript
-
-        lowered = jax.jit(run).lower(
-            self.main_region.dense, self.public_values, cheap_transcript(BF)
-        )
-        self.assertIn("func", lowered.as_text())
+        under one outer ``@jit`` (sp1-zorch#119): the body traces cleanly with no
+        stray host-side ``bool(ok)`` leaking past the eager grind."""
+        self._assert_chain_lowers(self.jit_chain)
 
     def test_jaggedregion_is_a_pytree_with_only_dense_as_leaf(self) -> None:
         """JaggedRegion registers ``dense`` as its sole array leaf; the layout

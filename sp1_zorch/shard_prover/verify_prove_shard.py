@@ -222,11 +222,12 @@ def main(argv) -> None:
     commit_kv = _parse_kv_lines((shard_dir / "gpu_commitment.txt").read_text())
     want_commit = jnp.array(_parse_int_list(commit_kv["main_commit"]), F)
 
+    commitment = msgs[0]
+    ok = check_match(
+        "commitment vs gpu_commitment.main_commit", commitment, want_commit
+    )
+
     if _STOP_AFTER_GKR.value:
-        commitment, _gkr = msgs
-        ok = check_match(
-            "commitment vs gpu_commitment.main_commit", commitment, want_commit
-        )
         # The post-GKR transcript seal is the challenger after every GKR round
         # poly + opening absorbed, so matching it seals the chain through this
         # stage (the same scalar verify_gkr_prove pins on the replay path).
@@ -241,10 +242,7 @@ def main(argv) -> None:
         print("prove_shard chain byte-match (through LogUp-GKR): ALL OK")
         return
 
-    commitment, gkr, zc, jagged = msgs
-    ok = check_match(
-        "commitment vs gpu_commitment.main_commit", commitment, want_commit
-    )
+    _, gkr, zc, jagged = msgs
 
     # gpu_z_row.txt is SP1's `zeta` -- the LogUp-GKR evaluation point's row tail
     # (eval_point[-MAX_LOG_ROW_COUNT:], the GKR logup_evaluations.point), NOT the
