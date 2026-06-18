@@ -33,7 +33,7 @@ ZKX_GPU_PLUGIN_PATH=<composite-capable plugin.so> JAX_PLATFORMS=cuda \
 - `_TimedRound` prints **per-stage wall-clock** in ms: `[stage TraceCommitRound]
   X.Yms`, `[stage <LogUpGkr…>] X.Yms`, `[stage <Zerocheck…>] X.Yms`,
   `[stage <JaggedEval…>] X.Yms`. `--runs=2` proves twice in one process: pass 1
-  is cold (XLA/zkx compiles), pass 2 is **warm** (executables reused) — compare
+  is cold (XLA/ZKX compiles), pass 2 is **warm** (executables reused) — compare
   the warm pass against SP1.
 - **Golden**: the chain's commitment must equal the dump's `main_commit`
   (`gpu_commitment.txt`), the zerocheck point must equal `gpu_z_row.txt`, the
@@ -89,6 +89,7 @@ A block's shards differ in size by >30×: for `rsp_21740136`, shard0 = 38.6 M
 first-layer rows, shard17 = 1.16 M (`gpu_first_layer.txt: height`). Always run
 **both provers on the same `--shard_dir`**; never compare across shards. (A
 relayed "SP1 ~81 ms" was shard0; an earlier sp1-zorch number was shard17.)
+
 ## Reporting discipline — the provenance every number must carry
 
 The premise above (same data / same scope / same output) is what makes a
@@ -114,15 +115,15 @@ is not comparable and should not be quoted:
 - **shard identity** — dump name + shard index. Never compare across shards (see the
   size caveat above).
 - **scope** — which stages, and whether openings / grind / head are in or out.
-- **warm or cold** (+ warmup count). Never report a cold number as warm.
+- **warm or cold** — and, if warm, the warmup count. Never report a cold number as warm.
 - **execution mode** — eager or outer-`@jit` (rule 1).
 - **A/B variable held** — exactly what changed, with everything else pinned. For a
-  zorch-commit A/B: the two zorch SHAs, with the jax wheel **and** the zkx plugin
+  zorch-commit A/B: the two zorch SHAs, with the JAX wheel **and** the ZKX plugin
   build pinned identical across arms (ideally byte-identical — verify by `sha256`).
-- **plugin + pin** — zkx plugin provenance. A from-source `treatment.so` swapped via
+- **plugin + pin** — ZKX plugin provenance. A from-source `treatment.so` swapped via
   `ZKX_GPU_PLUGIN_PATH` is **not interchangeable** with a bumped-pin wheel number.
-- **device** + a same-shell `nvidia-smi` before/after for any memory/perf-sensitive
-  run.
+- **device** — the GPU model, plus a same-shell `nvidia-smi` before/after for any
+  memory/perf-sensitive run.
 - **golden status** — whether byte-match was verified for the measured config
   (`verify_gkr_prove`, `--ffi_verify`).
 
