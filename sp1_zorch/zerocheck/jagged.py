@@ -274,12 +274,18 @@ def prove_jagged_zerocheck(
 
     # C_alpha(0_row), the constant every padded row contributes — probed once
     # per chip; num_real == 0 and constraint-less chips never trace their
-    # constraint formula.
+    # constraint formula. live_width=1 keeps the single probe row (0 < 1) so
+    # the value is byte-identical, but declaring the bound routes this eval
+    # through the compact loop-form emitter instead of the monolithic CSE
+    # unroll a non-bounded wide circuit triggers (fractalyze/zkx#702).
     adjs = [
         zero
         if nrs[i] == 0 or alphas[i].shape[-1] == 0
         else constraint_eval(
-            eval_fns[i], jnp.zeros((1, traces[i].shape[0]), dtype=ef), alphas[i]
+            eval_fns[i],
+            jnp.zeros((1, traces[i].shape[0]), dtype=ef),
+            alphas[i],
+            live_width=1,
         )[0]
         for i in range(num_chips)
     ]
