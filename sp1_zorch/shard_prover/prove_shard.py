@@ -18,6 +18,7 @@ from typing import Any
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax import Array
 from rw_constraints import Chip
 from zk_dtypes import koalabearx4_mont
@@ -155,12 +156,14 @@ class TraceCommitRound(Round):
         vk: MachineVerifyingKey,
         chip_metadata: Array,
         jit: bool = False,
+        offload_commit_rounds: bool = False,
     ) -> None:
         self._smcs = smcs
         self._log_blowup = log_blowup
         self._vk = vk
         self._chip_metadata = chip_metadata
         self._jit = jit
+        self._offload_commit_rounds = offload_commit_rounds
 
     def __call__(
         self, carry: ShardCarry, transcript: Transcript
@@ -188,12 +191,25 @@ class TraceCommitRound(Round):
             )
             commit_data.append(prep_data)
         commit_data.append(main_data)
-        carry = replace(
-            carry,
-            commit_rounds=tuple(
-                StackedRound(d.mle, d.codeword, d.digest_layers) for d in commit_data
-            ),
+        commit_rounds = tuple(
+            StackedRound(d.mle, d.codeword, d.digest_layers) for d in commit_data
         )
+        if self._offload_commit_rounds:
+            # Park the committed witness (full-blowup codeword + digest tree) on
+            # host until the open stage. LogUp-GKR and zerocheck never read it,
+            # but as a carry leaf it would pin those device buffers through
+            # prove_jagged_pyramid's peak -- ~0.65 GiB over a 32 GiB card on rsp
+            # shard17, the OOM that blocks the GPU-vs-GPU baseline
+            # (fractalyze/sp1-zorch#55, #124). np.asarray copies each leaf to
+            # host (blocking until commit is realized); the pre-offload device
+            # tuple plus commit_data are this frame's only remaining references,
+            # so the device buffers release on return -- before the GKR pyramid
+            # allocates -- rather than staying resident through the chain. The
+            # open reloads it (ShardJaggedEvalRound). Pure round-trip:
+            # byte-identical, but host-orchestrated only (a host copy cannot run
+            # inside a single-@jit trace of the whole chain).
+            commit_rounds = jax.tree_util.tree_map(np.asarray, commit_rounds)
+        carry = replace(carry, commit_rounds=commit_rounds)
         return carry, transcript, bound
 
 
@@ -297,11 +313,13 @@ class ShardJaggedEvalRound(Round):
         log_blowup: int,
         num_queries: int,
         pow_bits: int,
+        offload_commit_rounds: bool = False,
     ) -> None:
         self._smcs = smcs
         self._log_blowup = log_blowup
         self._num_queries = num_queries
         self._pow_bits = pow_bits
+        self._offload_commit_rounds = offload_commit_rounds
 
     def __call__(
         self, carry: ShardCarry, transcript: GrindingTranscript
@@ -372,10 +390,21 @@ class ShardJaggedEvalRound(Round):
             blowup=1 << self._log_blowup,
             dtype=main.dense.dtype,
         )
+        # When TraceCommitRound parked the committed witness on host to free
+        # device memory through the GKR + zerocheck stages
+        # (fractalyze/sp1-zorch#55/#124), pull it back to the default device for
+        # the open. Gated on the same flag so the default path -- which keeps
+        # the witness device-resident and stays traceable under one whole-chain
+        # @jit -- adds no host->device copy.
+        commit_rounds = (
+            jax.tree_util.tree_map(jnp.asarray, carry.commit_rounds)
+            if self._offload_commit_rounds
+            else carry.commit_rounds
+        )
         open_proof, transcript = stacked_basefold_open(
             self._smcs,
             code,
-            carry.commit_rounds,
+            commit_rounds,
             eval_msg.outer_sumcheck_point,
             eval_msg.dense_eval,
             main.log_stacking_height,
@@ -402,13 +431,23 @@ def prove_shard_chain(
     pow_bits: int = 0,
     witness: Array | None = None,
     jit: bool = False,
+    offload_commit_rounds: bool = False,
 ) -> ProveChain:
     """The SP1 shard chain. One definition for the stage wiring so the
     benchmark, the byte-match runnables, and proof assembly cannot drift
     on it.
 
     ``jit`` runs the trace-commit tail under ``jax.jit`` (required at rsp scale,
-    see ``sp1_zorch.commit.trace_commit``). Byte-identical either way."""
+    see ``sp1_zorch.commit.trace_commit``). Byte-identical either way.
+
+    ``offload_commit_rounds`` parks the committed witness on host between the
+    commit and the open so its codeword + digest buffers do not stay device-
+    resident through the LogUp-GKR + zerocheck stages -- the ~0.65 GiB that tips
+    rsp shard17's full chain over a 32 GiB card (fractalyze/sp1-zorch#55, #124).
+    Byte-identical (a pure device<->host round-trip), but requires the
+    host-orchestrated ``ProveChain.__call__`` -- it is incompatible with tracing
+    the whole chain under one ``@jit`` (a ``device_get`` cannot run in a trace),
+    so it defaults off and the eager rsp runnable opts in."""
     return ProveChain(
         [
             TraceCommitRound(
@@ -417,6 +456,7 @@ def prove_shard_chain(
                 vk=vk,
                 chip_metadata=chip_metadata,
                 jit=jit,
+                offload_commit_rounds=offload_commit_rounds,
             ),
             LogupGkrRound(
                 gkr_chips,
@@ -431,6 +471,7 @@ def prove_shard_chain(
                 log_blowup=log_blowup,
                 num_queries=open_num_queries,
                 pow_bits=open_pow_bits,
+                offload_commit_rounds=offload_commit_rounds,
             ),
         ]
     )

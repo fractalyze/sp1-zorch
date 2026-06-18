@@ -11,6 +11,7 @@ streams and fails loudly.
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import replace
 
 import jax
@@ -98,6 +99,33 @@ def _u32(a) -> np.ndarray:
 
 def _assert_bytes_equal(got, want, label: str = "") -> None:
     np.testing.assert_array_equal(_u32(got), _u32(want), err_msg=label)
+
+
+def _flatten_arrays(x) -> list:
+    """Every array leaf under ``x`` in deterministic order, recursing through
+    lists/tuples, dicts, and dataclasses — so a proof message flattens without
+    each proof type being a registered pytree. Static scalars (counts, flags)
+    are identical by construction and contribute nothing."""
+    if isinstance(x, (jax.Array, np.ndarray)):
+        return [x]
+    if x is None:
+        return []
+    if isinstance(x, (list, tuple)):
+        return [a for e in x for a in _flatten_arrays(e)]
+    if isinstance(x, dict):
+        return [a for v in x.values() for a in _flatten_arrays(v)]
+    if dataclasses.is_dataclass(x):
+        return [
+            a for f in dataclasses.fields(x) for a in _flatten_arrays(getattr(x, f.name))
+        ]
+    return []
+
+
+def _assert_proof_byte_equal(got, want, label: str) -> None:
+    gs, ws = _flatten_arrays(got), _flatten_arrays(want)
+    assert len(gs) == len(ws), f"{label}: {len(gs)} vs {len(ws)} array leaves"
+    for i, (g, w) in enumerate(zip(gs, ws, strict=True)):
+        _assert_bytes_equal(g, w, f"{label}[{i}]")
 
 
 class ProveShardChainTest(absltest.TestCase):
@@ -212,6 +240,13 @@ class ProveShardChainTest(absltest.TestCase):
         cls.main_region = main_region
         cls.prep_region = prep_region
         cls.public_values = public_values
+        # Retained so the offload-parity test can rebuild the same chain with
+        # ``offload_commit_rounds=True``.
+        cls.smcs = smcs
+        cls.vk = vk
+        cls.gkr_chips = gkr_chips
+        cls.chips = chips
+        cls.metadata = metadata
 
     def test_chain_emits_one_message_per_stage(self) -> None:
         self.assertLen(self.msgs, 4)  # commit, LogUp-GKR, zerocheck, jagged eval
@@ -380,6 +415,49 @@ class ProveShardChainTest(absltest.TestCase):
         _, got = self.got_transcript.sample(1)
         _, want = self.want_transcript.sample(1)
         _assert_bytes_equal(got, want, "post-chain sample")
+
+    def test_offload_commit_rounds_is_byte_identical(self) -> None:
+        """``offload_commit_rounds=True`` parks the committed witness on host
+        through the GKR + zerocheck stages and reloads it for the open -- the
+        fractalyze/sp1-zorch#55/#124 GPU-OOM lever. It is a pure device<->host
+        round-trip, so every stage message -- including the jagged-eval open,
+        the one stage that reads ``commit_rounds`` -- must be byte-identical to
+        the in-device chain, and the parked witness must be host-resident
+        (numpy) yet bit-equal to the device one (lever active AND lossless)."""
+        chain = prove_shard_chain(
+            smcs=self.smcs,
+            log_blowup=_LOG_BLOWUP,
+            vk=self.vk,
+            chip_metadata=self.metadata,
+            gkr_chips=self.gkr_chips,
+            chips=self.chips,
+            num_betas=_NUM_BETAS,
+            num_row_variables=_NUM_ROW_VARIABLES,
+            max_log_row_count=_MAX_LOG_ROW_COUNT,
+            open_num_queries=_OPEN_NUM_QUERIES,
+            offload_commit_rounds=True,
+        )
+        carry = ShardCarry(self.main_region, self.prep_region, self.public_values)
+        transcript = cheap_transcript(BF)
+        got_msgs = []
+        for stage in chain.rounds:
+            carry, transcript, msg = stage(carry, transcript)
+            got_msgs.append(msg)
+
+        for i, (got, want) in enumerate(zip(got_msgs, self.msgs, strict=True)):
+            _assert_proof_byte_equal(got, want, f"stage{i} message")
+
+        # The parked witness left the chain on host, bit-equal to the device one.
+        self.assertIsNotNone(carry.commit_rounds)
+        for parked, resident in zip(
+            carry.commit_rounds, self.carry.commit_rounds, strict=True
+        ):
+            self.assertIsInstance(parked.codeword, np.ndarray)  # host, not device
+            _assert_bytes_equal(parked.codeword, resident.codeword, "parked codeword")
+            for parked_layer, resident_layer in zip(
+                parked.digest_layers, resident.digest_layers, strict=True
+            ):
+                _assert_bytes_equal(parked_layer, resident_layer, "parked digest")
 
     def test_zerocheck_round_rejects_a_chain_without_gkr(self) -> None:
         round_ = ShardZerocheckRound(
