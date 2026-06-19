@@ -202,12 +202,13 @@ class TraceCommitRound(Round):
         # host round-trip would not).
         commit_data = []
         if carry.prep_region is not None:
-            # The prep region stays eager and full regardless of the knob: it is
-            # far below the main region's memory scale (SP1 keeps preprocessed
-            # resident too), and its different shape would cost a second
-            # full-pipeline compile for no benefit.
+            # Same @jit knob as main: committing prep eagerly de-fuses the
+            # Merkle fold into ~5k tiny generic-fusion launches (#137).
             _, prep_data = commit_region(
-                carry.prep_region, self._smcs, log_blowup=self._log_blowup
+                carry.prep_region,
+                self._smcs,
+                log_blowup=self._log_blowup,
+                jit=self._jit,
             )
             commit_data.append(prep_data)
         commit_data.append(main_data)
