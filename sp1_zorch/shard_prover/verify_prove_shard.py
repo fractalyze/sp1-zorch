@@ -48,8 +48,8 @@ processes, set ``JAX_COMPILATION_CACHE_DIR`` to a per-toolchain directory so
 every run after the first skips the compiles; leave it unset for byte-match
 gates (a cache shared across toolchains has served wrong executables).
 
-``--stop_after_commit`` runs + byte-checks only the trace-commit stage and
-stops -- a fast iteration loop that skips the downstream stages' compiles.
+``--max_stage=N`` runs + byte-checks only the first N stages (1=trace-commit ..
+4=full), a cheaper loop that skips the downstream stages' compile.
 ``--drop_main_codeword`` (default on) drops the main codeword at commit and
 re-encodes it at the open (SP1's drop_ldes) so it never pins ~6 GB through GKR +
 zerocheck; pass ``=false`` to keep it resident (small shards / >32 GB cards).
@@ -86,7 +86,6 @@ from sp1_zorch.shard_prover.prove_shard import (
 )
 from sp1_zorch.shard_prover.replay import (
     MAX_LOG_ROW_COUNT,
-    clone_diag,
     fresh_transcript,
     shard_regions,
 )
@@ -126,22 +125,13 @@ _RUNS = flags.DEFINE_integer(
     "warm per-stage times are the ones to compare against SP1's native prover. "
     "Golden checks run on the final pass.",
 )
-_STOP_AFTER_GKR = flags.DEFINE_bool(
-    "stop_after_gkr",
-    False,
-    "Run + byte-check the chain only through the LogUp-GKR stage (trace commit "
-    "+ LogUp-GKR), sidestepping the downstream zerocheck Global-chip compile "
-    "cliff (fractalyze/sp1-zorch#123). Checks the commitment and the in-chain "
-    "post_gkr_diag seal; skips the zerocheck/jagged checks and --ffi_verify.",
-)
-_STOP_AFTER_COMMIT = flags.DEFINE_bool(
-    "stop_after_commit",
-    False,
-    "Run + byte-check the chain only through the trace-commit stage (the "
-    "commitment vs gpu_commitment.main_commit), then stop -- skips LogUp-GKR, "
-    "zerocheck, jagged-eval and --ffi_verify. A trace-commit iteration loop "
-    "that avoids the downstream stages' multi-minute compiles. Mirrors the "
-    "LogUp-GKR --stop_after_gkr split.",
+_MAX_STAGE = flags.DEFINE_integer(
+    "max_stage",
+    4,
+    "Run + byte-check only the first N stages, then stop: 1=trace-commit, "
+    "2=+LogUp-GKR, 3=+zerocheck, 4=full chain (default). Cuts the downstream "
+    "stages' multi-minute compile for a cheaper iteration loop; golden checks "
+    "for stages beyond N are skipped.",
 )
 _DROP_MAIN_CODEWORD = flags.DEFINE_bool(
     "drop_main_codeword",
@@ -193,11 +183,11 @@ def main(argv) -> None:
         Sponge(perm, SpongeParams(rate=8, out=8)),
         Compression(perm, CompressionParams(arity=2, chunk=8)),
     )
-    # The GKR witness is consumed only by LogUp-GKR; a commit-only run
-    # (--stop_after_commit) slices that stage off, so don't require the gkr
-    # fixture for it.
+    # The GKR witness is consumed only by LogUp-GKR; a trace-commit-only run
+    # (--max_stage=1) slices that stage off, so don't require the gkr fixture.
+    n = max(1, min(4, _MAX_STAGE.value))
     witness = None
-    if not _STOP_AFTER_COMMIT.value:
+    if n >= 2:
         gkr_state = _parse_kv_lines(
             (shard_dir / "gpu_gkr_state.txt").read_text(), skip_unkeyed=True
         )
@@ -227,34 +217,33 @@ def main(argv) -> None:
         # for the rsp path, --drop_main_codeword=false keeps it resident.
         drop_main_codeword=_DROP_MAIN_CODEWORD.value,
     )
-    if _STOP_AFTER_GKR.value:
-        # Validate + time only through the LogUp-GKR stage (trace commit +
-        # LogUp-GKR), sidestepping the zerocheck Global-chip compile cliff
-        # (fractalyze/sp1-zorch#123).
-        chain.rounds = chain.rounds[:2]
-    chain.rounds = [_TimedRound(rnd) for rnd in chain.rounds]
-    if _STOP_AFTER_COMMIT.value:
-        # ProveChain collects one message per round, so a one-round chain runs
-        # and times only the trace-commit stage and yields just the commitment.
-        chain.rounds = chain.rounds[:1]
+    # Slice to the first N stages (--max_stage) so the downstream stages' compile
+    # is skipped for a cheaper loop. ProveChain collects one message per round,
+    # so msgs[:n] are exactly the stages that ran.
+    rounds = chain.rounds[:n]
 
-    # Prove ``--runs`` times. Run 1 pays the XLA/zkx compile; warm runs reuse
-    # the compiled executables, so their per-stage times are what's comparable
-    # to SP1's native prover (whose first compile is amortized too). The golden
-    # checks below run on the final pass's outputs.
+    # Prove ``--runs`` times: run 1 pays the XLA/zkx compile, runs 2+ reuse it.
+    # Each Round is jitted (prove_shard_chain(jit=True)); _TimedRound blocks after
+    # each stage to print its wall-clock, so the per-stage split is visible. That
+    # wall is host-dispatch-bound, not GPU compute -- for an honest per-stage GPU
+    # number use nsys kernel-active time on the warm pass (#124).
     runs = _RUNS.value
+    chain.rounds = [_TimedRound(rnd) for rnd in rounds]
     for i in range(runs):
         kind = "cold" if i == 0 else "warm"
-        print(f"=== prove pass {i + 1}/{runs} ({kind}) ===", flush=True)
+        print(
+            f"=== prove pass {i + 1}/{runs} ({kind}, stages 1..{n}) ===",
+            flush=True,
+        )
         t0 = time.monotonic()
-        carry, last_transcript, msgs = chain(
+        carry, _, msgs = chain(
             ShardCarry(main_region, prep_region, main.public_values),
             fresh_transcript(),
         )
         print(f"chain run: {(time.monotonic() - t0) * 1e3:.1f}ms", flush=True)
-
-    # The trace commit the chain computed must equal SP1's dumped commitment;
-    # gpu_commitment.txt carries canonical integers, so encode to compare.
+    # Golden checks for the stages that ran (msgs has one entry per stage).
+    # The trace commit must equal SP1's dumped commitment; gpu_commitment.txt
+    # carries canonical integers, so encode to compare.
     commitment = msgs[0]
     commit_kv = _parse_kv_lines((shard_dir / "gpu_commitment.txt").read_text())
     want_commit = jnp.array(_parse_int_list(commit_kv["main_commit"]), F)
@@ -262,67 +251,49 @@ def main(argv) -> None:
         "commitment vs gpu_commitment.main_commit", commitment, want_commit
     )
 
-    if _STOP_AFTER_COMMIT.value:
-        if not ok:
-            sys.exit(1)
-        print("prove_shard chain (stop_after_commit) byte-match: ALL OK")
-        return
-
-    if _STOP_AFTER_GKR.value:
-        # The post-GKR transcript seal is the challenger after every GKR round
-        # poly + opening absorbed, so matching it seals the chain through this
-        # stage (the same scalar verify_gkr_prove pins on the replay path).
-        post = _parse_kv_lines((shard_dir / "gpu_post_gkr_diag.txt").read_text())
+    gkr = zc = jagged = None
+    if n >= 2:
+        # gpu_z_row.txt is SP1's `zeta` -- the LogUp-GKR evaluation point's row
+        # tail (eval_point[-MAX_LOG_ROW_COUNT:], the GKR logup_evaluations.point),
+        # NOT the zerocheck sumcheck point. zeta is a sponge image of every byte
+        # observed through the GKR leg, so matching it seals the preamble + GKR
+        # leg; the zerocheck rounds are sealed by final_eval below. Mirrors
+        # zerocheck/verify_zerocheck.py's `zeta (z_row)` check.
+        gkr = msgs[1]
+        z_row = _parse_ef_list((shard_dir / "gpu_z_row.txt").read_text())
         ok &= check_match(
-            "post_gkr_diag (in-chain GKR seal)",
-            clone_diag(last_transcript),
-            int(post["post_gkr_diag"]),
+            "zeta (gkr eval-point row tail) vs gpu_z_row",
+            gkr.eval_point[-MAX_LOG_ROW_COUNT:],
+            z_row,
         )
-        if not ok:
-            sys.exit(1)
-        print("prove_shard chain byte-match (through LogUp-GKR): ALL OK")
-        return
-
-    _, gkr, zc, jagged = msgs
-
-    # gpu_z_row.txt is SP1's `zeta` -- the LogUp-GKR evaluation point's row tail
-    # (eval_point[-MAX_LOG_ROW_COUNT:], the GKR logup_evaluations.point), NOT the
-    # zerocheck sumcheck point. zeta is a sponge image of every byte observed
-    # through the GKR leg, so matching it seals the preamble + GKR leg; the
-    # zerocheck rounds are sealed by final_eval below (the zerocheck point itself
-    # is not dumped to a txt). Mirrors zerocheck/verify_zerocheck.py's `zeta
-    # (z_row)` check, the authoritative per-stage version.
-    z_row = _parse_ef_list((shard_dir / "gpu_z_row.txt").read_text())
-    ok &= check_match(
-        "zeta (gkr eval-point row tail) vs gpu_z_row",
-        gkr.eval_point[-MAX_LOG_ROW_COUNT:],
-        z_row,
-    )
-    state = _parse_kv_lines(
-        (shard_dir / "gpu_zerocheck_state.txt").read_text().split("\nchip ")[0]
-    )
-    ok &= check_match(
-        "final_eval",
-        eval_coeffs(zc.msgs.round_poly[-1], zc.msgs.challenge[-1]),
-        _parse_ef_list(state["final_eval"])[0],
-    )
-
-    # The jagged eval's outer sumcheck claim seals z_col + the column-claim
-    # assembly: claim = Sum_c eq(z_col, c) * column_claim[c].
-    phase4_claim = _parse_ef_list(
-        (shard_dir / "phase4_sumcheck_claim.txt").read_text()
-    )[0]
-    ok &= check_match(
-        "phase4 outer sumcheck claim",
-        jagged.eval.outer_sumcheck_claim,
-        phase4_claim,
-    )
+    if n >= 3:
+        zc = msgs[2]
+        state = _parse_kv_lines(
+            (shard_dir / "gpu_zerocheck_state.txt").read_text().split("\nchip ")[0]
+        )
+        ok &= check_match(
+            "final_eval",
+            eval_coeffs(zc.msgs.round_poly[-1], zc.msgs.challenge[-1]),
+            _parse_ef_list(state["final_eval"])[0],
+        )
+    if n >= 4:
+        # The jagged eval's outer sumcheck claim seals z_col + the column-claim
+        # assembly: claim = Sum_c eq(z_col, c) * column_claim[c].
+        jagged = msgs[3]
+        phase4_claim = _parse_ef_list(
+            (shard_dir / "phase4_sumcheck_claim.txt").read_text()
+        )[0]
+        ok &= check_match(
+            "phase4 outer sumcheck claim",
+            jagged.eval.outer_sumcheck_claim,
+            phase4_claim,
+        )
 
     if not ok:
         sys.exit(1)
-    print("prove_shard chain byte-match: ALL OK")
+    print(f"prove_shard chain (stages 1..{n}) byte-match: ALL OK")
 
-    if _FFI_VERIFY.value:
+    if n >= 4 and _FFI_VERIFY.value:
         t0 = time.monotonic()
         vk_bytes = encode_vk(shard.vk)
         proof_bytes = encode_shard_proof(
