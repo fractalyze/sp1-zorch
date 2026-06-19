@@ -32,6 +32,18 @@ from sp1_zorch.commit.smcs import SingleMatrixCommitmentScheme
 from zorch.coding.reed_solomon import BitReversedReedSolomon
 
 
+def committed_codeword(code: BitReversedReedSolomon, message: Array) -> Array:
+    """The committed codeword in the stacked open's ``[S*blowup, K]`` layout:
+    the bit-reversed RS encode of the ``[K, S]`` message, transposed.
+
+    The commit (here) and the ``drop_ldes`` re-encode at the open
+    (``sp1_zorch.jagged.open``) must produce byte-identical codewords for the
+    Merkle query paths to authenticate against the commitment, so both recover it
+    through this one transform rather than two textually-independent encodes.
+    """
+    return code.encode(message).T
+
+
 @partial(
     jax.tree_util.register_dataclass,
     data_fields=[
@@ -54,11 +66,14 @@ class TraceCommitData:
     ``codeword`` are the stacked open's per-region witness — the ``[S, K]``
     message matrix and the committed ``[S*blowup, K]`` bit-reversed leaves —
     so the opening stage reproves at the eval point without recommitting.
+    ``codeword`` is ``None`` when committed with ``drop_codeword=True`` (SP1's
+    drop_ldes): the open re-encodes it from ``mle`` rather than holding the
+    ~6 GB blow-up device-resident through the chain.
     """
 
     dense: Array
     mle: Array
-    codeword: Array
+    codeword: Array | None
     digest_layers: list[Array]
     row_counts: Array
     column_counts: Array
@@ -72,7 +87,8 @@ def _commit(
     *,
     smcs: SingleMatrixCommitmentScheme,
     log_blowup: int,
-) -> tuple[Array, Array, Array, list[Array], Array]:
+    drop_codeword: bool = False,
+) -> tuple[Array, Array, Array | None, list[Array], Array]:
     """The whole device-side commit, shared by the eager and @jit paths.
 
     Everything that touches poseidon2 lives in one program: the structure bind
@@ -90,21 +106,28 @@ def _commit(
     code = BitReversedReedSolomon(
         message_len=message.shape[-1], blowup=1 << log_blowup, dtype=message.dtype
     )
-    codeword = code.encode(message)
+    codeword_t = committed_codeword(code, message)
 
     # Codeword rows are the Merkle leaves; SMCS binds (log_height, width), then
     # the structure hash pins the jagged chip layout into the commitment.
-    commitment, digest_layers = smcs.commit(codeword.T)
+    commitment, digest_layers = smcs.commit(codeword_t)
     bound = smcs.bind_structure(commitment, row_counts, column_counts)
     # Column k of the [S, K] message matrix is dense block k (the open
-    # evaluates each column at the stack point).
-    return bound, message.T, codeword.T, digest_layers, commitment
+    # evaluates each column at the stack point). ``drop_codeword`` (SP1's
+    # drop_ldes) omits the ~6 GB codeword from the @jit outputs so XLA frees it
+    # right after the Merkle commit instead of pinning it device-resident
+    # through the chain; the open re-encodes it via ``committed_codeword``
+    # (fractalyze/sp1-zorch#55, #124).
+    out_codeword = None if drop_codeword else codeword_t
+    return bound, message.T, out_codeword, digest_layers, commitment
 
 
 # ``smcs`` is a static arg keyed by object identity (the scheme defines no
 # __eq__/__hash__): every call site must reuse one instance per process, or
 # each fresh instance silently recompiles the full poseidon2/Merkle pipeline.
-_commit_jit = jax.jit(_commit, static_argnames=("smcs", "log_blowup"))
+_commit_jit = jax.jit(
+    _commit, static_argnames=("smcs", "log_blowup", "drop_codeword")
+)
 
 
 def commit_region(
@@ -113,11 +136,16 @@ def commit_region(
     *,
     log_blowup: int,
     jit: bool = False,
+    drop_codeword: bool = False,
 ) -> tuple[Array, TraceCommitData]:
     """Commit a packed region; returns ``(bound_commitment, prover_data)``.
 
     ``jit`` runs the commit tail as one fused graph — required at rsp scale
     on a 32 GB device (see the module docstring). Byte-identical either way.
+
+    ``drop_codeword`` (SP1's drop_ldes) returns ``TraceCommitData.codeword =
+    None`` and never materializes the ~6 GB blow-up as an output, so it does not
+    stay device-resident through the chain; the open re-encodes it from ``mle``.
     """
     S = 1 << region.log_stacking_height
     dense = region.dense
@@ -134,7 +162,12 @@ def commit_region(
     column_counts = jnp.array(region.column_counts, dtype=dense.dtype)
     tail = _commit_jit if jit else _commit
     bound, mle, codeword_t, digest_layers, commitment = tail(
-        message, row_counts, column_counts, smcs=smcs, log_blowup=log_blowup
+        message,
+        row_counts,
+        column_counts,
+        smcs=smcs,
+        log_blowup=log_blowup,
+        drop_codeword=drop_codeword,
     )
     return bound, TraceCommitData(
         dense=dense,
