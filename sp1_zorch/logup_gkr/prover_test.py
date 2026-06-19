@@ -248,6 +248,22 @@ class ProveLogupGkrTest(absltest.TestCase):
                 pow_bits=12,
             )
 
+    def test_negative_pow_bits_rejected(self) -> None:
+        # Fail closed at the stage boundary -- a negative bit count would
+        # otherwise fall through to the zero-bit replay path.
+        gkr_chips = [GkrChip("A", (_interaction(0, 1),))]
+        region = _region(_main(8), names=("A",))
+        with self.assertRaises(ValueError):
+            prove_logup_gkr(
+                gkr_chips,
+                region,
+                None,
+                cheap_transcript(F),
+                num_betas=3,
+                num_row_variables=3,
+                pow_bits=-1,
+            )
+
     def test_pow_bits_zero_keeps_a_passed_witness(self) -> None:
         # pow_bits == 0 with no witness defaults to a zero that only advances
         # the stream. A *passed* witness at pow_bits == 0 is a recorded-witness

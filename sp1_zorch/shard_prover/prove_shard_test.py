@@ -39,6 +39,7 @@ from sp1_zorch.shard_prover.prove_shard import (
     preamble_chip_metadata,
     prove_shard_chain,
 )
+from sp1_zorch.shard_prover.replay import JitPermutation
 from sp1_zorch.shard_prover.types import MachineVerifyingKey
 from sp1_zorch.zerocheck.stage import prove_shard_zerocheck
 
@@ -119,7 +120,9 @@ def _flatten_arrays(x) -> list:
         return [a for k in sorted(x) for a in _flatten_arrays(x[k])]
     if dataclasses.is_dataclass(x):
         return [
-            a for f in dataclasses.fields(x) for a in _flatten_arrays(getattr(x, f.name))
+            a
+            for f in dataclasses.fields(x)
+            for a in _flatten_arrays(getattr(x, f.name))
         ]
     return []
 
@@ -225,6 +228,21 @@ class ProveShardChainTest(absltest.TestCase):
             max_log_row_count=_MAX_LOG_ROW_COUNT,
             open_num_queries=_OPEN_NUM_QUERIES,
         )
+        # A jit=True twin for the lowering smoke (sp1-zorch#119): same wiring,
+        # the LogUp-GKR body staged under one outer @jit.
+        cls.jit_chain = prove_shard_chain(
+            smcs=smcs,
+            log_blowup=_LOG_BLOWUP,
+            vk=vk,
+            chip_metadata=metadata,
+            gkr_chips=gkr_chips,
+            chips=chips,
+            num_betas=_NUM_BETAS,
+            num_row_variables=_NUM_ROW_VARIABLES,
+            max_log_row_count=_MAX_LOG_ROW_COUNT,
+            open_num_queries=_OPEN_NUM_QUERIES,
+            jit=True,
+        )
         # The full four-stage chain runs eagerly on CPU: the jagged-eval
         # stage's base->extension embeds keep its EF->PF converts off the CPU
         # path (jax#168), so the open executes. The hand replay stops at
@@ -294,25 +312,33 @@ class ProveShardChainTest(absltest.TestCase):
         _assert_bytes_equal(got.msgs.round_poly, want.msgs.round_poly, "round_poly")
         _assert_bytes_equal(got.msgs.challenge, want.msgs.challenge, "challenge")
 
-    def test_chain_lowers_under_single_jit(self) -> None:
-        """The whole chain traces as one ``@jit`` region: no stage forces a
-        host sync that would split it. The carry is built inside the traced
-        function (so this needs no pytree registration of ``ShardCarry``);
-        backend compile stays GPU's job — poseidon2 has no CPU fusion emitter
-        and CPU jit miscompiles field dots (fractalyze/jax#168) — so the smoke
-        stops at StableHLO lowering."""
-
+    def _assert_chain_lowers(self, chain) -> None:
+        # The carry is built inside the traced function (so this needs no pytree
+        # registration of ``ShardCarry``); backend compile stays GPU's job --
+        # poseidon2 has no CPU fusion emitter and CPU jit miscompiles field dots
+        # (fractalyze/jax#168) -- so the smoke stops at StableHLO lowering.
         def run(dense, public_values, transcript):
             carry = ShardCarry(
                 replace(self.main_region, dense=dense), self.prep_region, public_values
             )
-            _, out_transcript, _ = self.chain(carry, transcript)
+            _, out_transcript, _ = chain(carry, transcript)
             return out_transcript
 
         lowered = jax.jit(run).lower(
             self.main_region.dense, self.public_values, cheap_transcript(BF)
         )
         self.assertIn("func", lowered.as_text())
+
+    def test_chain_lowers_under_single_jit(self) -> None:
+        """The whole chain traces as one ``@jit`` region: no stage forces a host
+        sync that would split it."""
+        self._assert_chain_lowers(self.chain)
+
+    def test_jit_chain_lowers_with_logup_gkr_staged(self) -> None:
+        """``prove_shard_chain(jit=True)`` stages the grind-free LogUp-GKR body
+        under one outer ``@jit`` (sp1-zorch#119): the body traces cleanly with no
+        stray host-side ``bool(ok)`` leaking past the eager grind."""
+        self._assert_chain_lowers(self.jit_chain)
 
     def test_jaggedregion_is_a_pytree_with_only_dense_as_leaf(self) -> None:
         """JaggedRegion registers ``dense`` as its sole array leaf; the layout
@@ -522,6 +548,26 @@ class PreambleChipMetadataTest(absltest.TestCase):
         got = preamble_chip_metadata(("ab", "c"), (6, 4), dtype=BF)
         want = jnp.array([2, 6, 2, ord("a"), ord("b"), 4, 1, ord("c")], dtype=BF)
         _assert_bytes_equal(got, want, "chip metadata")
+
+
+class JitPermutationTest(absltest.TestCase):
+    """JitPermutation rides as a static meta_field in DuplexTranscript, so it
+    keys the jit cache whenever a transcript is a jit argument (the production
+    LogUp-GKR stage, LogupGkrRound(jit=True)). Value-equality forwarded from the
+    inner Poseidon2 is what lets a fresh same-config transcript reuse the
+    compiled stage instead of recompiling per prove -- without it every
+    fresh_transcript() is a new cache key."""
+
+    def test_same_config_wrappers_are_equal_and_hash_equal(self) -> None:
+        a = JitPermutation(Poseidon2(koalabear16_params()))
+        b = JitPermutation(Poseidon2(koalabear16_params()))
+        self.assertIsNot(a, b)  # distinct objects, as fresh_transcript() builds
+        self.assertEqual(a, b)
+        self.assertEqual(hash(a), hash(b))
+
+    def test_distinct_from_a_non_jitpermutation(self) -> None:
+        p = Poseidon2(koalabear16_params())
+        self.assertNotEqual(JitPermutation(p), p)
 
 
 if __name__ == "__main__":
