@@ -18,7 +18,6 @@ from typing import Any
 
 import jax
 import jax.numpy as jnp
-import numpy as np
 from jax import Array
 from rw_constraints import Chip
 from zk_dtypes import koalabearx4_mont
@@ -159,20 +158,24 @@ class TraceCommitRound(Round):
         vk: MachineVerifyingKey,
         chip_metadata: Array,
         jit: bool = False,
-        offload_commit_rounds: bool = False,
+        drop_main_codeword: bool = False,
     ) -> None:
         self._smcs = smcs
         self._log_blowup = log_blowup
         self._vk = vk
         self._chip_metadata = chip_metadata
         self._jit = jit
-        self._offload_commit_rounds = offload_commit_rounds
+        self._drop_main_codeword = drop_main_codeword
 
     def __call__(
         self, carry: ShardCarry, transcript: Transcript
     ) -> tuple[ShardCarry, Transcript, Array]:
         bound, main_data = commit_region(
-            carry.main_region, self._smcs, log_blowup=self._log_blowup, jit=self._jit
+            carry.main_region,
+            self._smcs,
+            log_blowup=self._log_blowup,
+            jit=self._jit,
+            drop_codeword=self._drop_main_codeword,
         )
         _, transcript, _ = PreambleRound(
             vk=self._vk,
@@ -184,11 +187,25 @@ class TraceCommitRound(Round):
         # prep region is bound into the vk at setup, not re-observed here, but
         # the open still reproves it, so commit it for its codeword too. Order
         # is [prep, main], matching SP1's round_evaluation_claims.
+        #
+        # With ``drop_main_codeword`` the main round carries only its mle +
+        # digest tree, mirroring SP1's drop_ldes (codeword_mle: Option, dropped
+        # after commit and re-encoded at open --
+        # https://github.com/fractalyze/sp1/blob/7abe1a690/sp1-gpu/crates/basefold/src/fri.rs#L108).
+        # Its ~6 GB full-blowup codeword is
+        # dropped at commit (TraceCommitData.codeword is None) and re-encoded at
+        # the open, so it never pins device memory through the LogUp-GKR +
+        # zerocheck stages -- the ~0.65 GiB that tips rsp shard17's full chain
+        # over a 32 GiB card and OOMs the GPU-vs-GPU baseline
+        # (fractalyze/sp1-zorch#55, #124). Re-encoding is the same coset DFT, so
+        # the open stays byte-identical and remains traceable under one @jit (a
+        # host round-trip would not).
         commit_data = []
         if carry.prep_region is not None:
-            # The prep region stays eager regardless of the knob: it is far
-            # below the main region's memory scale, and its different shape
-            # would cost a second full-pipeline compile for no benefit.
+            # The prep region stays eager and full regardless of the knob: it is
+            # far below the main region's memory scale (SP1 keeps preprocessed
+            # resident too), and its different shape would cost a second
+            # full-pipeline compile for no benefit.
             _, prep_data = commit_region(
                 carry.prep_region, self._smcs, log_blowup=self._log_blowup
             )
@@ -197,21 +214,6 @@ class TraceCommitRound(Round):
         commit_rounds = tuple(
             StackedRound(d.mle, d.codeword, d.digest_layers) for d in commit_data
         )
-        if self._offload_commit_rounds:
-            # Park the committed witness (full-blowup codeword + digest tree) on
-            # host until the open stage. LogUp-GKR and zerocheck never read it,
-            # but as a carry leaf it would pin those device buffers through
-            # prove_jagged_pyramid's peak -- ~0.65 GiB over a 32 GiB card on rsp
-            # shard17, the OOM that blocks the GPU-vs-GPU baseline
-            # (fractalyze/sp1-zorch#55, #124). np.asarray copies each leaf to
-            # host (blocking until commit is realized); the pre-offload device
-            # tuple plus commit_data are this frame's only remaining references,
-            # so the device buffers release on return -- before the GKR pyramid
-            # allocates -- rather than staying resident through the chain. The
-            # open reloads it (ShardJaggedEvalRound). Pure round-trip:
-            # byte-identical, but host-orchestrated only (a host copy cannot run
-            # inside a single-@jit trace of the whole chain).
-            commit_rounds = jax.tree_util.tree_map(np.asarray, commit_rounds)
         carry = replace(carry, commit_rounds=commit_rounds)
         return carry, transcript, bound
 
@@ -405,13 +407,11 @@ class ShardJaggedEvalRound(Round):
         log_blowup: int,
         num_queries: int,
         pow_bits: int,
-        offload_commit_rounds: bool = False,
     ) -> None:
         self._smcs = smcs
         self._log_blowup = log_blowup
         self._num_queries = num_queries
         self._pow_bits = pow_bits
-        self._offload_commit_rounds = offload_commit_rounds
 
     def __call__(
         self, carry: ShardCarry, transcript: GrindingTranscript
@@ -482,21 +482,14 @@ class ShardJaggedEvalRound(Round):
             blowup=1 << self._log_blowup,
             dtype=main.dense.dtype,
         )
-        # When TraceCommitRound parked the committed witness on host to free
-        # device memory through the GKR + zerocheck stages
-        # (fractalyze/sp1-zorch#55/#124), pull it back to the default device for
-        # the open. Gated on the same flag so the default path -- which keeps
-        # the witness device-resident and stays traceable under one whole-chain
-        # @jit -- adds no host->device copy.
-        commit_rounds = (
-            jax.tree_util.tree_map(jnp.asarray, carry.commit_rounds)
-            if self._offload_commit_rounds
-            else carry.commit_rounds
-        )
+        # A round whose codeword TraceCommitRound dropped (drop_main_codeword)
+        # carries only its mle + digest tree; stacked_basefold_open re-encodes
+        # the codeword from the mle. No host<->device round-trip, so the open
+        # stays traceable under one whole-chain @jit.
         open_proof, transcript = stacked_basefold_open(
             self._smcs,
             code,
-            commit_rounds,
+            carry.commit_rounds,
             eval_msg.outer_sumcheck_point,
             eval_msg.dense_eval,
             main.log_stacking_height,
@@ -523,7 +516,7 @@ def prove_shard_chain(
     pow_bits: int = 0,
     witness: Array | None = None,
     jit: bool = False,
-    offload_commit_rounds: bool = False,
+    drop_main_codeword: bool = False,
 ) -> ProveChain:
     """The SP1 shard chain. One definition for the stage wiring so the
     benchmark, the byte-match runnables, and proof assembly cannot drift
@@ -534,14 +527,13 @@ def prove_shard_chain(
     LogUp-GKR body, whose warm prove is otherwise host-dispatch-bound and leaves
     the GPU ~idle (sp1-zorch#119). Byte-identical either way.
 
-    ``offload_commit_rounds`` parks the committed witness on host between the
-    commit and the open so its codeword + digest buffers do not stay device-
-    resident through the LogUp-GKR + zerocheck stages -- the ~0.65 GiB that tips
-    rsp shard17's full chain over a 32 GiB card (fractalyze/sp1-zorch#55, #124).
-    Byte-identical (a pure device<->host round-trip), but requires the
-    host-orchestrated ``ProveChain.__call__`` -- it is incompatible with tracing
-    the whole chain under one ``@jit`` (a ``device_get`` cannot run in a trace),
-    so it defaults off and the eager rsp runnable opts in."""
+    ``drop_main_codeword`` (SP1's drop_ldes) drops the main region's ~6 GB
+    full-blowup codeword at commit and re-encodes it from the message MLE at the
+    open, so it never stays device-resident through the LogUp-GKR + zerocheck
+    stages -- the ~0.65 GiB that tips rsp shard17's full chain over a 32 GiB card
+    (fractalyze/sp1-zorch#55, #124). Byte-identical (re-encode is the same coset
+    DFT) and, unlike a host offload, traceable under one whole-chain ``@jit``. It
+    defaults off (witness fully resident) and the rsp runnable opts in."""
     return ProveChain(
         [
             TraceCommitRound(
@@ -550,7 +542,7 @@ def prove_shard_chain(
                 vk=vk,
                 chip_metadata=chip_metadata,
                 jit=jit,
-                offload_commit_rounds=offload_commit_rounds,
+                drop_main_codeword=drop_main_codeword,
             ),
             LogupGkrRound(
                 gkr_chips,
@@ -566,7 +558,6 @@ def prove_shard_chain(
                 log_blowup=log_blowup,
                 num_queries=open_num_queries,
                 pow_bits=open_pow_bits,
-                offload_commit_rounds=offload_commit_rounds,
             ),
         ]
     )

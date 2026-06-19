@@ -48,6 +48,12 @@ processes, set ``JAX_COMPILATION_CACHE_DIR`` to a per-toolchain directory so
 every run after the first skips the compiles; leave it unset for byte-match
 gates (a cache shared across toolchains has served wrong executables).
 
+``--stop_after_commit`` runs + byte-checks only the trace-commit stage and
+stops -- a fast iteration loop that skips the downstream stages' compiles.
+``--drop_main_codeword`` (default on) drops the main codeword at commit and
+re-encodes it at the open (SP1's drop_ldes) so it never pins ~6 GB through GKR +
+zerocheck; pass ``=false`` to keep it resident (small shards / >32 GB cards).
+
 Exits non-zero on any mismatch.
 """
 
@@ -128,6 +134,25 @@ _STOP_AFTER_GKR = flags.DEFINE_bool(
     "cliff (fractalyze/sp1-zorch#123). Checks the commitment and the in-chain "
     "post_gkr_diag seal; skips the zerocheck/jagged checks and --ffi_verify.",
 )
+_STOP_AFTER_COMMIT = flags.DEFINE_bool(
+    "stop_after_commit",
+    False,
+    "Run + byte-check the chain only through the trace-commit stage (the "
+    "commitment vs gpu_commitment.main_commit), then stop -- skips LogUp-GKR, "
+    "zerocheck, jagged-eval and --ffi_verify. A trace-commit iteration loop "
+    "that avoids the downstream stages' multi-minute compiles. Mirrors the "
+    "LogUp-GKR --stop_after_gkr split.",
+)
+_DROP_MAIN_CODEWORD = flags.DEFINE_bool(
+    "drop_main_codeword",
+    True,
+    "Drop the main region's ~6 GB codeword at commit and re-encode it from the "
+    "message MLE at the open (SP1's drop_ldes), so it never stays device-"
+    "resident through GKR + zerocheck -- clears the rsp full-chain >32 GB OOM "
+    "(#55, #124). True matches the production rsp full chain. Set false to keep "
+    "the codeword resident (the small-shard / >32 GB-card path); false on rsp "
+    "shard17 OOMs.",
+)
 
 
 class _TimedRound(Round):
@@ -168,9 +193,15 @@ def main(argv) -> None:
         Sponge(perm, SpongeParams(rate=8, out=8)),
         Compression(perm, CompressionParams(arity=2, chunk=8)),
     )
-    gkr_state = _parse_kv_lines(
-        (shard_dir / "gpu_gkr_state.txt").read_text(), skip_unkeyed=True
-    )
+    # The GKR witness is consumed only by LogUp-GKR; a commit-only run
+    # (--stop_after_commit) slices that stage off, so don't require the gkr
+    # fixture for it.
+    witness = None
+    if not _STOP_AFTER_COMMIT.value:
+        gkr_state = _parse_kv_lines(
+            (shard_dir / "gpu_gkr_state.txt").read_text(), skip_unkeyed=True
+        )
+        witness = jnp.array(int(gkr_state["witness"]), F)
     chain = prove_shard_chain(
         smcs=smcs,
         log_blowup=_LOG_BLOWUP,
@@ -184,16 +215,17 @@ def main(argv) -> None:
         pow_bits=_GKR_POW_BITS.value,
         open_num_queries=_OPEN_NUM_QUERIES.value,
         open_pow_bits=_OPEN_POW_BITS.value,
-        witness=jnp.array(int(gkr_state["witness"]), F),
+        witness=witness,
         # Required at rsp scale for the commit (see sp1_zorch.commit
         # .trace_commit). The GKR stage keeps its `zorch.sumcheck` composite via
         # the rolled marker, independent of this flag.
         jit=True,
-        # Park the committed witness on host through GKR + zerocheck to clear the
-        # rsp shard17 full-chain OOM (see prove_shard_chain's docstring / #55,
-        # #124). Valid here because this runnable drives the chain eagerly -- a
-        # host copy can't run under a trace. Byte-identical.
-        offload_commit_rounds=True,
+        # Drop the main codeword at commit and re-encode it at the open (SP1's
+        # drop_ldes), so its ~6 GB never stays device-resident through GKR +
+        # zerocheck -- clears the rsp shard17 full-chain >32 GB OOM (see
+        # prove_shard_chain's docstring / #55, #124). Byte-identical; defaults on
+        # for the rsp path, --drop_main_codeword=false keeps it resident.
+        drop_main_codeword=_DROP_MAIN_CODEWORD.value,
     )
     if _STOP_AFTER_GKR.value:
         # Validate + time only through the LogUp-GKR stage (trace commit +
@@ -201,6 +233,10 @@ def main(argv) -> None:
         # (fractalyze/sp1-zorch#123).
         chain.rounds = chain.rounds[:2]
     chain.rounds = [_TimedRound(rnd) for rnd in chain.rounds]
+    if _STOP_AFTER_COMMIT.value:
+        # ProveChain collects one message per round, so a one-round chain runs
+        # and times only the trace-commit stage and yields just the commitment.
+        chain.rounds = chain.rounds[:1]
 
     # Prove ``--runs`` times. Run 1 pays the XLA/zkx compile; warm runs reuse
     # the compiled executables, so their per-stage times are what's comparable
@@ -219,13 +255,18 @@ def main(argv) -> None:
 
     # The trace commit the chain computed must equal SP1's dumped commitment;
     # gpu_commitment.txt carries canonical integers, so encode to compare.
+    commitment = msgs[0]
     commit_kv = _parse_kv_lines((shard_dir / "gpu_commitment.txt").read_text())
     want_commit = jnp.array(_parse_int_list(commit_kv["main_commit"]), F)
-
-    commitment = msgs[0]
     ok = check_match(
         "commitment vs gpu_commitment.main_commit", commitment, want_commit
     )
+
+    if _STOP_AFTER_COMMIT.value:
+        if not ok:
+            sys.exit(1)
+        print("prove_shard chain (stop_after_commit) byte-match: ALL OK")
+        return
 
     if _STOP_AFTER_GKR.value:
         # The post-GKR transcript seal is the challenger after every GKR round

@@ -261,8 +261,8 @@ class ProveShardChainTest(absltest.TestCase):
         cls.main_region = main_region
         cls.prep_region = prep_region
         cls.public_values = public_values
-        # Retained so the offload-parity test can rebuild the same chain with
-        # ``offload_commit_rounds=True``.
+        # Retained so the drop-parity test can rebuild the same chain with
+        # ``drop_main_codeword=True``.
         cls.smcs = smcs
         cls.vk = vk
         cls.gkr_chips = gkr_chips
@@ -445,14 +445,15 @@ class ProveShardChainTest(absltest.TestCase):
         _, want = self.want_transcript.sample(1)
         _assert_bytes_equal(got, want, "post-chain sample")
 
-    def test_offload_commit_rounds_is_byte_identical(self) -> None:
-        """``offload_commit_rounds=True`` parks the committed witness on host
-        through the GKR + zerocheck stages and reloads it for the open -- the
-        fractalyze/sp1-zorch#55/#124 GPU-OOM lever. It is a pure device<->host
-        round-trip, so every stage message -- including the jagged-eval open,
-        the one stage that reads ``commit_rounds`` -- must be byte-identical to
-        the in-device chain, and the parked witness must be host-resident
-        (numpy) yet bit-equal to the device one (lever active AND lossless)."""
+    def test_drop_main_codeword_is_byte_identical(self) -> None:
+        """``drop_main_codeword=True`` (SP1's drop_ldes) drops the main region's
+        full-blowup codeword at commit and re-encodes it from the message MLE at
+        the open, instead of holding it device-resident through GKR + zerocheck
+        -- the fractalyze/sp1-zorch#55/#124 GPU-OOM fix. Re-encoding is the same
+        coset DFT, so every stage message -- including the jagged-eval open, the
+        one stage that reads ``commit_rounds`` -- must be byte-identical to the
+        codeword-resident chain. The main round must carry no codeword (so the
+        blow-up never pins device memory) while the prep round keeps its own."""
         chain = prove_shard_chain(
             smcs=self.smcs,
             log_blowup=_LOG_BLOWUP,
@@ -464,7 +465,7 @@ class ProveShardChainTest(absltest.TestCase):
             num_row_variables=_NUM_ROW_VARIABLES,
             max_log_row_count=_MAX_LOG_ROW_COUNT,
             open_num_queries=_OPEN_NUM_QUERIES,
-            offload_commit_rounds=True,
+            drop_main_codeword=True,
         )
         carry = ShardCarry(self.main_region, self.prep_region, self.public_values)
         transcript = cheap_transcript(BF)
@@ -476,19 +477,13 @@ class ProveShardChainTest(absltest.TestCase):
         for i, (got, want) in enumerate(zip(got_msgs, self.msgs, strict=True)):
             _assert_proof_byte_equal(got, want, f"stage{i} message")
 
-        # The parked witness left the chain on host, bit-equal to the device one.
-        self.assertIsNotNone(carry.commit_rounds)
-        for parked, resident in zip(
-            carry.commit_rounds, self.carry.commit_rounds, strict=True
-        ):
-            # Every retained array (mle, codeword, each digest layer) is parked
-            # on host (numpy, not device); a partial offload that left any on
-            # device would pin buffers through GKR + zerocheck and fail here.
-            leaves = _flatten_arrays(parked)
-            self.assertNotEmpty(leaves)
-            for leaf in leaves:
-                self.assertIsInstance(leaf, np.ndarray)
-            _assert_proof_byte_equal(parked, resident, "parked witness")
+        # The main round dropped its codeword (carries only mle + digest tree);
+        # the prep round kept its own. [prep, main] order.
+        prep_round, main_round = carry.commit_rounds
+        self.assertIsNone(main_round.codeword)
+        self.assertIsNotNone(prep_round.codeword)
+        self.assertIsNotNone(main_round.mle)
+        self.assertNotEmpty(main_round.digest_layers)
 
     def test_zerocheck_round_rejects_a_chain_without_gkr(self) -> None:
         round_ = ShardZerocheckRound(
