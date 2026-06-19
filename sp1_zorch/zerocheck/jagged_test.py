@@ -315,10 +315,10 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
         self.assertEqual(len(bounded), 4 * nchips)
         shapes = {re.search(r"tensor<(\d+x\d+)x", c).group(1) for c in bounded}  # type: ignore[union-attr]
         # One round trace shape per chip — pad4(5)/2 = 4 and pad4(2)/2 = 2
-        # pairs, never one per round. The probe is an 8-row block (NOT 1 row):
-        # the GPU loop-form emitter bails on a size-1 leading dim, so the
-        # multi-row probe shape is load-bearing for the compile-cliff fix.
-        self.assertEqual(shapes, {"4x3", "2x3", "8x3"})
+        # pairs, never one per round. The C_alpha(0_row) probe is a clean 1-row
+        # block: the loop-form emitter engages on a single-row trace as of
+        # fractalyze/zkx#704, so no multi-row pad is needed.
+        self.assertEqual(shapes, {"4x3", "2x3", "1x3"})
 
     @absltest.skipUnless(_HAS_COMPOSITE_OP, "jaxlib lacks stablehlo.CompositeOp")
     def test_round_loop_stays_rolled(self) -> None:

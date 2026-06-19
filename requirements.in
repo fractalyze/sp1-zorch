@@ -19,16 +19,16 @@ numpy
 # (Each dev<timestamp> wheel is a fractalyze/jax build that bakes in jax's zkx
 # pin as of that build, so to pull a specific zkx fix pick a wheel timestamped
 # after that zkx PR merged; CPU-only CI cannot catch a wrong GPU codeword.)
-jax==0.0.5.dev20260618044635
-jaxlib==0.0.5.dev20260618044635
-jax-cuda12-plugin==0.0.5.dev20260618044635
-zkx-cuda-pjrt==0.0.5.dev20260618044635
+jax==0.0.5.dev20260619015425
+jaxlib==0.0.5.dev20260619015425
+jax-cuda12-plugin==0.0.5.dev20260619015425
+zkx-cuda-pjrt==0.0.5.dev20260619015425
 # zk_dtypes ships the native field dtypes jax lowers. It arrives transitively
 # via jax, but the resolver leaves it at the lowest compatible version, which
-# lags the jax build: the dev20260612090739 EF bitcast lowering reads
-# efinfo.modulus_low_coeffs, added in 0.0.6 (absent in 0.0.5). Pin it
-# explicitly so the lock tracks the jax wheel, not an older transitive pick.
-zk-dtypes==0.0.6
+# lags the jax build: 0.0.7 adds the Pallas scalar field (pallas_sf) the jax
+# wheel now references (Pasta GPU MSM, fractalyze/zkx#699). Pin it explicitly
+# so the lock tracks the jax wheel, not an older transitive pick.
+zk-dtypes==0.0.7
 
 # SP1 chip definitions (constraints + LogUp interactions) exported from
 # riscv-witness; consumed by the shard fixture loader. Same pin as whir-zorch.
