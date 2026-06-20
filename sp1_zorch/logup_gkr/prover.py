@@ -32,7 +32,7 @@ from sp1_zorch.commit.region import JaggedRegion
 from sp1_zorch.logup_gkr.circuit import (
     GkrChip,
     _chip_view,
-    generate_circuit_layers,
+    _sp1_schedules,
     generate_first_layer,
 )
 from sp1_zorch.logup_gkr.head import (
@@ -46,6 +46,7 @@ from zorch.logup_gkr.circuit import (
     LogUpGkrOutput,
     extract_jagged_outputs,
     jagged_layer_transition,
+    scan_build_jagged_pyramid,
 )
 from zorch.logup_gkr.jagged_prover import (
     JaggedLayerProof,
@@ -320,13 +321,16 @@ def prove_logup_gkr_body(
     """
     _, transcript, head = HeadChallengesRound(num_betas)(None, transcript)
 
-    # No standalone binding for the first layer -- it is the largest, and a
-    # stray reference would pin it past its round's release below.
-    layers = generate_circuit_layers(
-        generate_first_layer(
-            gkr_chips, main_region, prep_region, head.alpha, head.betas
-        ),
-        num_row_variables,
+    # Build the pyramid as one fused lax.scan over the transitions (zorch's
+    # scan_build_jagged_pyramid) rather than the eager per-transition dispatch
+    # loop -- it collapses the ~20 heterogeneous transition layers into one
+    # traced region, O(1) in the depth (sp1-zorch#143). scan_build reads the
+    # first layer's row_counts to derive SP1's fold schedule, so build it first.
+    first = generate_first_layer(
+        gkr_chips, main_region, prep_region, head.alpha, head.betas
+    )
+    layers = scan_build_jagged_pyramid(
+        first, _sp1_schedules(first.row_counts, num_row_variables)
     )
     output = extract_sp1_outputs(layers[-1])
     carry, transcript, _ = OutputBindRound(output)(None, transcript)
