@@ -33,13 +33,14 @@ from zorch.coding.reed_solomon import BitReversedReedSolomon
 
 
 def committed_codeword(code: BitReversedReedSolomon, message: Array) -> Array:
-    """The committed codeword in the stacked open's ``[S*blowup, K]`` layout:
+    """The committed codeword in the open's leaf-major ``[S*blowup, K]`` layout:
     the bit-reversed RS encode of the ``[K, S]`` message, transposed.
 
-    The commit (here) and the ``drop_ldes`` re-encode at the open
-    (``sp1_zorch.jagged.open``) must produce byte-identical codewords for the
-    Merkle query paths to authenticate against the commitment, so both recover it
-    through this one transform rather than two textually-independent encodes.
+    The open's ``drop_ldes`` re-encode (``sp1_zorch.jagged.open``) recovers the
+    codeword through this transform so its Merkle query paths authenticate
+    against the commitment. The commit itself reads the pre-transpose
+    ``[K, S*blowup]`` encode column-major (``trace_commit._commit``) — same leaf
+    content, no transpose — so this leaf-major form is the open side only.
     """
     return code.encode(message).T
 
@@ -106,19 +107,24 @@ def _commit(
     code = BitReversedReedSolomon(
         message_len=message.shape[-1], blowup=1 << log_blowup, dtype=message.dtype
     )
-    codeword_t = committed_codeword(code, message)
+    # Commit the codeword COLUMN-major: a leaf is a column of the native
+    # [K, S*blowup] encode, so the SMCS leaf-hash reads it directly (SP1's
+    # absorbRow) and the fused commit skips the codeword transpose that
+    # dominated it (fractalyze/sp1-zorch#140). Byte-identical root — leaf r is
+    # column r of [K, N] == row r of the [N, K] leaf-major view.
+    codeword = code.encode(message)
 
-    # Codeword rows are the Merkle leaves; SMCS binds (log_height, width), then
-    # the structure hash pins the jagged chip layout into the commitment.
-    commitment, digest_layers = smcs.commit(codeword_t)
+    # SMCS binds (log_height, width), then the structure hash pins the jagged
+    # chip layout into the commitment.
+    commitment, digest_layers = smcs.commit(codeword)
     bound = smcs.bind_structure(commitment, row_counts, column_counts)
-    # Column k of the [S, K] message matrix is dense block k (the open
-    # evaluates each column at the stack point). ``drop_codeword`` (SP1's
-    # drop_ldes) omits the ~6 GB codeword from the @jit outputs so XLA frees it
-    # right after the Merkle commit instead of pinning it device-resident
-    # through the chain; the open re-encodes it via ``committed_codeword``
-    # (fractalyze/sp1-zorch#55, #124).
-    out_codeword = None if drop_codeword else codeword_t
+    # The retained codeword is the open's Merkle-query input, in the [N, K]
+    # leaf-major layout ``committed_codeword`` produces — so transpose only here
+    # and only when kept. ``drop_codeword`` (SP1's drop_ldes) omits the ~6 GB
+    # blow-up from the @jit outputs (XLA then frees the transpose entirely
+    # instead of pinning it device-resident); the open re-encodes it via
+    # ``committed_codeword`` (fractalyze/sp1-zorch#55, #124).
+    out_codeword = None if drop_codeword else codeword.T
     return bound, message.T, out_codeword, digest_layers, commitment
 
 

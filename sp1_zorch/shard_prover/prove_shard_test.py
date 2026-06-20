@@ -177,6 +177,7 @@ class ProveShardChainTest(absltest.TestCase):
         smcs = SingleMatrixCommitmentScheme(
             Sponge(perm, SpongeParams(rate=8, out=8)),
             Compression(perm, CompressionParams(arity=2, chunk=8)),
+            column_major=True,
         )
         vk = MachineVerifyingKey(
             preprocessed_commit=_rand_bf(9, (8,)),

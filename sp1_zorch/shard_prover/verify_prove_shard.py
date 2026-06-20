@@ -182,6 +182,7 @@ def main(argv) -> None:
     smcs = SingleMatrixCommitmentScheme(
         Sponge(perm, SpongeParams(rate=8, out=8)),
         Compression(perm, CompressionParams(arity=2, chunk=8)),
+        column_major=True,
     )
     # The GKR witness is consumed only by LogUp-GKR; a trace-commit-only run
     # (--max_stage=1) slices that stage off, so don't require the gkr fixture.

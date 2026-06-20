@@ -126,6 +126,7 @@ def small_shard_chain_fixture() -> ShardChainFixture:
     smcs = SingleMatrixCommitmentScheme(
         Sponge(perm, SpongeParams(rate=8, out=8)),
         Compression(perm, CompressionParams(arity=2, chunk=8)),
+        column_major=True,
     )
     chips = {"alpha": _WitnessChip()}
     shared = dict(

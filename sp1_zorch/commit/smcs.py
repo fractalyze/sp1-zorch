@@ -60,16 +60,25 @@ class SingleMatrixCommitmentScheme:
     internal ``MerkleTree``); ``digest_elems`` is the compressor chunk size.
     """
 
-    def __init__(self, sponge: Sponge, compressor: Compression):
+    def __init__(
+        self, sponge: Sponge, compressor: Compression, *, column_major: bool = False
+    ):
         # Keep sponge + compressor too: the domain separator calls them directly
         # and zorch's MerkleTree does not expose its internals.
-        self._tree = MerkleTree(sponge, compressor)
+        self._tree = MerkleTree(sponge, compressor, column_major=column_major)
         self._sponge = sponge
         self._compressor = compressor
         self.digest_elems = compressor.chunk
+        # When True ``commit`` takes a column-major ``[width, height]`` matrix (a
+        # leaf is a column), so the producer can hand the codeword in its native
+        # encode layout without a transpose. ``open``/``verify`` are unaffected —
+        # they re-hash individually-extracted leaf rows, which are the same K
+        # values either way. See fractalyze/sp1-zorch#140.
+        self._column_major = column_major
 
     def commit(self, matrix: Array) -> tuple[Array, list[Array]]:
-        """Commit a base-field ``(height, width)`` matrix (power-of-two height).
+        """Commit a base-field ``(height, width)`` matrix (power-of-two height);
+        column-major instances take it transposed as ``(width, height)``.
 
         Returns ``(commitment, digest_layers)``: the ``(digest_elems,)``
         commitment with SP1's domain separator applied, plus zorch's layered
@@ -90,7 +99,10 @@ class SingleMatrixCommitmentScheme:
                 "matrix (EF commit is the FFI byte-match slice, fractalyze/zorch#37)"
             )
         raw_root, digest_layers = self._tree.commit(matrix)
-        height, width = matrix.shape
+        # Column-major commit takes [width, height]; row-major takes [height, width].
+        height, width = (
+            matrix.shape[::-1] if self._column_major else matrix.shape
+        )
         log_height = log2_strict_usize(height)  # power-of-two enforced by commit
         return self.bind_root(raw_root, log_height, width, matrix.dtype), digest_layers
 
