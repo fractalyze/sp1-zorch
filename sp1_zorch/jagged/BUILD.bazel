@@ -1,4 +1,4 @@
-load("@rules_python//python:defs.bzl", "py_library", "py_test")
+load("@rules_python//python:defs.bzl", "py_binary", "py_library", "py_test")
 load("@sp1_zorch_pip//:requirements.bzl", "requirement")
 
 # SP1-schedule jagged evaluation-proof sumchecks (the sumcheck half of stage 5).
@@ -37,6 +37,30 @@ py_test(
         requirement("jax"),
         requirement("numpy"),
         requirement("zk_dtypes"),
+    ],
+)
+
+# Isolated phase benchmark for the jagged-eval stage (no full shard proof).
+# GPU: deps jax_cuda12_plugin + zkx_cuda_pjrt and run with JAX_PLATFORMS=cuda,
+# else jax silently falls back to CPU.
+py_binary(
+    name = "bench_jagged_eval_phases",
+    srcs = ["bench_jagged_eval_phases.py"],
+    data = glob(["testdata/gpu_fibonacci/**"]) + [
+        "//sp1_zorch/zerocheck:shard_dense_fixture",
+    ],
+    deps = [
+        ":prover",
+        "//sp1_zorch/poseidon2:koalabear16",
+        "//sp1_zorch/shard_prover:replay",
+        "@zorch//zorch:transcript",
+        "@zorch//zorch/hash/poseidon2",
+        "@zorch//zorch/pcs/jagged:poly",
+        requirement("jax"),
+        requirement("jax_cuda12_plugin"),
+        requirement("numpy"),
+        requirement("zk_dtypes"),
+        requirement("zkx_cuda_pjrt"),
     ],
 )
 
