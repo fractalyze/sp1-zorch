@@ -19,10 +19,10 @@ numpy
 # (Each dev<timestamp> wheel is a fractalyze/jax build that bakes in jax's zkx
 # pin as of that build, so to pull a specific zkx fix pick a wheel timestamped
 # after that zkx PR merged; CPU-only CI cannot catch a wrong GPU codeword.)
-jax==0.0.5.dev20260619205416
-jaxlib==0.0.5.dev20260619205416
-jax-cuda12-plugin==0.0.5.dev20260619205416
-zkx-cuda-pjrt==0.0.5.dev20260619205416
+jax==0.0.5.dev20260620104906
+jaxlib==0.0.5.dev20260620104906
+jax-cuda12-plugin==0.0.5.dev20260620104906
+zkx-cuda-pjrt==0.0.5.dev20260620104906
 # zk_dtypes ships the native field dtypes jax lowers. It arrives transitively
 # via jax, but the resolver leaves it at the lowest compatible version, which
 # lags the jax build: 0.0.7 adds the Pallas scalar field (pallas_sf) the jax
