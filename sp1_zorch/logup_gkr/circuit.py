@@ -112,83 +112,123 @@ def _chip_view(region: JaggedRegion, idx: int) -> Array:
     return _chip_view_jit(region.dense, region.chip_starts[idx], h=h, w=w)
 
 
-# Per-chip first-layer @jit closure cache. Eagerly, ~10 ops per interaction x
-# tens of interactions x tens of chips is thousands of dispatches per shard;
-# one closure per chip collapses that to one dispatch per chip chunk. Keyed by
-# the GkrChip itself (name + interactions, both frozen) so a same-named chip
-# with a different interaction set can never hit a stale closure; the
-# structural hash runs once per chip per build, not per @jit call.
-_CHIP_FIRST_LAYER_CACHE: dict = {}
+@partial(jax.jit, static_argnames=("chip",))
+def _chip_first_layer_batched(
+    chip: GkrChip,
+    main_trace: Array,
+    prep_trace: Array | None,
+    alpha: Array,
+    betas: Array,
+) -> tuple[Array, Array, Array, Array]:
+    """One chip's four first-layer planes, interaction-major, as batched field
+    ops rather than a per-interaction Python loop.
 
-# XLA caps kernel buffer args at 1024, which whole-chip closures blow past on
-# curve chips (~1126 interactions); chunks also gate a kernel-size CUDA race
-# observed on KeccakPermuteControl at 256 — 128 byte-matches the SP1 reference
-# on the large-Keccak shards.
-_INTERACTION_CHUNK = 128
-
-
-def _get_chip_first_layer_jit(chip: GkrChip, has_prep: bool, bf_dtype, ef_dtype):
-    """A cached ``fn(main_trace, [prep_trace,] alpha, betas)`` returning the
-    chip's four first-layer parts, chunked per ``_INTERACTION_CHUNK``."""
-    key = (chip, has_prep, bf_dtype, ef_dtype)
-    if key in _CHIP_FIRST_LAYER_CACHE:
-        return _CHIP_FIRST_LAYER_CACHE[key]
-
+    Every multiplicity and value column is an affine form over the trace
+    (``VirtualPairCol``: ``const + Σ wᵢ·colᵢ``). Stacking all forms into one
+    ``[forms, width]`` weight matrix turns the whole per-row eval into a single
+    field matmul ``W @ traceᵀ``; the fingerprint's ``Σ betas[i+1]·valueᵢ`` is an
+    unrolled fold over the chip's (small) widest fingerprint, value forms padded
+    with a zero form so short interactions add a field zero. Field sums are
+    exact, so the result is byte-identical to the per-interaction affine formula
+    (``generate_interaction_vals_batch``) at a fraction of the dispatch count.
+    Matmul + gather + element-wise field mul/add are the only ops -- a field
+    ``segment_sum`` (scatter-add) does not lower on the GPU emitter. The even/odd
+    slot split and fold-neutral padding match ``populateLastCircuitLayer``. The
+    whole build rides one ``@jit`` boundary, so each chip is a single fused
+    dispatch (``generate_first_layer`` runs eagerly, outside any prove jit).
+    """
     interactions = chip.interactions
-    chunks = [
-        interactions[i : i + _INTERACTION_CHUNK]
-        for i in range(0, len(interactions), _INTERACTION_CHUNK)
-    ]
+    num_inter = len(interactions)
+    height, main_w = main_trace.shape
+    bf_dtype = main_trace.dtype  # base field; betas + fingerprint carry the EF
 
-    def _make_chunk_body(chunk_inters):
-        def _body(main_trace, prep_trace, alpha, betas):
-            real_height = main_trace.shape[0]
-            slot_count = 2 * sp1_col_h(real_height)
-            # One shared pad per chunk — the slot shortfall is per-chip, not
-            # per-interaction (even heights enforced by the caller). A
-            # zero-length pad concat folds away under jit, so the full-slot
-            # case needs no separate branch.
-            pad_count = slot_count - real_height // 2
-            pad_n = jnp.zeros(pad_count, dtype=bf_dtype)
-            pad_d = jnp.ones(pad_count, dtype=ef_dtype)
-            n0_parts, n1_parts, d0_parts, d1_parts = [], [], [], []
-            for interaction in chunk_inters:
-                nums, dens = generate_interaction_vals_batch(
-                    interaction, prep_trace, main_trace, alpha, betas
-                )
-                n0_parts.append(jnp.concatenate([nums[0::2], pad_n]))
-                n1_parts.append(jnp.concatenate([nums[1::2], pad_n]))
-                d0_parts.append(jnp.concatenate([dens[0::2], pad_d]))
-                d1_parts.append(jnp.concatenate([dens[1::2], pad_d]))
-            return (
-                jnp.concatenate(n0_parts),
-                jnp.concatenate(n1_parts),
-                jnp.concatenate(d0_parts),
-                jnp.concatenate(d1_parts),
-            )
+    # Fold the preprocessed trace into the column space only when a form actually
+    # reads a prep column. A chip can sit in the prep region without using it,
+    # and its prep view may be a different height (recursion shards keep prep
+    # above main, and it's trimmed per chip), so an unconditional concat would
+    # shape-mismatch. A prep weight with no prep data contributes zero, matching
+    # ``VirtualPairCol.apply_batch``.
+    uses_prep = prep_trace is not None and any(
+        is_prep
+        for it in interactions
+        for vpc in (it.multiplicity, *it.values)
+        for (_col, is_prep, _w) in vpc.column_weights
+    )
+    total_w = main_w + (prep_trace.shape[1] if uses_prep else 0)
 
-        if has_prep:
-            return jax.jit(_body)
+    # Static tables over canonical ints. Duplicate columns within a form are
+    # summed into one weight (field add is exact, so this matches the per-term
+    # sum). Prep weights index into the main|prep column concat below.
+    weight_rows: list[list[int]] = []
+    constants: list[int] = []
+    mult_form: list[int] = []  # [num_inter] form row of each multiplicity
+    mult_sign: list[int] = []  # [num_inter] +1 send / -1 receive
+    kinds: list[int] = []  # [num_inter]
 
-        @jax.jit
-        def _no_prep(main_trace, alpha, betas):
-            return _body(main_trace, None, alpha, betas)
+    def _add_form(vpc) -> int:
+        row = [0] * total_w
+        for col_idx, is_prep, weight in vpc.column_weights:
+            if is_prep:
+                if not uses_prep:
+                    continue  # prep weight with no prep trace -> zero contribution
+                row[main_w + col_idx] += weight
+            else:
+                row[col_idx] += weight
+        weight_rows.append(row)
+        constants.append(vpc.constant)
+        return len(weight_rows) - 1
 
-        return _no_prep
+    for interaction in interactions:
+        mult_form.append(_add_form(interaction.multiplicity))
+        mult_sign.append(1 if interaction.is_send else -1)
+        kinds.append(interaction.kind)
 
-    chunk_fns = [_make_chunk_body(c) for c in chunks]
+    # Value forms padded to the chip's widest fingerprint; unused slots point at
+    # a zero form (weight row of zeros, constant 0 -> evaluates to 0), so the
+    # betas fold below adds a field zero there instead of needing a scatter.
+    max_values = max((len(it.values) for it in interactions), default=0)
+    weight_rows.append([0] * total_w)
+    constants.append(0)
+    zero_form = len(weight_rows) - 1
+    value_idx: list[list[int]] = [[zero_form] * max_values for _ in range(num_inter)]
+    for k, interaction in enumerate(interactions):
+        for i, val_col in enumerate(interaction.values):
+            value_idx[k][i] = _add_form(val_col)
 
-    def fn(*args):
-        outs = [cf(*args) for cf in chunk_fns]
-        return (
-            jnp.concatenate([o[0] for o in outs]),
-            jnp.concatenate([o[1] for o in outs]),
-            jnp.concatenate([o[2] for o in outs]),
-            jnp.concatenate([o[3] for o in outs]),
-        )
+    # forms[f] = const[f] + Σ_w W[f, w] · trace_cat[:, w]. Without a used prep
+    # column total_w == main_w, so this is just the main trace.
+    trace_cat = (
+        jnp.concatenate([main_trace, prep_trace], axis=1) if uses_prep else main_trace
+    )
+    w_all = jnp.asarray(weight_rows, dtype=bf_dtype)  # [forms, total_w]
+    c_all = jnp.asarray(constants, dtype=bf_dtype)  # [forms]
+    forms = c_all[:, None] + w_all @ trace_cat.T  # [forms, height], BF
 
-    _CHIP_FIRST_LAYER_CACHE[key] = fn
-    return fn
+    # Multiplicity per interaction; receives negate (× field -1 == negation).
+    mult = forms[jnp.asarray(mult_form)] * jnp.asarray(mult_sign, dtype=bf_dtype)[:, None]
+
+    # Fingerprint = alpha + betas[0]·kind + Σ_i betas[i+1]·valueᵢ, the value sum
+    # unrolled over the (small) widest fingerprint. Padded slots gather the zero
+    # form, so betas[v+1]·0 adds a field zero (identity) -- byte-identical to the
+    # per-interaction sum, all element-wise field ops the GPU emitter lowers.
+    base = (alpha + betas[0] * jnp.asarray(kinds, dtype=bf_dtype))[:, None]
+    fingerprint = jnp.broadcast_to(base, (num_inter, height))
+    value_idx_arr = jnp.asarray(value_idx)  # [num_inter, max_values]
+    for v in range(max_values):
+        fingerprint = fingerprint + betas[v + 1] * forms[value_idx_arr[:, v]]
+
+    # Even/odd slot split + fold-neutral pad, flattened interaction-major. The
+    # numerator pads with field 0 (Mont zero == jnp.pad's raw-zero default); the
+    # denominator with the fold-neutral 1, matching the verifier's pad idiom.
+    slot_count = 2 * sp1_col_h(height)
+    pad_count = slot_count - height // 2
+    pad = ((0, 0), (0, pad_count))
+    return (
+        jnp.pad(mult[:, 0::2], pad).reshape(-1),
+        jnp.pad(mult[:, 1::2], pad).reshape(-1),
+        jnp.pad(fingerprint[:, 0::2], pad, constant_values=1).reshape(-1),
+        jnp.pad(fingerprint[:, 1::2], pad, constant_values=1).reshape(-1),
+    )
 
 
 def generate_first_layer(
@@ -238,20 +278,17 @@ def generate_first_layer(
                 f"chip {chip.name} has odd real height {real_height}; the "
                 f"even/odd row split needs an even height"
             )
-        has_prep = chip.name in prep_name_to_idx
-
-        fn = _get_chip_first_layer_jit(chip, has_prep, bf_dtype, ef_dtype)
-        if has_prep:
+        if chip.name in prep_name_to_idx:
             # Trim prep to main's height for the per-row eval; recursion
             # shards keep prep at keygen height above main's.
             prep_trace = _chip_view(prep_region, prep_name_to_idx[chip.name])[
                 :real_height
             ]
-            chip_n0, chip_n1, chip_d0, chip_d1 = fn(
-                main_trace, prep_trace, alpha, betas
-            )
         else:
-            chip_n0, chip_n1, chip_d0, chip_d1 = fn(main_trace, alpha, betas)
+            prep_trace = None
+        chip_n0, chip_n1, chip_d0, chip_d1 = _chip_first_layer_batched(
+            chip, main_trace, prep_trace, alpha, betas
+        )
 
         n0_parts.append(chip_n0)
         n1_parts.append(chip_n1)

@@ -16,6 +16,7 @@ from zk_dtypes import koalabear_mont as F
 from sp1_zorch.commit.region import JaggedRegion
 from sp1_zorch.logup_gkr.circuit import (
     GkrChip,
+    _chip_view,
     build_gkr_chips,
     generate_circuit_layers,
     generate_first_layer,
@@ -23,6 +24,7 @@ from sp1_zorch.logup_gkr.circuit import (
     sp1_next_row_counts,
 )
 from sp1_zorch.shard_prover.chip_loader import make_chip_stub
+from zorch.utils.bits import log2_ceil_usize
 
 ALPHA = jnp.array(7, F)
 BETAS = jnp.array([5, 11], F)
@@ -249,6 +251,205 @@ class BuildGkrChipsTest(absltest.TestCase):
             "A", {"f": SimpleNamespace(kind="send", sp1_index=0, interaction=None)}
         )
         self.assertEqual(build_gkr_chips({"A": stub}, ("A",)), ())
+
+
+def _reference_first_layer(chips, main_region, prep_region, alpha, betas):
+    """Pre-vectorization per-interaction build (the SP1-byte-matched path):
+    ``apply_batch`` per interaction, even/odd split + fold-neutral pad, then
+    power-of-two interaction padding. The oracle for the batched build."""
+    total = sum(len(c.interactions) for c in chips)
+    padded = 1 << log2_ceil_usize(total)
+    m_idx = {n: i for i, n in enumerate(main_region.chip_names)}
+    p_idx = (
+        {n: i for i, n in enumerate(prep_region.chip_names)}
+        if prep_region is not None
+        else {}
+    )
+    bf, ef = main_region.dense.dtype, alpha.dtype
+    n0, n1, d0, d1, rc = [], [], [], [], []
+    for chip in chips:
+        if not chip.interactions:
+            continue
+        main = _chip_view(main_region, m_idx[chip.name])
+        h = main.shape[0]
+        prep = _chip_view(prep_region, p_idx[chip.name])[:h] if chip.name in p_idx else None
+        slot = 2 * sp1_col_h(h)
+        pad = slot - h // 2
+        pn, pd = jnp.zeros(pad, dtype=bf), jnp.ones(pad, dtype=ef)
+        for inter in chip.interactions:
+            mult = inter.multiplicity.apply_batch(prep, main)
+            if not inter.is_send:
+                mult = -mult
+            fp = jnp.broadcast_to(alpha + betas[0] * inter.kind, (h,))
+            for i, v in enumerate(inter.values):
+                fp = fp + betas[i + 1] * v.apply_batch(prep, main)
+            n0.append(jnp.concatenate([mult[0::2], pn]))
+            n1.append(jnp.concatenate([mult[1::2], pn]))
+            d0.append(jnp.concatenate([fp[0::2], pd]))
+            d1.append(jnp.concatenate([fp[1::2], pd]))
+            rc.append(slot)
+    pad_slot = 2 * sp1_col_h(0)
+    if (npad := padded - total) > 0:
+        t = npad * pad_slot
+        n0.append(jnp.zeros(t, dtype=bf))
+        n1.append(jnp.zeros(t, dtype=bf))
+        d0.append(jnp.ones(t, dtype=ef))
+        d1.append(jnp.ones(t, dtype=ef))
+        rc.extend([pad_slot] * npad)
+    return (
+        jnp.concatenate(n0),
+        jnp.concatenate(n1),
+        jnp.concatenate(d0),
+        jnp.concatenate(d1),
+        tuple(rc),
+    )
+
+
+# Betas long enough to fingerprint up to three value columns (betas[0]..[3]).
+BETAS3 = jnp.array([5, 11, 13, 2], F)
+
+
+def _vpc(constant, *terms):
+    """A VirtualPairCol from ``(col, is_prep, weight)`` term tuples."""
+    return VirtualPairCol(constant=constant, column_weights=tuple(terms))
+
+
+class FirstLayerBatchedEquivalenceTest(absltest.TestCase):
+    """The batched build must be byte-identical to the per-interaction
+    reference across the cases the matmul / segment_sum path newly exercises:
+    multi-term and constant affine forms, duplicate columns, multi-value
+    fingerprints, send/receive mixes, prep columns, power-of-two padding, and
+    interaction counts past the old 128 chunk size."""
+
+    def _assert_equiv(self, chips, main_region, prep_region, betas):
+        got = generate_first_layer(chips, main_region, prep_region, ALPHA, betas)
+        rn0, rn1, rd0, rd1, rrc = _reference_first_layer(
+            chips, main_region, prep_region, ALPHA, betas
+        )
+        self.assertEqual(got.row_counts, rrc)
+        for name, ref in (
+            ("numerator_0", rn0),
+            ("numerator_1", rn1),
+            ("denominator_0", rd0),
+            ("denominator_1", rd1),
+        ):
+            self.assertTrue(
+                bool(jnp.all(getattr(got, name) == ref)), f"{name} diverged"
+            )
+
+    def test_multi_term_constant_and_duplicate_columns(self) -> None:
+        main = _main(8, width=4)
+        chips = [
+            GkrChip(
+                "A",
+                (
+                    # constant + two distinct columns
+                    Interaction(
+                        values=(_vpc(3, (0, False, 2), (2, False, 5)),),
+                        multiplicity=_vpc(1, (1, False, 4)),
+                        kind=3,
+                        is_send=True,
+                    ),
+                    # same column twice -> weights accumulate
+                    Interaction(
+                        values=(_vpc(0, (3, False, 7), (3, False, 9)),),
+                        multiplicity=_vpc(0, (0, False, 1), (0, False, 1)),
+                        kind=5,
+                        is_send=False,
+                    ),
+                ),
+            )
+        ]
+        self._assert_equiv(chips, _region(main, names=("A",)), None, BETAS)
+
+    def test_multi_value_fingerprint_and_send_receive_mix(self) -> None:
+        main = _main(10, width=4)
+        chips = [
+            GkrChip(
+                "A",
+                (
+                    Interaction(
+                        values=(
+                            VirtualPairCol.single_main(0),
+                            VirtualPairCol.single_main(1),
+                            VirtualPairCol.single_main(2),
+                        ),
+                        multiplicity=VirtualPairCol.single_main(3),
+                        kind=7,
+                        is_send=True,
+                    ),
+                    Interaction(
+                        values=(
+                            VirtualPairCol.single_main(2),
+                            VirtualPairCol.single_main(0),
+                        ),
+                        multiplicity=VirtualPairCol.single_main(1),
+                        kind=4,
+                        is_send=False,
+                    ),
+                ),
+            )
+        ]
+        self._assert_equiv(chips, _region(main, names=("A",)), None, BETAS3)
+
+    def test_prep_and_padding_interactions(self) -> None:
+        main = _main(4, width=2)
+        prep = _main(8, width=2, offset=200)
+        chips = [
+            GkrChip(
+                "A",
+                (
+                    Interaction(
+                        values=(_vpc(0, (0, True, 1), (1, False, 3)),),
+                        multiplicity=_vpc(0, (0, True, 2)),
+                        kind=2,
+                        is_send=True,
+                    ),
+                ),
+            ),
+            GkrChip("B", (_interaction(0, 1, kind=9),)),
+        ]
+        # 2 interactions already power-of-two; add a chip to force padding to 4.
+        self._assert_equiv(
+            chips,
+            _region(main, _main(6, width=2, offset=50), names=("A", "B")),
+            _region(prep, names=("A",)),
+            BETAS,
+        )
+
+    def test_prep_region_chip_without_prep_columns(self) -> None:
+        # A chip can sit in the prep region while no interaction reads a prep
+        # column, and its prep view can be a different (here shorter) height.
+        # The build must not fold prep into the column space then -- regression
+        # for the unconditional [main|prep] concat (CI: prove_shard_test).
+        main = _main(6, width=3)
+        prep = _main(3, width=2, offset=99)  # present, unused, mismatched height
+        chips = [GkrChip("A", (_interaction(0, 1), _interaction(1, 2, kind=4)))]
+        self._assert_equiv(
+            chips, _region(main, names=("A",)), _region(prep, names=("A",)), BETAS
+        )
+
+    def test_prep_column_form_with_no_prep_region(self) -> None:
+        # A form may name a prep column on a chip with no prep region; both the
+        # batched build and apply_batch treat it as a zero contribution.
+        main = _main(8, width=2)
+        inter = Interaction(
+            values=(_vpc(0, (0, True, 5), (0, False, 1)),),
+            multiplicity=VirtualPairCol.single_main(1),
+            kind=2,
+            is_send=True,
+        )
+        self._assert_equiv([GkrChip("A", (inter,))], _region(main, names=("A",)), None, BETAS)
+
+    def test_many_interactions_past_old_chunk_size(self) -> None:
+        # The old build chunked at 128 interactions; the batched build is one
+        # matmul, so cross 128 to pin there is no residual chunk assumption.
+        main = _main(8, width=4)
+        inters = tuple(
+            _interaction(i % 4, (i + 1) % 4, kind=(i % 6) + 1, is_send=(i % 2 == 0))
+            for i in range(200)
+        )
+        self._assert_equiv([GkrChip("A", inters)], _region(main, names=("A",)), None, BETAS)
 
 
 if __name__ == "__main__":
