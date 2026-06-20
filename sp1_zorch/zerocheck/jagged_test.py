@@ -309,16 +309,16 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
         # instead of the monolithic CSE unroll (the Global compile cliff,
         # fractalyze/zkx#702).
         self.assertEqual(len(calls), len(bounded), calls)
-        # One rolled round body: 3 t-points per chip (round 0's t=0 is masked,
-        # not dropped, so the kernel still emits exactly once), plus the one
-        # C_alpha(0_row) probe per chip.
-        self.assertEqual(len(bounded), 4 * nchips)
+        # One rolled round body: the 3 t-points per chip (t=0,2,4) batch into
+        # ONE constraint_eval launch (round 0's t=0 is masked, not dropped),
+        # plus the one C_alpha(0_row) probe per chip — 2 markers per chip.
+        self.assertEqual(len(bounded), 2 * nchips)
         shapes = {re.search(r"tensor<(\d+x\d+)x", c).group(1) for c in bounded}  # type: ignore[union-attr]
-        # One round trace shape per chip — pad4(5)/2 = 4 and pad4(2)/2 = 2
-        # pairs, never one per round. The C_alpha(0_row) probe is a clean 1-row
-        # block: the loop-form emitter engages on a single-row trace as of
-        # fractalyze/zkx#704, so no multi-row pad is needed.
-        self.assertEqual(shapes, {"4x3", "2x3", "1x3"})
+        # The 3 t-points interleave into one [3*pair, nc] batched trace per chip
+        # — 3*pad4(5)/2 = 12 and 3*pad4(2)/2 = 6 rows, never one per round. The
+        # C_alpha(0_row) probe is a clean 1-row block (the loop-form emitter
+        # engages on a single-row trace as of fractalyze/zkx#704).
+        self.assertEqual(shapes, {"12x3", "6x3", "1x3"})
 
     @absltest.skipUnless(_HAS_COMPOSITE_OP, "jaxlib lacks stablehlo.CompositeOp")
     def test_round_loop_stays_rolled(self) -> None:

@@ -155,8 +155,27 @@ def _chip_round_poly(
     has_constraints = alpha.shape[-1] > 0
     num_non_padded = (nr_live + 1) // 2
 
-    def inner(rows: Array, *, mask_round0: bool) -> Array:
-        rows_t = rows.T
+    t_traces = (p0, p0 + two * diff, p0 + four * diff)
+
+    # The three constraint t-point evals (t=0,2,4; t=1 rides the claim identity)
+    # share one circuit, so they batch into a SINGLE `constraint_eval` launch
+    # instead of three — the dominant zerocheck cost is launch count (3 per chip
+    # per round x num_vars rounds), not per-launch math. Interleave the three
+    # lifted traces as [pair, 3, nc] so each row's three t-points stay adjacent,
+    # then `live_width = 3 * num_non_padded` masks exactly the live rows (which
+    # come first, three flattened rows each). Per row and per t-point the result
+    # equals three separate calls, so y_0/y_2/y_4 are byte-identical.
+    cs = None
+    if has_constraints:
+        stacked = jnp.stack([t.T for t in t_traces], axis=1)  # [pair, 3, nc]
+        cs = constraint_eval(
+            eval_fn,
+            stacked.reshape(-1, stacked.shape[-1]),  # [3 * pair, nc], row = r*3 + t
+            alpha,
+            live_width=3 * num_non_padded,
+        ).reshape(-1, 3)  # [pair, 3]: columns are t = 0, 2, 4
+
+    def inner(rows: Array, c: Array | None, *, mask_round0: bool) -> Array:
         # Sum the constraint and GKR-column contributions as separate scalar
         # reductions (field add is associative, so this equals summing their
         # element-wise sum). Keeping the two vectors out of one element-wise add
@@ -164,21 +183,20 @@ def _chip_round_poly(
         # live-width-masked vector and the column matmul share a scan body.
         total = zero
         if has_constraints:
-            c = constraint_eval(eval_fn, rows_t, alpha, live_width=num_non_padded)
-            # Round 0 drops the constraint term at t=0; the kernel still emits
-            # once and is masked, so the per-chip marker count stays flat across
-            # rounds (one compiled kernel reused, never one per round).
+            # Round 0 drops the constraint term at t=0 (constraints vanish on
+            # real witness rows); the batched kernel still emits it and is masked
+            # here, so the per-chip marker count stays flat across rounds.
             c = jnp.where(is_round0, zero, c) if mask_round0 else c
             total = total + jnp.sum(c * eq)
         if gkr_powers is not None:
             # Unmasked, but zero past the live prefix anyway: the buffer's dead
             # tail is exactly zero, and a zero row's column term vanishes with it.
-            total = total + jnp.sum((rows_t @ gkr_powers) * eq)
+            total = total + jnp.sum((rows.T @ gkr_powers) * eq)
         return total
 
-    inner_0 = inner(p0, mask_round0=True)
-    inner_2 = inner(p0 + two * diff, mask_round0=False)
-    inner_4 = inner(p0 + four * diff, mask_round0=False)
+    inner_0 = inner(t_traces[0], cs[:, 0] if cs is not None else None, mask_round0=True)
+    inner_2 = inner(t_traces[1], cs[:, 1] if cs is not None else None, mask_round0=False)
+    inner_4 = inner(t_traces[2], cs[:, 2] if cs is not None else None, mask_round0=False)
 
     # A live chip keeps nr_live >= 1, so threshold_half is in [0, eq.shape[0]):
     # an in-bounds dynamic gather, the same element a static index would read.
