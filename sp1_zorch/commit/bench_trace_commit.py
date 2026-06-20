@@ -11,6 +11,10 @@ compile/runtime split via the ``lower`` thunk (run ``--phase compile`` and
   - commit_region : the production entry — full @jit commit (encode+Merkle+bind)
   - rs_encode     : the NTT alone
   - smcs_commit   : the bit-reversed codeword Merkle commit (poseidon2) alone
+  - codeword_transpose : the [K, block_len] -> [block_len, K] relayout alone,
+    which commit_region pays inside its @jit but smcs_commit does not (its input
+    is pre-transposed here), so the commit_region - smcs_commit - rs_encode
+    residual can be split into transpose vs retained-output/dispatch
 
 The region is built once (eager ``from_chips``) as setup. ``commit_region`` is
 yielded first so it runs before the breakdown materializes a ~6 GB codeword
@@ -145,6 +149,19 @@ class TraceCommitBenchmark(JaxBenchmark):
             name="smcs_commit",
             fn=functools.partial(commit, codeword.T),
             lower=functools.partial(commit.lower, codeword.T),
+            metadata=meta,
+            throughput_unit="leaves/s",
+            throughput_count=leaves,
+        )
+        # Time the codeword [K, block_len] -> [block_len, K] relayout alone:
+        # smcs_commit gets a pre-transposed input (so it skips this) while
+        # commit_region pays it in-@jit, so this attributes the
+        # commit_region - smcs_commit - rs_encode residual to the transpose.
+        transpose = jax.jit(lambda c: c.T)
+        yield BenchmarkOp(
+            name="codeword_transpose",
+            fn=functools.partial(transpose, codeword),
+            lower=functools.partial(transpose.lower, codeword),
             metadata=meta,
             throughput_unit="leaves/s",
             throughput_count=leaves,
