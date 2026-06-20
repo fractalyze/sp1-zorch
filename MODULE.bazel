@@ -27,7 +27,7 @@ git_override(
     # zorch main. Keep the requirements.in wheel set >= 0.0.5.dev20260610045259
     # in lockstep with this pin: the zorch.poseidon2 marker (zorch#212) is a
     # hard cut on the zkx side, and CPU-only CI can't catch a desync.
-    commit = "245915fc871099db3d5248b59cdbd38c84824a08",
+    commit = "69f709d6cc5bfb6f2b6ead78870794d072262787",
 )
 
 python = use_extension("@rules_python//python/extensions:python.bzl", "python")
