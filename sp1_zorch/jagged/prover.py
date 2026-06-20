@@ -37,7 +37,7 @@ from dataclasses import dataclass
 import jax
 import jax.numpy as jnp
 import numpy as np
-from jax import Array
+from jax import Array, lax
 from zk_dtypes import efinfo
 
 from zorch.pcs.jagged.poly import (
@@ -279,11 +279,18 @@ def inner_sumcheck(
     # rounds; its verifier re-absorbs it the same way (fractalyze/sp1-zorch#90).
     transcript = transcript.observe(claimed_sum)
 
-    buf = merged
-    claim = claimed_sum
-    polys: list[Array] = []
-    challenges: list[Array] = []
-    for round_idx in range(n_vars - 1, -1, -1):
+    # The round loop is one ``lax.scan`` so the 2·n_d rounds trace to a single
+    # round body instead of unrolling. Under the stage's ``@jit`` an unrolled
+    # Python loop builds an O(rounds) XLA graph whose compilation dominates the
+    # cold jagged-eval stage; the scan's trace is O(1) in the round count. The
+    # carry shapes are fixed (``buf`` and ``weights`` keep their width; only
+    # column ``round_idx`` changes), so the scan body is one reused round.
+    # Byte-equal to the unrolled loop: same descending round order, same
+    # arithmetic, same observe/sample sequence threaded through the carry.
+    def _round(
+        carry: tuple[Array, Array, Array, Transcript], round_idx: Array
+    ) -> tuple[tuple[Array, Array, Array, Transcript], tuple[Array, Array]]:
+        buf, weights, claim, transcript = carry
         bits_i = merged[:, round_idx]
         eq0 = one - bits_i
         bp0 = bp_all(buf.at[:, round_idx].set(0))
@@ -298,10 +305,13 @@ def inner_sumcheck(
         buf = buf.at[:, round_idx].set(alpha)
         weights = weights * (alpha * bits_i + (one - alpha) * eq0)
         claim = eval_coeffs(coef, alpha)
-        polys.append(coef)
-        challenges.append(alpha)
+        return (buf, weights, claim, transcript), (coef, alpha)
 
-    return jnp.stack(polys), jnp.stack(challenges)[::-1], claimed_sum, transcript
+    init = (merged, weights, claimed_sum, transcript)
+    (_, _, _, transcript), (polys, challenges) = lax.scan(
+        _round, init, jnp.arange(n_vars - 1, -1, -1)
+    )
+    return polys, challenges[::-1], claimed_sum, transcript
 
 
 class JaggedEvalRound(Round):
