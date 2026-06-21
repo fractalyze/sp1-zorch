@@ -14,6 +14,8 @@ Mont-u32, no tolerances.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 
 import jax
@@ -57,27 +59,35 @@ def _raw_area(round_meta) -> int:
     )
 
 
+@partial(
+    jax.tree_util.register_dataclass, data_fields=["challenges", "pos"], meta_fields=[]
+)
+@dataclass(frozen=True)
 class _ScriptedTranscript:
     """Replays the dumped per-round challenges — the byte-match reproduces the
     reference run's Fiat-Shamir outcomes rather than re-deriving them (the duplex
-    encoding is the pipeline's concern, not this round's). Mirrors
+    encoding is the pipeline's concern, not this round's). A registered pytree
+    with the cursor as a leaf so it rides the inner sumcheck's ``lax.scan`` carry;
+    ``sample`` advances it with ``dynamic_slice``. Mirrors
     ``zerocheck/jagged_byte_match_test``: the sumchecks squeeze base limbs and
     reassemble each EF challenge (the ``sample_challenge`` rule,
     fractalyze/sp1-zorch#88), so the script holds one flat base-limb stream."""
 
-    def __init__(self, challenges):
-        self._stream = jax.lax.bitcast_convert_type(
-            jnp.asarray(challenges), BF
-        ).reshape(-1)
-        self._pos = 0
+    challenges: jnp.ndarray
+    pos: jnp.ndarray
+
+    @classmethod
+    def replaying(cls, challenges) -> "_ScriptedTranscript":
+        flat = jax.lax.bitcast_convert_type(jnp.asarray(challenges), BF).reshape(-1)
+        return cls(flat, jnp.asarray(0, jnp.int32))
 
     def observe(self, values):
+        del values
         return self
 
     def sample(self, n=1):
-        out = self._stream[self._pos : self._pos + n]
-        self._pos += n
-        return self, out
+        out = jax.lax.dynamic_slice_in_dim(self.challenges, self.pos, n, axis=0)
+        return _ScriptedTranscript(self.challenges, self.pos + n), out
 
 
 class JaggedEvalRoundByteMatchTest(absltest.TestCase):
@@ -125,7 +135,7 @@ class JaggedEvalRoundByteMatchTest(absltest.TestCase):
         # The outer sumcheck samples its 23 alphas first, then the inner its 48.
         chain = ProveChain([JaggedEvalRound(dtype=EF)])
         script = jnp.concatenate([outer_alphas, inner_alphas])
-        _, _, msgs = chain(carry, _ScriptedTranscript(script))
+        _, _, msgs = chain(carry, _ScriptedTranscript.replaying(script))
         cls.msg = msgs[0]
 
     def _expect(self, name):
