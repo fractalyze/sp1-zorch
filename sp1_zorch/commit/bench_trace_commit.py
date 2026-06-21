@@ -11,10 +11,13 @@ compile/runtime split via the ``lower`` thunk (run ``--phase compile`` and
   - commit_region : the production entry — full @jit commit (encode+Merkle+bind)
   - rs_encode     : the NTT alone
   - smcs_commit   : the bit-reversed codeword Merkle commit (poseidon2) alone
-  - codeword_transpose : the [K, block_len] -> [block_len, K] relayout alone,
-    which commit_region pays inside its @jit but smcs_commit does not (its input
-    is pre-transposed here), so the commit_region - smcs_commit - rs_encode
-    residual can be split into transpose vs retained-output/dispatch
+  - codeword_transpose : the [K, block_len] -> [block_len, K] relayout alone —
+    the transpose the OLD row-major commit paid in-@jit. The column-major
+    commit_region now reads the [K, N] codeword by column and skips it, so this
+    op is the reference for the cost the column-major fix removed (#140).
+
+Pass ``--drop_codeword`` to time commit_region in production drop_ldes mode,
+where the retained-codeword transpose is dropped entirely.
 
 The region is built once (eager ``from_chips``) as setup. ``commit_region`` is
 yielded first so it runs before the breakdown materializes a ~6 GB codeword
@@ -65,15 +68,24 @@ def _smcs() -> SingleMatrixCommitmentScheme:
     )
 
 
-def _commit_bound(region: JaggedRegion, smcs: SingleMatrixCommitmentScheme) -> Array:
+def _commit_bound(
+    region: JaggedRegion,
+    smcs: SingleMatrixCommitmentScheme,
+    drop_codeword: bool = False,
+) -> Array:
     """Run the full commit but return only the small bound commitment.
 
     The benchmark harness holds the last ``fn()`` result while the next call
     runs, so returning the full ``TraceCommitData`` (~10 GB of codeword + mle +
     digests at rsp scale) would keep two copies live and OOM a 32 GB card.
     Returning ``bound`` blocks on the whole pipeline yet retains nothing big.
+
+    ``drop_codeword`` (SP1's drop_ldes) is the production mode: the codeword is
+    not retained as an output, so XLA frees it right after the Merkle commit.
     """
-    bound, _ = commit_region(region, smcs, log_blowup=_LOG_BLOWUP, jit=True)
+    bound, _ = commit_region(
+        region, smcs, log_blowup=_LOG_BLOWUP, jit=True, drop_codeword=drop_codeword
+    )
     return bound
 
 
@@ -89,6 +101,12 @@ class TraceCommitBenchmark(JaxBenchmark):
     def add_custom_args(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument(
             "--shard_dir", required=True, help="rsp shard dump directory."
+        )
+        parser.add_argument(
+            "--drop_codeword",
+            action="store_true",
+            help="commit_region in production drop_ldes mode (codeword not "
+            "retained as an output).",
         )
 
     def get_ops(self, args: argparse.Namespace) -> Iterable[BenchmarkOp]:
@@ -115,10 +133,16 @@ class TraceCommitBenchmark(JaxBenchmark):
 
         # Production entry. fn times the full commit_region (the host-side
         # TraceCommitData wrap is ~free); lower times the @jit zone's compile.
-        commit_kw = {"smcs": smcs, "log_blowup": _LOG_BLOWUP}
+        commit_kw = {
+            "smcs": smcs,
+            "log_blowup": _LOG_BLOWUP,
+            "drop_codeword": args.drop_codeword,
+        }
         yield BenchmarkOp(
             name="commit_region",
-            fn=functools.partial(_commit_bound, region, smcs),
+            fn=functools.partial(
+                _commit_bound, region, smcs, drop_codeword=args.drop_codeword
+            ),
             lower=functools.partial(
                 _commit_jit.lower, message, row_counts, column_counts, **commit_kw
             ),
@@ -143,20 +167,23 @@ class TraceCommitBenchmark(JaxBenchmark):
             throughput_unit="leaves/s",
             throughput_count=leaves,
         )
+        # The column-major SMCS commits the codeword in its native [K, N] encode
+        # layout (a leaf is a column) — no transpose, matching what commit_region
+        # feeds it.
         codeword = jax.block_until_ready(encode(message))
         commit = jax.jit(smcs.commit)
         yield BenchmarkOp(
             name="smcs_commit",
-            fn=functools.partial(commit, codeword.T),
-            lower=functools.partial(commit.lower, codeword.T),
+            fn=functools.partial(commit, codeword),
+            lower=functools.partial(commit.lower, codeword),
             metadata=meta,
             throughput_unit="leaves/s",
             throughput_count=leaves,
         )
-        # Time the codeword [K, block_len] -> [block_len, K] relayout alone:
-        # smcs_commit gets a pre-transposed input (so it skips this) while
-        # commit_region pays it in-@jit, so this attributes the
-        # commit_region - smcs_commit - rs_encode residual to the transpose.
+        # Time the codeword [K, block_len] -> [block_len, K] relayout alone: the
+        # transpose the OLD row-major commit paid in-@jit. The column-major
+        # commit_region now skips it (it reads the [K, N] codeword by column), so
+        # this op is the reference for the cost that fix removed.
         transpose = jax.jit(lambda c: c.T)
         yield BenchmarkOp(
             name="codeword_transpose",
