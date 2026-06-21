@@ -123,6 +123,31 @@ class SingleMatrixCommitmentSchemeTest(absltest.TestCase):
             )
             self.assertEqual(int(code), VerifyCode.OK)
 
+    def test_commit_column_major_matches_row_major_transpose(self) -> None:
+        # column_major is a PER-CALL choice on the same scheme (the FRI fold also
+        # commits row-major through it, fractalyze/sp1-zorch#140). Committing the
+        # [width, height] transpose column-major gives the byte-identical
+        # commitment + layers as committing the [height, width] leaf-major matrix
+        # row-major (leaf r == column r == row r of the transpose), and
+        # open/verify authenticate against it from the leaf-major matrix.
+        _, _, smcs = _smcs()
+        leaf_major = jnp.arange(32, dtype=F).reshape(4, 8)  # [height=4, width=8]
+        row_commit, row_layers = smcs.commit(leaf_major)
+        col_commit, col_layers = smcs.commit(leaf_major.T, column_major=True)
+        self.assertTrue(bool(jnp.array_equal(col_commit, row_commit)))
+        self.assertEqual(
+            [layer.shape for layer in col_layers],
+            [layer.shape for layer in row_layers],
+        )
+        for col_layer, row_layer in zip(col_layers, row_layers):
+            self.assertTrue(bool(jnp.array_equal(col_layer, row_layer)))
+        rows, proofs = smcs.open_batch(jnp.array([0, 3]), leaf_major, col_layers)
+        for q, idx in enumerate((0, 3)):
+            code = smcs.verify_batch(
+                col_commit, (4, 8), idx, rows[q], _proof_for(proofs, q)
+            )
+            self.assertEqual(int(code), VerifyCode.OK)
+
     def test_verify_rejects_tampered_row(self) -> None:
         # A corrupted opened row re-hashes to a different leaf -> the rebound root
         # cannot match the commitment.

@@ -116,7 +116,7 @@ def _commit(
 
     # SMCS binds (log_height, width), then the structure hash pins the jagged
     # chip layout into the commitment.
-    commitment, digest_layers = smcs.commit(codeword)
+    commitment, digest_layers = smcs.commit(codeword, column_major=True)
     bound = smcs.bind_structure(commitment, row_counts, column_counts)
     # The retained codeword is the open's Merkle-query input, in the [N, K]
     # leaf-major layout ``committed_codeword`` produces — so transpose only here
