@@ -12,11 +12,13 @@ import jax.numpy as jnp
 from absl.testing import absltest
 from rw_constraints import Interaction, VirtualPairCol
 from zk_dtypes import koalabear_mont as F
+from zk_dtypes import koalabearx4_mont as EF
 
 from sp1_zorch.commit.region import JaggedRegion
 from sp1_zorch.logup_gkr.circuit import (
     GkrChip,
     _chip_view,
+    _sp1_schedules,
     build_gkr_chips,
     generate_circuit_layers,
     generate_first_layer,
@@ -24,6 +26,7 @@ from sp1_zorch.logup_gkr.circuit import (
     sp1_next_row_counts,
 )
 from sp1_zorch.shard_prover.chip_loader import make_chip_stub
+from zorch.logup_gkr.circuit import scan_build_jagged_pyramid
 from zorch.utils.bits import log2_ceil_usize
 
 ALPHA = jnp.array(7, F)
@@ -218,6 +221,71 @@ class GenerateCircuitLayersTest(absltest.TestCase):
     def test_rejects_nonpositive_depth(self) -> None:
         with self.assertRaises(ValueError):
             generate_circuit_layers(self._first_layer(), 0)
+
+
+class ScanBuildJaggedPyramidWiringTest(absltest.TestCase):
+    """Lever A (sp1-zorch#143): building the pyramid via zorch's fused
+    `scan_build_jagged_pyramid` under the SP1 schedule must be byte-identical to
+    the eager `generate_circuit_layers` loop it replaces in the prover."""
+
+    def _first_layer(self, alpha, betas):
+        # col_h(24) = 6 -> 12 slots; col_h(4) clamps at 8 -> 4 slots.
+        main_a, main_b = _main(24), _main(4, offset=100)
+        chips = [
+            GkrChip("A", (_interaction(0, 1),)),
+            GkrChip("B", (_interaction(0, 1, kind=5),)),
+        ]
+        return generate_first_layer(
+            chips, _region(main_a, main_b, names=("A", "B")), None, alpha, betas
+        )
+
+    def _assert_layers_byte_equal(self, got, want):
+        self.assertEqual(len(got), len(want))
+        for i, (g, w) in enumerate(zip(got, want)):
+            self.assertEqual(g.row_counts, w.row_counts, msg=f"layer {i} row_counts")
+            for plane in (
+                "numerator_0",
+                "numerator_1",
+                "denominator_0",
+                "denominator_1",
+            ):
+                gp, wp = getattr(g, plane), getattr(w, plane)
+                self.assertEqual(gp.dtype, wp.dtype, msg=f"layer {i} {plane} dtype")
+                self.assertEqual(gp.shape, wp.shape, msg=f"layer {i} {plane} shape")
+                self.assertTrue(bool(jnp.all(gp == wp)), msg=f"layer {i} {plane}")
+
+    def test_schedule_is_the_eager_loop_count_sequence(self) -> None:
+        # _sp1_schedules is exactly the per-transition out_row_counts
+        # generate_circuit_layers folds through (the [1:] of its layer shapes).
+        first = self._first_layer(ALPHA, BETAS)
+        self.assertEqual(_sp1_schedules(first.row_counts, 4), [(6, 2), (4, 2), (2, 2)])
+
+    def test_depth_one_has_no_transitions(self) -> None:
+        first = self._first_layer(ALPHA, BETAS)
+        self.assertEqual(_sp1_schedules(first.row_counts, 1), [])
+
+    def test_rejects_nonpositive_depth(self) -> None:
+        # Parity with generate_circuit_layers: a sub-1 depth must fail loud,
+        # not silently yield an empty schedule (a degenerate pyramid).
+        first = self._first_layer(ALPHA, BETAS)
+        with self.assertRaises(ValueError):
+            _sp1_schedules(first.row_counts, 0)
+
+    def test_scan_build_matches_eager_same_field(self) -> None:
+        # Base-field alpha keeps numerator and denominator in one field, so
+        # scan_build takes its pure-scan path (no base->EF carve-out).
+        first = self._first_layer(ALPHA, BETAS)
+        scanned = scan_build_jagged_pyramid(first, _sp1_schedules(first.row_counts, 4))
+        self._assert_layers_byte_equal(scanned, generate_circuit_layers(first, 4))
+
+    def test_scan_build_matches_eager_mixed_field(self) -> None:
+        # The real prover's first layer carries base-field multiplicities under
+        # extension-field denominators (alpha is an EF head challenge); scan_build
+        # carves the base->EF promoting first transition out eagerly. Pin that
+        # carve-out path byte-identical to the eager loop too.
+        first = self._first_layer(ALPHA.astype(EF), BETAS.astype(EF))
+        scanned = scan_build_jagged_pyramid(first, _sp1_schedules(first.row_counts, 4))
+        self._assert_layers_byte_equal(scanned, generate_circuit_layers(first, 4))
 
 
 class BuildGkrChipsTest(absltest.TestCase):
