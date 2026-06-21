@@ -44,44 +44,53 @@ ZKX_GPU_PLUGIN_PATH=<composite-capable plugin.so> JAX_PLATFORMS=cuda \
 
 ### SP1 native side — `riscv-witness/tools/sp1/sp1_shard_prover`
 
-Run from `riscv-witness/tools/sp1/sp1_shard_prover/` (standalone crate; the bin
-is `sp1-shard-test`):
+The `sp1-shard-test` bin (standalone crate under
+`riscv-witness/tools/sp1/sp1_shard_prover/`) proves one shard and prints each
+stage's wall-clock — `[stage commit traces]`, `[stage logup gkr proof]`,
+`[stage zerocheck]`, `[stage prove evaluation claims]` — via a timing layer over
+SP1's own `debug_span!`s (no `RUST_LOG` tuning). The four span names map 1:1 to
+the table rows below. It has a **GPU** path and a **CPU** path.
+
+**GPU — use this (same hardware as sp1-zorch).** `no-exec-gpu-dump --gpu` (build
+`--features gpu`) loads the shard's SP1 GPU phase-dump (`<shard_dir>/gpu_traces/`
++ `gpu_vk.txt` + `gpu_commitment.txt`, written by SP1's GPU prover under
+`SP1_DUMP_PHASES`) and runs SP1's GPU prover **ELF-free** — no executor, no
+ELF/stdin. It byte-matches the dump (`preprocessed_commit` vs `gpu_vk.txt`,
+`main_commitment` vs `gpu_commitment.txt`), so the same-output premise holds:
 
 ```bash
-# Prove the same shard's C++ traces (no SP1 re-execution), per-stage timed:
-cargo run --release -- NoExec <dir with per-shard C++ traces> <elf> <stdin>
-# Or stream-execute the ELF and prove every shard (read the shard's line):
-cargo run --release -- Prove <elf> <stdin>
+# from riscv-witness/tools/sp1/sp1_shard_prover/ (RTX 5090 = sm_120):
+cargo run --release --features gpu -- \
+  no-exec-gpu-dump <sp1_dumps>/rsp_21740136_sp1/shard17 --gpu
 ```
 
-- The tool prints each prove stage's wall-clock the same way the sp1-zorch side
-  does — `[stage commit traces] X.Yms`, `[stage logup gkr proof] X.Yms`,
-  `[stage zerocheck] X.Yms`, `[stage prove evaluation claims] X.Yms` — via a
-  timing layer over SP1's own `debug_span!`s (no `RUST_LOG` tuning needed). The
-  four span names map 1:1 to the table rows below. The shard must be the
-  **same** one the dump above came from (same block, same shard index); `NoExec`
-  proves exactly one shard, so its stage lines are unambiguous.
-- **CPU caveat.** Every subcommand instantiates `CpuShardProver`, so these are
-  SP1's **CPU** per-stage times, whereas sp1-zorch's `verify_prove_shard` runs
-  on **GPU**. The comparison is same-shard / same-scope but **not**
-  same-hardware — read the per-stage *shape* (where the time goes), not a raw
-  GPU-vs-CPU ratio, until a GPU SP1 full-prove path is wired in.
+shard17 (GPU, byte-matched): **commit 16.6 / logup-gkr 19.9 / zerocheck 156.9 /
+eval 41.1 ms; wall 234.8 ms** (the GPU NoExec path was added in
+riscv-witness#1971).
 
-## Per-stage comparison (fill from a paired run)
+**CPU — reference / parity only.** Without `--gpu` (or via `NoExec` / `Prove` with
+an ELF + stdin) the tool uses `CpuShardProver`: useful as the injection-validity
+/ byte-match reference, but **not** the same hardware as sp1-zorch's GPU
+`verify_prove_shard`. Keep CPU stage times out of the GPU-vs-GPU table below.
 
-| stage | SP1 native | sp1-zorch | ratio | golden |
+## Per-stage comparison (shard17)
+
+| stage | SP1 GPU | sp1-zorch GPU | ratio | golden |
 |---|---|---|---|---|
-| trace commit | | | | byte-match |
-| LogUp-GKR | | | | byte-match |
-| zerocheck | | | | byte-match |
-| jagged eval (PCS open) | | | | byte-match |
+| trace commit | 16.6 ms | | | byte-match |
+| LogUp-GKR | 19.9 ms | | | byte-match |
+| zerocheck | **156.9 ms** | **218 ms** | **1.39×** | byte-match |
+| jagged eval (PCS open) | 41.1 ms | | | byte-match |
 
-The PCS opening proof IS in scope here (unlike the per-stage micro-benches), so
-every stage is on equal footing: same shard, same per-stage scope, byte-identical
-output — the only **scope-honest** comparison. Mind the CPU caveat above, though:
-the SP1 column is CPU and the sp1-zorch column GPU, so the `ratio` mixes hardware
-with prover efficiency until a GPU SP1 full-prove path lands. Read the per-stage
-shape first; quote a raw ratio only once both sides are on the same hardware.
+The SP1 GPU column is from `no-exec-gpu-dump --gpu` above (warm, byte-matched).
+The sp1-zorch zerocheck is the eq-fold-OFF baseline via
+`//sp1_zorch/zerocheck:bench_sp1_zerocheck` (218 ms wall / 166.6 ms
+`cuda_gpu_kern_sum`); fill the other sp1-zorch rows from a paired warm
+`verify_prove_shard` run. The PCS opening proof IS in scope, so every stage is on
+equal footing — same shard, same per-stage scope, byte-identical output, and now
+**same hardware (GPU both sides)**. The 1.39× zerocheck gap is real and on-GPU:
+sp1-zorch runs ~41 de-fused kernels/round vs SP1's one fused multi-block
+`jaggedConstraintPolyEval`.
 
 ## Shard size caveat (still applies)
 
