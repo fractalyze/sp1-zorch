@@ -364,10 +364,10 @@ def prove_jagged_zerocheck(
     vgeqs = [VirtualGeq(jnp.asarray(nr, jnp.int32), one, zero) for nr in nrs]
     if claims is None:
         # Pure zerocheck: sum eq * (C - C(0)*geq) = 0.
-        chip_claims: list[Array] = [zero] * num_chips
+        chip_claims: Array = jnp.zeros((num_chips,), ef)
         chip_gkr: list[Array | None] = [None] * num_chips
     else:
-        chip_claims = list(claims)
+        chip_claims = jnp.stack(list(claims))
         max_cols = max(t.shape[0] for t in traces)
         gkr_all = gkr_powers(beta, max_cols) if max_cols else jnp.zeros(0, ef)
         chip_gkr = [gkr_all[: t.shape[0]] for t in traces]
@@ -412,7 +412,10 @@ def prove_jagged_zerocheck(
         bufs, vgeqs, chip_claims, eq_adj, nrs_live, eq_buf, transcript = carry
         last, basis_3, is_round0 = xs
 
-        polys = []
+        # Only constraint_eval (inside _chip_round_poly) is shape-divergent, so
+        # the chip loop runs it unrolled and collects the (y0, y1, y2, y4)
+        # round-poly evaluations as scalars.
+        y0s, y1s, y2s, y4s = [], [], [], []
         p0s = []
         diffs = []
         for i in range(num_chips):
@@ -436,10 +439,25 @@ def prove_jagged_zerocheck(
                 is_zero=is_zero_chip[i],
                 is_round0=is_round0,
             )
-            y_3 = jnp.dot(jnp.stack([y_0, y_1, y_2, y_4, zero]), basis_3)
-            polys.append(jnp.dot(inv_vand, jnp.stack([y_0, y_1, y_2, y_3, y_4])))
+            y0s.append(y_0)
+            y1s.append(y_1)
+            y2s.append(y_2)
+            y4s.append(y_4)
 
-        rlc = jnp.dot(lambdas, jnp.stack(polys))
+        # The interpolation + RLC tail is uniform-shape across chips, so batch it
+        # into one [num_chips, ...] matmul each instead of num_chips tiny per-chip
+        # launches: y_3 pins p(3) from the {0, 1, 2, 4} evals via the degree-3
+        # Lagrange basis, inv_vand turns the 5 evals into DEGREE+1 coefficients,
+        # and lambdas takes the cross-chip RLC. Stacking preserves each chip's
+        # contraction order, so the field reassociation is exact — byte-identical
+        # round polys.
+        y0 = jnp.stack(y0s)
+        y1 = jnp.stack(y1s)
+        y2 = jnp.stack(y2s)
+        y4 = jnp.stack(y4s)
+        y3 = jnp.dot(jnp.stack([y0, y1, y2, y4, jnp.zeros_like(y0)], axis=1), basis_3)
+        polys = jnp.dot(jnp.stack([y0, y1, y2, y3, y4], axis=1), inv_vand.T)
+        rlc = jnp.dot(lambdas, polys)
 
         # SP1 binds each variable with one extension element (its
         # ``sample_ext_element``) — the shared ``sample_challenge`` rule.
@@ -452,7 +470,7 @@ def prove_jagged_zerocheck(
         ]
         vgeqs = [vg.fix_last_variable(alpha_r) for vg in vgeqs]
         nrs_live = [(nr + 1) // 2 for nr in nrs_live]
-        chip_claims = [eval_coeffs(polys[i], alpha_r) for i in range(num_chips)]
+        chip_claims = eval_coeffs(polys, alpha_r)
         eq_adj = eq_adj * (alpha_r * last + (one - alpha_r) * (one - last))
 
         carry = (
