@@ -22,6 +22,7 @@ import jax.numpy as jnp
 from absl import app, flags
 from zk_dtypes import koalabear_mont as F
 
+from sp1_zorch.commit.bench_preflight import check_devenv
 from sp1_zorch.commit.region import JaggedRegion
 from sp1_zorch.commit.smcs import SingleMatrixCommitmentScheme
 from sp1_zorch.commit.trace_commit import commit_region
@@ -36,6 +37,12 @@ _SHARD_DIR = flags.DEFINE_string(
 )
 _STAGE = flags.DEFINE_enum(
     "stage", "prep", ["prep", "main", "all"], "Which region(s) to byte-match."
+)
+_STRICT_DEVENV = flags.DEFINE_bool(
+    "strict_devenv",
+    False,
+    "Abort if the devenv is stale (zorch override off origin/main / patched "
+    "jax) instead of only warning — use when capturing a baseline.",
 )
 
 # SP1 core machine parameters (whir-zorch prove_shard_benchmark /
@@ -69,6 +76,9 @@ def _check(label: str, got: jnp.ndarray, want: jnp.ndarray) -> bool:
 
 def main(argv: list[str]) -> None:
     del argv
+    # Flag (or, with --strict_devenv, abort on) a stale @zorch override /
+    # patched jax so a byte-match isn't claimed against non-shipped code.
+    check_devenv(strict=_STRICT_DEVENV.value)
     if not _SHARD_DIR.value:
         raise app.UsageError("--shard_dir is required")
     shard_dir = Path(_SHARD_DIR.value)

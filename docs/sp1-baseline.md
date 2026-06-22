@@ -92,6 +92,39 @@ equal footing — same shard, same per-stage scope, byte-identical output, and n
 sp1-zorch runs ~41 de-fused kernels/round vs SP1's one fused multi-block
 `jaggedConstraintPolyEval`.
 
+## Devenv provenance — measure shipped code
+
+A bench or byte-match is only a baseline if it runs the code the team **ships**.
+This devenv drives `zorch` through a dev-only `.bazelrc.user`
+`--override_module=zorch=<checkout>` and (historically) a patched copy of the
+pip-extracted `jax` — both can silently point at stale or superseded code.
+sp1-zorch#153's first encode baseline was taken against a `zorch` override weeks
+behind `origin/main` (predating the #220/#225 encode rework) and misread as the
+shipped number; post-zkx#756 the shipped encode path is the GS/DIF rewriter on
+**stock** `lax.bit_reverse(lax.fft(x))`, so a leftover override on the dead
+`perf/encode-ntt-shard0` branch + a `bit_reverse_output`-patched jax would
+measure a path we no longer ship.
+
+The trace-commit tools (`bench_trace_commit`, `verify_trace_commit`) run a
+preflight (`sp1_zorch/commit/bench_preflight.py`) that prints what they actually
+loaded and warns when it is stale:
+
+```text
+=== sp1-zorch bench devenv provenance ===
+  zorch : OVERRIDE /home/me/zorch @ main (abc1234)
+  jax   : 0.0.5.dev20260622122155
+  zkx   : /path/to/pjrt_c_api_gpu_plugin.so
+  (clean: measuring shipped code)
+```
+
+It flags a `zorch` override that is off the `origin/main` lineage, behind
+`origin/main`, or dirty, and a `jax` whose fft still carries the superseded
+`bit_reverse_output` patch. **Capture a baseline only from a clean banner.** Make
+a stale devenv a hard error with `--strict_devenv` (`verify_trace_commit`) or
+`SP1_BENCH_STRICT_DEVENV=1` (`bench_trace_commit`). To clear it: point the
+`.bazelrc.user` `@zorch` override at an `origin/main` checkout (or drop it for the
+pinned wheel) and use stock jax.
+
 ## Shard size caveat (still applies)
 
 A block's shards differ in size by >30×: for `rsp_21740136`, shard0 = 38.6 M

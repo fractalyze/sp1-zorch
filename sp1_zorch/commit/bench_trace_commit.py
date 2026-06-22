@@ -42,6 +42,7 @@ import jax.numpy as jnp
 from jax import Array
 from zkbench import BenchmarkConfig, BenchmarkOp, JaxBenchmark
 
+from sp1_zorch.commit.bench_preflight import check_devenv
 from sp1_zorch.commit.region import JaggedRegion
 from sp1_zorch.commit.smcs import SingleMatrixCommitmentScheme
 from sp1_zorch.commit.trace_commit import _commit_jit, commit_region
@@ -196,6 +197,10 @@ class TraceCommitBenchmark(JaxBenchmark):
 
 
 def main() -> int:
+    # A bench is only a baseline if it measures shipped code: flag (or, with
+    # SP1_BENCH_STRICT_DEVENV=1, abort on) a stale @zorch override / patched
+    # jax before measuring. See sp1_zorch/commit/bench_preflight.py.
+    check_devenv()
     return TraceCommitBenchmark().run()
 
 
