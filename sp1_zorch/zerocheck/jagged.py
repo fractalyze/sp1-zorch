@@ -157,46 +157,83 @@ def _chip_round_poly(
 
     t_traces = (p0, p0 + two * diff, p0 + four * diff)
 
-    # The three constraint t-point evals (t=0,2,4; t=1 rides the claim identity)
-    # share one circuit, so they batch into a SINGLE `constraint_eval` launch
-    # instead of three — the dominant zerocheck cost is launch count (3 per chip
-    # per round x num_vars rounds), not per-launch math. Interleave the three
-    # lifted traces as [pair, 3, nc] so each row's three t-points stay adjacent,
-    # then `live_width = 3 * num_non_padded` masks exactly the live rows (which
-    # come first, three flattened rows each). Per row and per t-point the result
-    # equals three separate calls, so y_0/y_2/y_4 are byte-identical.
-    cs = None
-    if has_constraints:
-        stacked = jnp.stack([t.T for t in t_traces], axis=1)  # [pair, 3, nc]
-        cs = constraint_eval(
-            eval_fn,
-            stacked.reshape(-1, stacked.shape[-1]),  # [3 * pair, nc], row = r*3 + t
-            alpha,
-            live_width=3 * num_non_padded,
-        ).reshape(-1, 3)  # [pair, 3]: columns are t = 0, 2, 4
-
-    def inner(rows: Array, c: Array | None, *, mask_round0: bool) -> Array:
-        # Sum the constraint and GKR-column contributions as separate scalar
-        # reductions (field add is associative, so this equals summing their
-        # element-wise sum). Keeping the two vectors out of one element-wise add
-        # before the reduction sidesteps a while-loop lowering miscompile when a
-        # live-width-masked vector and the column matmul share a scan body.
-        total = zero
+    if gkr_powers is None:
+        # Pure zerocheck (no GKR opening batch). The three constraint t-point
+        # evals share one circuit, so they batch into a SINGLE `constraint_eval`
+        # launch instead of three — the dominant zerocheck cost is launch count
+        # (3 per chip per round x num_vars rounds), not per-launch math.
+        # Interleave the three lifted traces as [pair, 3, nc] so each row's three
+        # t-points stay adjacent, then `live_width = 3 * num_non_padded` masks
+        # exactly the live rows (which come first, three flattened rows each).
+        # Per row and per t-point the result equals three separate calls, so
+        # y_0/y_2/y_4 are byte-identical.
+        cs = None
         if has_constraints:
+            stacked = jnp.stack([t.T for t in t_traces], axis=1)  # [pair, 3, nc]
+            cs = constraint_eval(
+                eval_fn,
+                stacked.reshape(-1, stacked.shape[-1]),  # [3 * pair, nc], row = r*3 + t
+                alpha,
+                live_width=3 * num_non_padded,
+            ).reshape(-1, 3)  # [pair, 3]: columns are t = 0, 2, 4
+
+        def inner(c: Array | None, *, mask_round0: bool) -> Array:
+            if not has_constraints:
+                return zero
             # Round 0 drops the constraint term at t=0 (constraints vanish on
             # real witness rows); the batched kernel still emits it and is masked
             # here, so the per-chip marker count stays flat across rounds.
-            c = jnp.where(is_round0, zero, c) if mask_round0 else c
-            total = total + jnp.sum(c * eq)
-        if gkr_powers is not None:
-            # Unmasked, but zero past the live prefix anyway: the buffer's dead
-            # tail is exactly zero, and a zero row's column term vanishes with it.
-            total = total + jnp.sum((rows.T @ gkr_powers) * eq)
-        return total
+            c = jnp.where(is_round0, jnp.zeros_like(c), c) if mask_round0 else c
+            return jnp.sum(c * eq)
 
-    inner_0 = inner(t_traces[0], cs[:, 0] if cs is not None else None, mask_round0=True)
-    inner_2 = inner(t_traces[1], cs[:, 1] if cs is not None else None, mask_round0=False)
-    inner_4 = inner(t_traces[2], cs[:, 2] if cs is not None else None, mask_round0=False)
+        inner_0 = inner(cs[:, 0] if cs is not None else None, mask_round0=True)
+        inner_2 = inner(cs[:, 1] if cs is not None else None, mask_round0=False)
+        inner_4 = inner(cs[:, 2] if cs is not None else None, mask_round0=False)
+    else:
+        # Claims path (GKR opening batch). On GPU the per-row column term
+        # `sum_c rows[r,c] * gkr_powers[c]` is folded INTO `constraint_eval` via
+        # its `column_weights` operand (the emitter adds the dot in-kernel and
+        # keeps the cross-row reduce external, so the big round stays
+        # one-thread-per-row — unlike the dropped #726 reduce-fold). Other backends
+        # keep it a SEPARATE reduction: there the composite inlines, and an inlined
+        # masked select + column matmul in this scan body hits an XLA while-loop
+        # lowering miscompile. Field add is associative, so both are byte-identical.
+        #
+        # The t-points run separately (not batched) so the t-point-specific round-0
+        # t=0 constraint drop can be applied by zeroing `alpha` (`sum_k C_k*0 = 0`),
+        # leaving the alpha-independent column term intact.
+        fold_column_into_kernel = jax.default_backend() != "cpu"
+
+        def inner(rows: Array, *, mask_round0: bool) -> Array:
+            rows_t = rows.T
+            if has_constraints:
+                a = (
+                    jnp.where(is_round0, jnp.zeros_like(alpha), alpha)
+                    if mask_round0
+                    else alpha
+                )
+                if fold_column_into_kernel:
+                    return jnp.sum(
+                        constraint_eval(
+                            eval_fn,
+                            rows_t,
+                            a,
+                            live_width=num_non_padded,
+                            column_weights=gkr_powers,
+                        )
+                        * eq
+                    )
+                c = jnp.sum(
+                    constraint_eval(eval_fn, rows_t, a, live_width=num_non_padded) * eq
+                )
+                return c + jnp.sum((rows_t @ gkr_powers) * eq)
+            # Lookup-only chip (`constraint_eval` rejects an empty alpha): only the
+            # column term, always a standalone matmul.
+            return jnp.sum((rows_t @ gkr_powers) * eq)
+
+        inner_0 = inner(t_traces[0], mask_round0=True)
+        inner_2 = inner(t_traces[1], mask_round0=False)
+        inner_4 = inner(t_traces[2], mask_round0=False)
 
     # A live chip keeps nr_live >= 1, so threshold_half is in [0, eq.shape[0]):
     # an in-bounds dynamic gather, the same element a static index would read.
