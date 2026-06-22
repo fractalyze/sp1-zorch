@@ -114,6 +114,24 @@ py_test(
     ],
 )
 
+# Devenv-provenance preflight shared by the bench / verify tools — flags a
+# stale @zorch override or patched jax so a run can't be reported as a baseline.
+py_library(
+    name = "bench_preflight",
+    srcs = ["bench_preflight.py"],
+    visibility = ["//visibility:public"],
+)
+
+py_test(
+    name = "bench_preflight_test",
+    size = "small",
+    srcs = ["bench_preflight_test.py"],
+    deps = [
+        ":bench_preflight",
+        requirement("absl_py"),
+    ],
+)
+
 py_binary(
     name = "verify_trace_commit",
     srcs = ["verify_trace_commit.py"],
@@ -122,6 +140,7 @@ py_binary(
     #   bazel run //sp1_zorch/commit:verify_trace_commit -- \
     #       --shard_dir=/path/to/rsp_dump/shardN --stage=prep
     deps = [
+        ":bench_preflight",
         ":region",
         ":smcs",
         ":trace_commit",
@@ -165,6 +184,7 @@ py_binary(
     name = "bench_trace_commit",
     srcs = ["bench_trace_commit.py"],
     deps = [
+        ":bench_preflight",
         ":region",
         ":smcs",
         ":trace_commit",
