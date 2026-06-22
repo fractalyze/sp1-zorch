@@ -171,11 +171,11 @@ class TraceCommitBenchmark(JaxBenchmark):
         # layout (a leaf is a column) — no transpose, matching what commit_region
         # feeds it.
         codeword = jax.block_until_ready(encode(message))
-        commit = jax.jit(smcs.commit)
+        commit = jax.jit(smcs.commit, static_argnames=("column_major",))
         yield BenchmarkOp(
             name="smcs_commit",
-            fn=functools.partial(commit, codeword),
-            lower=functools.partial(commit.lower, codeword),
+            fn=functools.partial(commit, codeword, column_major=True),
+            lower=functools.partial(commit.lower, codeword, column_major=True),
             metadata=meta,
             throughput_unit="leaves/s",
             throughput_count=leaves,
