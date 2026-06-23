@@ -331,6 +331,46 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
         calls6, bounded6 = self._constraint_markers(6, num_reals)
         self.assertEqual((len(calls6), len(bounded6)), (len(calls3), len(bounded3)))
 
+    def _tail_dot_count(self, num_vars: int, num_reals) -> int:
+        """``dot_general`` op count in the lowered prove. constraint_eval is a
+        composite (not a dot), and the pure-zerocheck round body has no other
+        matmul, so this isolates the interpolation + RLC tail — y_3, the
+        inv-Vandermonde coefficients, the per-chip claim eval, and the λ-RLC."""
+        nchips = len(num_reals)
+        traces = [_witness_trace(i, nr) for i, nr in enumerate(num_reals)]
+        alphas = [rlc_coeffs(_rand(99 + i, ()), _K) for i in range(nchips)]
+        challenges = [_rand(1000 + r, ()) for r in range(num_vars)]
+
+        def run(traces, alphas, lambdas, zeta):  # type: ignore[no-untyped-def]
+            return prove_jagged_zerocheck(
+                [_eval_fn] * nchips,
+                traces,
+                num_reals,
+                alphas,
+                lambdas,
+                zeta,
+                _ScriptedTranscript.replaying(challenges),
+            )[2].round_poly
+
+        txt = (
+            jax.jit(run)
+            .lower(traces, alphas, _rand(55, (nchips,)), _rand(7, (num_vars,)))
+            .as_text()
+        )
+        return len(re.findall(r"stablehlo\.dot_general", txt))
+
+    def test_interp_rlc_tail_batches_across_chips(self) -> None:
+        # The lever from fractalyze/zkx#772: the interpolation + RLC tail is
+        # batched into one [num_chips, ...] matmul each, so its dot_general count
+        # is INDEPENDENT of the chip count. A per-chip unrolled tail scales it
+        # with nchips (~2 dots/chip) — the tiny-launch cluster the batch
+        # collapses. constraint_eval (the genuinely shape-divergent term) stays
+        # per-chip and is a composite, so it does not enter this count.
+        self.assertEqual(
+            self._tail_dot_count(3, [5, 2]),
+            self._tail_dot_count(3, [5, 2, 3, 4, 1]),
+        )
+
     def test_gkr_claim_threading(self) -> None:
         # With batching, the claim thread starts at the lambda-RLC of the GKR
         # claims (zero in the pure case) and follows the same identity.
