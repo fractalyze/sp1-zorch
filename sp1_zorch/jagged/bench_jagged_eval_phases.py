@@ -169,8 +169,10 @@ def main() -> None:
     parser.add_argument(
         "--measure",
         default="warm",
-        choices=["warm", "compile"],
-        help="warm = per-phase wall-clock; compile = @jit trace+compile of inner",
+        choices=["warm", "compile", "jit_warm"],
+        help="warm = per-phase EAGER wall-clock (scan path, no composite); "
+        "compile = @jit trace+compile of inner; jit_warm = @jit cold(+compile) "
+        "and warm execution of inner — times the RECOGNIZED composite kernel",
     )
     parser.add_argument(
         "--heights-file",
@@ -215,11 +217,9 @@ def main() -> None:
         "total": lambda: JaggedEvalRound(dtype=EF)(carry, fresh_transcript()),
     }
 
-    if args.measure == "compile":
-        # Isolate trace+lower+compile from execution: col_heights rides as a
-        # closure constant (static), so the @jit traces the round structure that
-        # XLA then compiles. Rolling the per-round Python loops into lax.scan
-        # collapses this trace from O(rounds) unrolled bodies to O(1).
+    if args.measure in ("compile", "jit_warm"):
+        # Both isolate the @jit of inner_sumcheck: col_heights rides as a closure
+        # constant (static), so the round structure traces and XLA compiles it.
         heights = carry.col_heights
 
         def _inner(z_row, z_col, z_trace, transcript):
@@ -227,6 +227,11 @@ def main() -> None:
 
         jfn = jax.jit(_inner)
         targs = (carry.z_row, carry.z_col, z_final, fresh_transcript())
+
+    if args.measure == "compile":
+        # Isolate trace+lower+compile from execution. Rolling the per-round Python
+        # loops into lax.scan collapses this trace from O(rounds) unrolled bodies
+        # to O(1).
         t0 = time.perf_counter()
         lowered = jfn.lower(*targs)
         t1 = time.perf_counter()
@@ -236,6 +241,27 @@ def main() -> None:
             f"  inner_sumcheck @jit compile:  trace+lower={ (t1 - t0) * 1e3:8.0f} ms"
             f"   xla_compile={ (t2 - t1) * 1e3:8.0f} ms"
             f"   total={ (t2 - t0) * 1e3:8.0f} ms"
+        )
+        return
+
+    if args.measure == "jit_warm":
+        # Time the RECOGNIZED composite kernel: the marker is lowered/compiled to
+        # its fused kernel (the eager --measure=warm path stays on the plain scan
+        # and never compiles the composite). cold pays trace+compile+execute; warm
+        # calls are pure device execution (block_until_ready forces completion).
+        t0 = time.perf_counter()
+        jax.block_until_ready(jfn(*targs))
+        cold_ms = (time.perf_counter() - t0) * 1e3
+        warm = []
+        for _ in range(args.iters):
+            t0 = time.perf_counter()
+            jax.block_until_ready(jfn(*targs))
+            warm.append((time.perf_counter() - t0) * 1e3)
+        warm_ms = sum(warm) / len(warm) if warm else float("nan")
+        print(
+            f"  inner_sumcheck @jit:  cold(+compile)={cold_ms:10.1f} ms"
+            f"   warm={warm_ms:10.1f} ms   (warm n={args.iters},"
+            f" min={min(warm):.1f} ms)"
         )
         return
 

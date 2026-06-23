@@ -10,12 +10,31 @@ py_library(
     ],
     visibility = ["//visibility:public"],
     deps = [
+        "@zorch//zorch:fusion",
         "@zorch//zorch:round",
         "@zorch//zorch:transcript",
         "@zorch//zorch/pcs/jagged:poly",
         "@zorch//zorch/poly:poly",
+        "@zorch//zorch/sumcheck:sumcheck",
         requirement("jax"),
         requirement("numpy"),
+        requirement("zk_dtypes"),
+    ],
+)
+
+py_test(
+    name = "inner_marked_test",
+    # small: jaxpr/lowering inspection of a tiny instance, no fixture, no GPU.
+    size = "small",
+    srcs = ["inner_marked_test.py"],
+    deps = [
+        ":prover",
+        "//sp1_zorch/shard_prover:replay",
+        "@zorch//zorch/pcs/jagged:poly",
+        "@zorch//zorch/sumcheck:sumcheck",
+        "@zorch//zorch/testkit:transcript",
+        requirement("absl_py"),
+        requirement("jax"),
         requirement("zk_dtypes"),
     ],
 )
@@ -34,6 +53,24 @@ py_test(
         "@zorch//zorch:transcript",
         "@zorch//zorch/testkit:transcript",
         requirement("absl_py"),
+        requirement("jax"),
+        requirement("numpy"),
+        requirement("zk_dtypes"),
+    ],
+)
+
+# Golden generator for the zkx CPU codegen test (cpu_kernel_emitter_sumcheck_
+# jagged_eval_unittest). Prints a C++ header; not part of any test.
+py_binary(
+    name = "gen_jagged_eval_golden",
+    srcs = ["gen_jagged_eval_golden.py"],
+    deps = [
+        ":prover",
+        "//sp1_zorch/poseidon2:koalabear16",
+        "//sp1_zorch/shard_prover:replay",
+        "@zorch//zorch:transcript",
+        "@zorch//zorch/pcs/jagged:poly",
+        "@zorch//zorch/poly:poly",
         requirement("jax"),
         requirement("numpy"),
         requirement("zk_dtypes"),
