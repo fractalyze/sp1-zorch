@@ -54,7 +54,9 @@ gates (a cache shared across toolchains has served wrong executables).
 re-encodes it at the open (SP1's drop_ldes) so it never pins ~6 GB through GKR +
 zerocheck; pass ``=false`` to keep it resident (small shards / >32 GB cards).
 
-Exits non-zero on any mismatch.
+Each stage's golden check runs the instant that stage finishes, so a mismatch
+exits non-zero *before* the later stages pay their compile -- a stage-1 commit
+mismatch aborts in ~one trace-commit, not after the whole chain.
 """
 
 from __future__ import annotations
@@ -123,7 +125,8 @@ _RUNS = flags.DEFINE_integer(
     "Prove the chain this many times. Run 1 is cold (pays the XLA/zkx "
     "compiles); runs 2+ are warm (the compiled executables are reused), so the "
     "warm per-stage times are the ones to compare against SP1's native prover. "
-    "Golden checks run on the final pass.",
+    "Each stage's golden check runs as that stage finishes (every pass), "
+    "aborting on a mismatch.",
 )
 _MAX_STAGE = flags.DEFINE_integer(
     "max_stage",
@@ -151,20 +154,37 @@ class _TimedRound(Round):
     block on the stage's output first). Proof messages that are plain
     dataclasses are opaque to ``block_until_ready``; work that only feeds
     such a message (the jagged open's query gathers) attributes to the
-    next timed section instead."""
+    next timed section instead.
 
-    def __init__(self, inner: Round) -> None:
+    With ``check`` set, run that stage's golden byte-check the instant the
+    stage finishes and ``sys.exit(1)`` on a mismatch -- so a stage-k mismatch
+    aborts before stage k+1 pays its (multi-minute) compile, instead of the
+    chain running to completion and the checks firing only at the end.
+    ``check`` takes the stage's output message and returns ``True`` on match
+    (it prints its own OK / MISMATCH line)."""
+
+    def __init__(self, inner: Round, check=None) -> None:
         self._inner = inner
+        self._check = check
 
     def __call__(self, carry, transcript):
         t0 = time.monotonic()
         out = self._inner(carry, transcript)
         jax.block_until_ready(out)
+        label = type(self._inner).__name__
         print(
-            f"[stage {type(self._inner).__name__}] "
-            f"{(time.monotonic() - t0) * 1e3:.1f}ms",
+            f"[stage {label}] {(time.monotonic() - t0) * 1e3:.1f}ms",
             flush=True,
         )
+        # out is (carry, transcript, msg); check the stage's message and abort
+        # now so the later stages' compile is never paid on a mismatch.
+        if self._check is not None and not self._check(out[2]):
+            print(
+                f"[stage {label}] fail-fast: byte-mismatch -- skipping the "
+                f"remaining stages' compile",
+                flush=True,
+            )
+            sys.exit(1)
         return out
 
 
@@ -222,13 +242,74 @@ def main(argv) -> None:
     # so msgs[:n] are exactly the stages that ran.
     rounds = chain.rounds[:n]
 
+    # Parse the golden references up front: a missing/malformed fixture then
+    # fails at startup rather than after stage 1's ~2-3 min cold compile, and
+    # each file is read once instead of per warm pass. Only stages 1..n are
+    # parsed -- a --max_stage prefix never needs a later stage's fixture.
+    # The trace commit must equal SP1's dumped commitment; gpu_commitment.txt
+    # carries canonical integers, so encode to compare.
+    commit_kv = _parse_kv_lines((shard_dir / "gpu_commitment.txt").read_text())
+    want_commit = jnp.array(_parse_int_list(commit_kv["main_commit"]), F)
+    # gpu_z_row.txt is SP1's `zeta` -- the LogUp-GKR eval point's row tail
+    # (eval_point[-MAX_LOG_ROW_COUNT:]), NOT the zerocheck point. zeta is a sponge
+    # image of every byte observed through the GKR leg, so matching it seals the
+    # preamble + GKR leg; final_eval seals the zerocheck rounds.
+    want_z_row = (
+        _parse_ef_list((shard_dir / "gpu_z_row.txt").read_text()) if n >= 2 else None
+    )
+    if n >= 3:
+        zc_state = _parse_kv_lines(
+            (shard_dir / "gpu_zerocheck_state.txt").read_text().split("\nchip ")[0]
+        )
+        want_final_eval = _parse_ef_list(zc_state["final_eval"])[0]
+    else:
+        want_final_eval = None
+    # The jagged eval's outer sumcheck claim seals z_col + the column-claim
+    # assembly: claim = Sum_c eq(z_col, c) * column_claim[c].
+    want_phase4 = (
+        _parse_ef_list((shard_dir / "phase4_sumcheck_claim.txt").read_text())[0]
+        if n >= 4
+        else None
+    )
+
+    # Per-stage golden byte-checks, wired into the timed round wrapper (below) to
+    # fire the instant their stage finishes and abort on a mismatch -- so a
+    # stage-k mismatch never pays stage k+1's (multi-minute) compile, instead of
+    # every check firing after the whole chain runs.
+    def _check_commit(msg):
+        return check_match("commitment vs gpu_commitment.main_commit", msg, want_commit)
+
+    def _check_gkr(msg):
+        return check_match(
+            "zeta (gkr eval-point row tail) vs gpu_z_row",
+            msg.eval_point[-MAX_LOG_ROW_COUNT:],
+            want_z_row,
+        )
+
+    def _check_zerocheck(msg):
+        return check_match(
+            "final_eval",
+            eval_coeffs(msg.msgs.round_poly[-1], msg.msgs.challenge[-1]),
+            want_final_eval,
+        )
+
+    def _check_jagged(msg):
+        return check_match(
+            "phase4 outer sumcheck claim",
+            msg.eval.outer_sumcheck_claim,
+            want_phase4,
+        )
+
+    stage_checks = [_check_commit, _check_gkr, _check_zerocheck, _check_jagged][:n]
+
     # Prove ``--runs`` times: run 1 pays the XLA/zkx compile, runs 2+ reuse it.
     # Each Round is jitted (prove_shard_chain(jit=True)); _TimedRound blocks after
-    # each stage to print its wall-clock, so the per-stage split is visible. That
+    # each stage to print its wall-clock + run its golden check, so the per-stage
+    # split is visible and a mismatch aborts before the next stage compiles. That
     # wall is host-dispatch-bound, not GPU compute -- for an honest per-stage GPU
     # number use nsys kernel-active time on the warm pass (#124).
     runs = _RUNS.value
-    chain.rounds = [_TimedRound(rnd) for rnd in rounds]
+    chain.rounds = [_TimedRound(rnd, check) for rnd, check in zip(rounds, stage_checks)]
     for i in range(runs):
         kind = "cold" if i == 0 else "warm"
         print(
@@ -241,59 +322,14 @@ def main(argv) -> None:
             fresh_transcript(),
         )
         print(f"chain run: {(time.monotonic() - t0) * 1e3:.1f}ms", flush=True)
-    # Golden checks for the stages that ran (msgs has one entry per stage).
-    # The trace commit must equal SP1's dumped commitment; gpu_commitment.txt
-    # carries canonical integers, so encode to compare.
-    commitment = msgs[0]
-    commit_kv = _parse_kv_lines((shard_dir / "gpu_commitment.txt").read_text())
-    want_commit = jnp.array(_parse_int_list(commit_kv["main_commit"]), F)
-    ok = check_match(
-        "commitment vs gpu_commitment.main_commit", commitment, want_commit
-    )
-
-    gkr = zc = jagged = None
-    if n >= 2:
-        # gpu_z_row.txt is SP1's `zeta` -- the LogUp-GKR evaluation point's row
-        # tail (eval_point[-MAX_LOG_ROW_COUNT:], the GKR logup_evaluations.point),
-        # NOT the zerocheck sumcheck point. zeta is a sponge image of every byte
-        # observed through the GKR leg, so matching it seals the preamble + GKR
-        # leg; the zerocheck rounds are sealed by final_eval below. Mirrors
-        # zerocheck/verify_zerocheck.py's `zeta (z_row)` check.
-        gkr = msgs[1]
-        z_row = _parse_ef_list((shard_dir / "gpu_z_row.txt").read_text())
-        ok &= check_match(
-            "zeta (gkr eval-point row tail) vs gpu_z_row",
-            gkr.eval_point[-MAX_LOG_ROW_COUNT:],
-            z_row,
-        )
-    if n >= 3:
-        zc = msgs[2]
-        state = _parse_kv_lines(
-            (shard_dir / "gpu_zerocheck_state.txt").read_text().split("\nchip ")[0]
-        )
-        ok &= check_match(
-            "final_eval",
-            eval_coeffs(zc.msgs.round_poly[-1], zc.msgs.challenge[-1]),
-            _parse_ef_list(state["final_eval"])[0],
-        )
-    if n >= 4:
-        # The jagged eval's outer sumcheck claim seals z_col + the column-claim
-        # assembly: claim = Sum_c eq(z_col, c) * column_claim[c].
-        jagged = msgs[3]
-        phase4_claim = _parse_ef_list(
-            (shard_dir / "phase4_sumcheck_claim.txt").read_text()
-        )[0]
-        ok &= check_match(
-            "phase4 outer sumcheck claim",
-            jagged.eval.outer_sumcheck_claim,
-            phase4_claim,
-        )
-
-    if not ok:
-        sys.exit(1)
+    # Each stage's golden check already ran inside the round wrapper and exits
+    # on a mismatch, so reaching here means stages 1..n all byte-matched.
     print(f"prove_shard chain (stages 1..{n}) byte-match: ALL OK")
 
     if n >= 4 and _FFI_VERIFY.value:
+        # n is capped at 4, so n >= 4 means the full chain ran: msgs is exactly
+        # the four stage messages the bincode wire needs, in order.
+        commitment, gkr, zc, jagged = msgs
         t0 = time.monotonic()
         vk_bytes = encode_vk(shard.vk)
         proof_bytes = encode_shard_proof(
