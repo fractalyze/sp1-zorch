@@ -9,8 +9,6 @@ round polynomials, so it validates the zerocheck summand without knowing it.
 Covers the single-chip round and the equal-height multi-chip joint round (the
 λ-RLC across chips with one shared challenge folding every chip)."""
 
-from unittest import mock
-
 import jax.numpy as jnp
 import numpy as np
 from absl.testing import absltest
@@ -18,7 +16,6 @@ from zk_dtypes import koalabear_mont as KB
 
 from zorch.poly.eq import expand_eq_to_hypercube
 from zorch.sumcheck import verifier
-from zorch.sumcheck.prover import prove as _zorch_prove
 from zorch.testkit.transcript import cheap_transcript
 from zorch.verify import verify
 
@@ -81,25 +78,6 @@ class ZerocheckRoundTest(absltest.TestCase):
             *final_state
         )
         self.assertTrue(bool(final_claim == want.reshape(())))
-
-    def test_num_real_forwards_to_zorch(self) -> None:
-        # Single chip: the real prefix length passes through verbatim — the
-        # bound semantics (and the zero-tail soundness contract) live in zorch.
-        num_vars = 4
-        cols, alpha, zeta, _ = _setup(num_vars)
-        with mock.patch(
-            "sp1_zorch.zerocheck.round.prove", wraps=_zorch_prove
-        ) as proved:
-            prove_zerocheck(
-                _eval_fn,
-                cols,
-                alpha,
-                zeta,
-                cheap_transcript(KB),
-                degree=_DEGREE,
-                num_real=10,
-            )
-        self.assertEqual(proved.call_args.kwargs.get("num_real"), 10)
 
     def test_wrong_claim_rejected(self) -> None:
         num_vars = 4
@@ -224,91 +202,40 @@ class MultiChipZerocheckRoundTest(absltest.TestCase):
                 degree=_MC_DEGREE,
             )
 
-    def test_num_reals_forwards_max_height_as_num_real(self) -> None:
-        # The zorch.sumcheck composite carries ONE num_real, so the joint
-        # round's bound is the longest real prefix across chips. The capture
-        # delegates to the real prover, so the run still self-verifies shapes.
-        num_vars = 4
-        chips_cols, alphas, lambdas, zeta, _ = _mc_setup(num_vars)
-        with mock.patch(
-            "sp1_zorch.zerocheck.round.prove", wraps=_zorch_prove
-        ) as proved:
-            prove_multi_chip_zerocheck(
-                (_chip_a_eval, _chip_b_eval),
-                chips_cols,
-                alphas,
-                lambdas,
-                zeta,
-                cheap_transcript(KB),
-                degree=_MC_DEGREE,
-                num_reals=(10, 6),
-            )
-        self.assertEqual(proved.call_args.kwargs.get("num_real"), 10)
-
-    def test_num_reals_default_forwards_none(self) -> None:
-        # A dense prove must keep the marker envelope unchanged: no num_reals
-        # means no bound is declared downstream.
-        num_vars = 4
-        chips_cols, alphas, lambdas, zeta, _ = _mc_setup(num_vars)
-        with mock.patch(
-            "sp1_zorch.zerocheck.round.prove", wraps=_zorch_prove
-        ) as proved:
-            prove_multi_chip_zerocheck(
-                (_chip_a_eval, _chip_b_eval),
-                chips_cols,
-                alphas,
-                lambdas,
-                zeta,
-                cheap_transcript(KB),
-                degree=_MC_DEGREE,
-            )
-        self.assertIsNone(proved.call_args.kwargs.get("num_real"))
-
-    def test_num_reals_metadata_only_on_padded_trace(self) -> None:
-        # The declared bound never changes the computation: a zero-padded
-        # jagged trace proves identically with and without it. (Soundness of a
-        # vendor actually skipping the tail rests on the zero rows satisfying
-        # the constraints, as they do for the chips here.)
+    def test_padded_trace_proves_correctly(self) -> None:
+        # A zero-padded jagged trace (each chip live only below its real height)
+        # still proves and self-verifies: every chip's constraint-fold vanishes
+        # on its zero rows, so the joint summand is already zero past each real
+        # height — no explicit real-prefix bound is needed (zorch#283 dropped
+        # prove's num_real perf bound; the result is byte-identical without it).
         num_vars = 4
         width = 1 << num_vars
-        chips_cols, alphas, lambdas, zeta, claim = _mc_setup(num_vars)
+        chips_cols, alphas, lambdas, zeta, _ = _mc_setup(num_vars)
         live = jnp.arange(width)
         chips_cols = [
             [jnp.where(live < h, col, jnp.zeros((), KB)) for col in chip]
             for chip, h in zip(chips_cols, (10, 6), strict=True)
         ]
-        args = (
+        eq = expand_eq_to_hypercube(zeta, jnp.ones((), KB))
+        fold_a = _chip_a_eval(jnp.stack(chips_cols[0], axis=-1)) @ alphas[0]
+        fold_b = _chip_b_eval(jnp.stack(chips_cols[1], axis=-1)) @ alphas[1]
+        claim = jnp.sum(eq * (lambdas[0] * fold_a + lambdas[1] * fold_b))
+        _, _, msgs = prove_multi_chip_zerocheck(
             (_chip_a_eval, _chip_b_eval),
             chips_cols,
             alphas,
             lambdas,
             zeta,
             cheap_transcript(KB),
+            degree=_MC_DEGREE,
         )
-        _, _, bounded = prove_multi_chip_zerocheck(
-            *args, degree=_MC_DEGREE, num_reals=(10, 6)
+        _, _, _, ok = verify(
+            verifier.SumcheckRound(_MC_DEGREE),
+            claim,
+            msgs.round_poly,
+            cheap_transcript(KB),
         )
-        _, _, dense = prove_multi_chip_zerocheck(*args, degree=_MC_DEGREE)
-        np.testing.assert_array_equal(bounded.round_poly, dense.round_poly)
-        np.testing.assert_array_equal(bounded.challenge, dense.challenge)
-
-    def test_num_reals_validation(self) -> None:
-        num_vars = 4
-        width = 1 << num_vars
-        chips_cols, alphas, lambdas, zeta, _ = _mc_setup(num_vars)
-        kwargs = dict(degree=_MC_DEGREE)
-        for bad in [(10,), (0, 6), (10, width + 1)]:
-            with self.assertRaisesRegex(ValueError, "num_reals"):
-                prove_multi_chip_zerocheck(
-                    (_chip_a_eval, _chip_b_eval),
-                    chips_cols,
-                    alphas,
-                    lambdas,
-                    zeta,
-                    cheap_transcript(KB),
-                    num_reals=bad,
-                    **kwargs,
-                )
+        self.assertTrue(bool(ok))
 
     def test_no_chips_rejected(self) -> None:
         # Zero chips slips past the count agreement (0 == 0 == 0) and would

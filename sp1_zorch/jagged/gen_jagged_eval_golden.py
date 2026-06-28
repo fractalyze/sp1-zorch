@@ -13,6 +13,8 @@ Run: `bazel run //sp1_zorch/jagged:gen_jagged_eval_golden`.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -25,6 +27,7 @@ from sp1_zorch.shard_prover.replay import fresh_transcript
 from zorch.pcs.jagged.poly import _TRANSITION_ROWS, build_jagged_layout
 from zorch.poly.eq import expand_eq_to_hypercube
 from zorch.poly.univariate import eval_coeffs
+from zorch.utils.bits import log2_ceil_usize
 
 # Smallest instance that still exercises the bit-order / matvec / column
 # reduction / observe-sample-fold (n_d=1 -> 1 BP layer, 2 rounds, 2 columns):
@@ -60,11 +63,12 @@ def _carr(name: str, vals: list[int]) -> str:
 
 
 def main() -> None:
-    _, cfg = build_jagged_layout(_COL_HEIGHTS, len(_COL_HEIGHTS), _N_R, EF)
+    l_max = len(_COL_HEIGHTS)
+    _, n_d = build_jagged_layout(_COL_HEIGHTS, l_max, EF)
+    cfg = SimpleNamespace(n_r=_N_R, n_c=log2_ceil_usize(l_max), n_d=n_d)
     num_bits = cfg.n_d
     n_vars = 2 * num_bits
     bp_num_vars = max(cfg.n_r, cfg.n_d)
-    l_max = len(_COL_HEIGHTS)
     ef_limbs = 4
 
     z_row = _ef(11, cfg.n_r)

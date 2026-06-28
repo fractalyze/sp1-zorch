@@ -56,6 +56,7 @@ from sp1_zorch.jagged.prover import (
 )
 from sp1_zorch.shard_prover.replay import fresh_transcript, from_u32
 from zorch.pcs.jagged.poly import build_jagged_layout
+from zorch.utils.bits import log2_ceil_usize
 
 _FIXTURE = Path(__file__).parent / "testdata" / "gpu_fibonacci"
 # The packed dense lives with the zerocheck fixture (same shard); see
@@ -96,8 +97,8 @@ def load_inputs_from_heights(start_indices_file: Path) -> JaggedEvalInputs:
     col_heights = [int(x) for x in np.diff(si)]
     L = len(col_heights)
     n_r = max(1, int(max(col_heights)).bit_length())
-    _, cfg = build_jagged_layout(col_heights, L, n_r, EF)
-    n_d, n_c = cfg.n_d, cfg.n_c
+    _, n_d = build_jagged_layout(col_heights, L, EF)
+    n_c = log2_ceil_usize(L)
     # iota-mod base buffer: non-degenerate values so the fold is not optimized away.
     dense = from_u32(np.arange(1 << n_d, dtype=np.uint32) % (1 << 20) + 1, BF)
     return JaggedEvalInputs(

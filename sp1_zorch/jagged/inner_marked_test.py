@@ -12,6 +12,8 @@ is ``prover_test`` (scripted transcript -> scan path)."""
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import jax
 import jax.numpy as jnp
 from absl.testing import absltest
@@ -21,6 +23,7 @@ from zk_dtypes import koalabear_mont, koalabearx4_mont
 from zorch.pcs.jagged.poly import build_jagged_layout
 from zorch.sumcheck.prover import SUMCHECK_MARKER, SUMCHECK_MARKER_VERSION
 from zorch.testkit.transcript import cheap_transcript
+from zorch.utils.bits import log2_ceil_usize
 
 from sp1_zorch.jagged.prover import inner_sumcheck
 from sp1_zorch.shard_prover.replay import fresh_transcript
@@ -30,15 +33,18 @@ EF = koalabearx4_mont
 _HAS_COMPOSITE_OP = hasattr(stablehlo, "CompositeOp")
 
 # A small jagged instance: two columns of heights 2 and 3. `n_r` covers the
-# tallest column; `build_jagged_layout` derives `n_d` (the prefix-bit width) and
-# `n_c` (the column-bit width) from the layout.
+# tallest column; the layout derives `n_d` (the prefix-bit width); `n_c` is the
+# column-bit width ceil(log2 l_max). (Mirrors zorch's test-only `oracle_cfg`,
+# which is a private target — recompute it here from the public poly API.)
 _COL_HEIGHTS = [2, 3]
 _N_R = 2
 
 
 def _layout():
-    _, cfg = build_jagged_layout(_COL_HEIGHTS, len(_COL_HEIGHTS), _N_R, EF)
-    return cfg
+    _, n_d = build_jagged_layout(_COL_HEIGHTS, len(_COL_HEIGHTS), EF)
+    return SimpleNamespace(
+        n_r=_N_R, n_c=log2_ceil_usize(len(_COL_HEIGHTS)), n_d=n_d
+    )
 
 
 def _ef(seed: int, n: int):
