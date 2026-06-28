@@ -24,10 +24,11 @@ bazel_dep(name = "zorch", version = "0.0.0")
 git_override(
     module_name = "zorch",
     remote = "https://github.com/fractalyze/zorch.git",
-    # zorch main. Keep the requirements.in wheel set >= 0.0.5.dev20260610045259
-    # in lockstep with this pin: the zorch.poseidon2 marker (zorch#212) is a
-    # hard cut on the zkx side, and CPU-only CI can't catch a desync.
-    commit = "ea6248792d223bcb0492b2e5930d3001932c45da",
+    # zorch main on the consolidated new-jax stack. Keep the requirements.in
+    # wheel set on jax 0.10.0.dev20260624213155 in lockstep with this pin: the
+    # zorch.poseidon2 marker is a hard cut on the zkx side, and CPU-only CI
+    # can't catch a desync. This commit builds against that jax wheel.
+    commit = "baf43e3a9a31b9e3dcd20a332458c75f65c39397",
 )
 
 python = use_extension("@rules_python//python/extensions:python.bzl", "python")

@@ -188,7 +188,13 @@ class VirtualPaddingGeqTest(absltest.TestCase):
         point = jax.lax.bitcast_convert_type(limbs, EF)
         size = 1 << point.shape[0]
         for threshold in (0, 4, 24, 32, size):
-            indicator = (jnp.arange(size) >= threshold).astype(EF)
+            # Field-valued 0/1 indicator via a select, not a bool->EF
+            # convert_element_type: the latter fails to bufferize in eager mode
+            # on the pinned jaxlib's CPU backend ("op was not bufferized",
+            # jax 0.10.0). A select over field operands lowers cleanly and gives
+            # the identical 0/1 indicator.
+            mask = jnp.arange(size) >= threshold
+            indicator = jnp.where(mask, jnp.ones((), EF), jnp.zeros((), EF))
             want = eval_mle(indicator, point)
             got = virtual_padding_geq(threshold, point)
             self.assertTrue(

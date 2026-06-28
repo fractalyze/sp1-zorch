@@ -22,7 +22,6 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from functools import partial
-from unittest import mock
 
 import jax
 import jax.numpy as jnp
@@ -31,13 +30,12 @@ from absl.testing import absltest
 from zk_dtypes import koalabear_mont as KB
 from zk_dtypes import koalabearx4_mont as EF
 
-import zorch._composite as _zorch_composite
-from zorch._composite import _HAS_COMPOSITE_OP
 from zorch.poly.eq import expand_eq_to_hypercube
 from zorch.poly.univariate import compute_inv_vandermonde, eval_coeffs
 from zorch.testkit.transcript import cheap_transcript
 from zorch.transcript import sample_challenge
 
+from sp1_zorch.testkit import inline_composite_markers
 from sp1_zorch.zerocheck.jagged import (
     DEGREE,
     _zero_extend_cols,
@@ -202,17 +200,18 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
             beta = _rand(77, ())
             gkr_powers, claims = _gkr_inputs(beta, traces, zeta)
 
-        _, _, msgs = prove_jagged_zerocheck(
-            eval_fns,
-            traces,
-            num_reals,
-            alphas,
-            lambdas,
-            zeta,
-            _ScriptedTranscript.replaying(challenges),
-            beta=beta,
-            claims=claims,
-        )
+        with inline_composite_markers():
+            _, _, msgs = prove_jagged_zerocheck(
+                eval_fns,
+                traces,
+                num_reals,
+                alphas,
+                lambdas,
+                zeta,
+                _ScriptedTranscript.replaying(challenges),
+                beta=beta,
+                claims=claims,
+            )
         want = _naive_round_polys(
             eval_fns, traces, num_reals, alphas, lambdas, zeta, challenges, gkr_powers
         )
@@ -295,7 +294,6 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
         bounded = [c for c in calls if "live_width_operand_idx" in c]
         return calls, bounded
 
-    @absltest.skipUnless(_HAS_COMPOSITE_OP, "jaxlib lacks stablehlo.CompositeOp")
     def test_constraint_markers_are_bounded_and_round_invariant(self) -> None:
         # The compile-time contract the fixed-width buffers + lax.scan exist
         # for: every per-pair constraint evaluation rides a live-width-bounded
@@ -320,7 +318,6 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
         # engages on a single-row trace as of fractalyze/zkx#704).
         self.assertEqual(shapes, {"12x3", "6x3", "1x3"})
 
-    @absltest.skipUnless(_HAS_COMPOSITE_OP, "jaxlib lacks stablehlo.CompositeOp")
     def test_round_loop_stays_rolled(self) -> None:
         # The regression guard for the scan: the constraint-marker count (the
         # term that drove the unrolled compile wall) must be invariant in
@@ -383,17 +380,18 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
         beta = _rand(70, ())
         _, claims = _gkr_inputs(beta, traces, zeta)
 
-        _, _, msgs = prove_jagged_zerocheck(
-            [_eval_fn] * nchips,
-            traces,
-            num_reals,
-            alphas,
-            lambdas,
-            zeta,
-            cheap_transcript(KB),
-            beta=beta,
-            claims=claims,
-        )
+        with inline_composite_markers():
+            _, _, msgs = prove_jagged_zerocheck(
+                [_eval_fn] * nchips,
+                traces,
+                num_reals,
+                alphas,
+                lambdas,
+                zeta,
+                cheap_transcript(KB),
+                beta=beta,
+                claims=claims,
+            )
 
         claim = jnp.zeros((), KB)
         for i in range(nchips):
@@ -408,15 +406,16 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
         lambdas = _rand(50, (nchips,))
         zeta = _rand(3, (num_vars,))
 
-        finals, _, msgs = prove_jagged_zerocheck(
-            [_eval_fn] * nchips,
-            traces,
-            num_reals,
-            alphas,
-            lambdas,
-            zeta,
-            cheap_transcript(KB),
-        )
+        with inline_composite_markers():
+            finals, _, msgs = prove_jagged_zerocheck(
+                [_eval_fn] * nchips,
+                traces,
+                num_reals,
+                alphas,
+                lambdas,
+                zeta,
+                cheap_transcript(KB),
+            )
 
         # Pure zerocheck: the claim thread starts at zero.
         self._assert_claim_thread(msgs, jnp.zeros((), KB))
@@ -445,12 +444,11 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
         lambdas = _rand_ef(50, (1,))
         zeta = _rand_ef(3, (num_vars,))
 
-        # The pinned jaxlib's embedded zkx CPU emitter CHECK-fails on an
-        # engaged extension-field constraint_eval region (fractalyze/zkx#605;
-        # tracked removal: fractalyze/sp1-zorch#62) — run the inline
-        # decomposition for this EF case only, keeping the marker tests above
-        # on the real composite path.
-        with mock.patch.object(_zorch_composite, "_HAS_COMPOSITE_OP", False):
+        # Inline the constraint_eval marker for this executing case — the zkx
+        # CPU emitter CHECK-fails on an engaged region (symbolic_map.cc:196) —
+        # keeping the marker-text tests above on the real composite path.
+        # Tracked removal: fractalyze/sp1-zorch#62.
+        with inline_composite_markers():
             _, _, msgs = prove_jagged_zerocheck(
                 [_eval_fn], traces, [nr], alphas, lambdas, zeta, cheap_transcript(KB)
             )

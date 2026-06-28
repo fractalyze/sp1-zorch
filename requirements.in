@@ -11,18 +11,17 @@
 absl-py
 numpy
 # Lockstep with the zorch git pin in MODULE.bazel (zkx marker contract) —
-# bump both together; the rationale lives on the git_override there.
-# This build also carries the zkx GPU NTT fix (fractalyze/zkx#630): the
-# earlier dev20260610045259 wheel emits wrong codewords for lax.fft compiled
-# inside a jit module at >= 2^21 codeword length, which the trace-commit @jit
-# zone hits at rsp scale. Do not drop below this timestamp.
-# (Each dev<timestamp> wheel is a fractalyze/jax build that bakes in jax's zkx
-# pin as of that build, so to pull a specific zkx fix pick a wheel timestamped
-# after that zkx PR merged; CPU-only CI cannot catch a wrong GPU codeword.)
-jax==0.0.5.dev20260624111151
-jaxlib==0.0.5.dev20260624111151
-jax-cuda12-plugin==0.0.5.dev20260624111151
-zkx-cuda-pjrt==0.0.5.dev20260624111151
+# bump both together; the rationale lives on the git_override there. The wheel
+# set must match the jax that the pinned zorch commit builds against, or the
+# GPU codeword desyncs, which CPU-only CI cannot catch.
+# Migrated to the consolidated fractalyze/jax (the 0.10.0 line, renamed from the
+# old 0.0.5 zkx stack); zkx-cuda-pjrt is now published as jax-cuda12-pjrt. This
+# wheel set matches the pinned zorch commit (baf43e3), which builds against
+# jax 0.10.0.dev20260624213155.
+jax==0.10.0.dev20260624213155
+jaxlib==0.10.0.dev20260624213155
+jax-cuda12-pjrt==0.10.0.dev20260624213155
+jax-cuda12-plugin==0.10.0.dev20260624213155
 # zk_dtypes ships the native field dtypes jax lowers. It arrives transitively
 # via jax, but the resolver leaves it at the lowest compatible version, which
 # lags the jax build: 0.0.7 adds the Pallas scalar field (pallas_sf) the jax

@@ -153,7 +153,7 @@ py_binary(
         requirement("jax"),
         requirement("jax_cuda12_plugin"),
         requirement("zk_dtypes"),
-        requirement("zkx_cuda_pjrt"),
+        requirement("jax_cuda12_pjrt"),
     ],
 )
 
@@ -174,7 +174,7 @@ py_binary(
         requirement("numpy"),
         requirement("zk_dtypes"),
         requirement("zkbench"),
-        requirement("zkx_cuda_pjrt"),
+        requirement("jax_cuda12_pjrt"),
     ],
 )
 
@@ -197,6 +197,6 @@ py_binary(
         requirement("jax"),
         requirement("jax_cuda12_plugin"),
         requirement("zkbench"),
-        requirement("zkx_cuda_pjrt"),
+        requirement("jax_cuda12_pjrt"),
     ],
 )

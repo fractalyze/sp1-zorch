@@ -24,14 +24,15 @@ from sp1_zorch.jagged.verifier import stacked_basefold_verify
 from sp1_zorch.shard_prover.prove_shard import ShardJaggedEvalProof
 from sp1_zorch.shard_prover.verify_shard import ShardVerifierCarry
 
-# The pinned jaxlib wheel's embedded zkx CPU emitter CHECK-fails on the rank-1
-# linalg.broadcast inside an engaged zorch.constraint_eval region
-# (fractalyze/zkx#605), so run every marker's inline decomposition instead —
+# The pinned jaxlib wheel's embedded zkx CPU emitter CHECK-fails
+# (symbolic_map.cc:196) on an engaged zorch.constraint_eval region — the
+# jax-0.10.0-series successor to the rank-1 linalg.broadcast variant
+# (fractalyze/zkx#605). Inline every marker's decomposition instead —
 # byte-identical output, only the fusion marker is dropped. Tracked removal:
 # fractalyze/sp1-zorch#62.
-import zorch._composite as _zorch_composite
+from sp1_zorch.testkit import force_inline_composite_markers
 
-_zorch_composite._HAS_COMPOSITE_OP = False
+force_inline_composite_markers()
 
 from sp1_zorch.shard_prover.chain_testkit import small_shard_chain_fixture
 
