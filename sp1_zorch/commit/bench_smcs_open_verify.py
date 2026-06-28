@@ -17,7 +17,7 @@ phase grid into compile vs runtime. A ``py_binary`` (manual ``bazel run``), not 
 bench is GPU-only — same as ``bench_sp1_logup_gkr``.
 
 ``commit`` emits the ``zorch.merkle_commit`` composite, so this needs a
-composite-capable plugin. The pinned ``zkx_cuda_pjrt`` wheel errors with
+composite-capable plugin. The pinned ``jax_cuda12_pjrt`` wheel errors with
 ``stablehlo.composite is unknown`` (the stablehlo#83 + zkx#497 legalization isn't
 in the pin yet), so run against a composite-capable plugin via
 ``ZKX_GPU_PLUGIN_PATH`` until it is the pinned default. The #2 baseline (RTX 5090,

@@ -49,7 +49,7 @@ from zorch.pcs.jagged.poly import (
     build_jagged_layout,
     build_prefix_sums,
     msb_first_bits,
-    partial_eval,
+    partial_eval_core,
 )
 from zorch.poly.eq import expand_eq_to_hypercube
 from zorch.poly.univariate import eval_coeffs
@@ -57,12 +57,12 @@ from zorch.round import Round
 from zorch.sumcheck.prover import (
     SUMCHECK_MARKER,
     SUMCHECK_MARKER_VERSION,
-    _state_leaves,
 )
 from zorch.transcript import (
     DuplexState,
     DuplexTranscript,
     Transcript,
+    _state_leaves,
     sample_challenge,
 )
 from zorch.utils.bits import log2_ceil_usize
@@ -189,16 +189,15 @@ def build_outer_indicator(
 ) -> Array:
     """Materialize ``J̃(z_row, z_col, ·)`` over the dense area ``[0, target_size)``.
 
-    ``partial_eval`` allocates ``2^n_d`` (``n_d`` = prefix-bit width, which can
-    exceed the dense area's address width when the total area is itself a power
-    of two), reading its scatter offsets from the canonical-limb tensor; every
-    nonzero entry lands below ``total_area <= target_size``, so the tail is zero
-    and slicing to ``target_size`` recovers the indicator over the dense area."""
+    ``partial_eval_core`` builds the indicator directly over ``[0, target_size)``
+    (the dense area) rather than allocating ``2^n_d`` then slicing — it reads its
+    scatter offsets from limb 0 of the offset-bit tensor and is shape-polymorphic
+    in the column count and prefix-bit width ``n_d``."""
     heights = list(col_heights)
     l_max = len(heights)
-    _, cfg = build_jagged_layout(heights, l_max, z_row.shape[0], dtype)
-    offsets = _offset_bit_tensor(heights, l_max, cfg)
-    return partial_eval(offsets, z_row, z_col, cfg=cfg)[:target_size]
+    _, n_d = build_jagged_layout(heights, l_max, dtype)
+    offsets = _offset_bit_tensor(heights, l_max, n_d, dtype)
+    return partial_eval_core(offsets, z_row, z_col, target_size)
 
 
 def outer_sumcheck(
@@ -438,15 +437,15 @@ def inner_sumcheck(
     to the same scan, so both paths are byte-identical."""
     heights = list(col_heights)
     l_max = len(heights)
-    _, cfg = build_jagged_layout(heights, l_max, z_row.shape[0], dtype)
+    _, n_d = build_jagged_layout(heights, l_max, dtype)
 
-    # num_bits = cfg.n_d holds prefix sums up to the total area; the merged
-    # buffer carries bits(t_c) ‖ bits(t_{c+1}) -> n_vars = 2·n_d.
-    num_bits = cfg.n_d
+    # n_d holds prefix sums up to the total area; the merged buffer carries
+    # bits(t_c) ‖ bits(t_{c+1}) -> n_vars = 2·n_d.
+    num_bits = n_d
     # The BP indexes over n_d prefix bits, not z_trace's length — the layer loop
     # must cover all prefix bits or it drops the MSB (matches eval_jagged_mle's
-    # num_vars = max(n_r, n_d)).
-    bp_num_vars = max(cfg.n_r, cfg.n_d)
+    # num_vars = max(n_r, n_d)). n_r = z_row.shape[0].
+    bp_num_vars = max(z_row.shape[0], n_d)
     t_matrix = jnp.asarray(_TRANSITION_ROWS, dtype=dtype)
 
     merged = merged_prefix_bits(heights, num_bits, dtype=dtype)

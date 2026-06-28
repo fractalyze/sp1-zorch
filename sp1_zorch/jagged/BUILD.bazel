@@ -32,6 +32,7 @@ py_test(
         "//sp1_zorch/shard_prover:replay",
         "@zorch//zorch/pcs/jagged:poly",
         "@zorch//zorch/sumcheck:sumcheck",
+        "@zorch//zorch/utils:bits",
         "@zorch//zorch/testkit:transcript",
         requirement("absl_py"),
         requirement("jax"),
@@ -49,6 +50,7 @@ py_test(
     ],
     deps = [
         ":prover",
+        "//sp1_zorch:testkit",
         "@zorch//zorch:round",
         "@zorch//zorch:transcript",
         "@zorch//zorch/testkit:transcript",
@@ -71,6 +73,7 @@ py_binary(
         "@zorch//zorch:transcript",
         "@zorch//zorch/pcs/jagged:poly",
         "@zorch//zorch/poly:poly",
+        "@zorch//zorch/utils:bits",
         requirement("jax"),
         requirement("numpy"),
         requirement("zk_dtypes"),
@@ -78,7 +81,7 @@ py_binary(
 )
 
 # Isolated phase benchmark for the jagged-eval stage (no full shard proof).
-# GPU: deps jax_cuda12_plugin + zkx_cuda_pjrt and run with JAX_PLATFORMS=cuda,
+# GPU: deps jax_cuda12_plugin + jax_cuda12_pjrt and run with JAX_PLATFORMS=cuda,
 # else jax silently falls back to CPU.
 py_binary(
     name = "bench_jagged_eval_phases",
@@ -93,11 +96,12 @@ py_binary(
         "@zorch//zorch:transcript",
         "@zorch//zorch/hash/poseidon2",
         "@zorch//zorch/pcs/jagged:poly",
+        "@zorch//zorch/utils:bits",
         requirement("jax"),
         requirement("jax_cuda12_plugin"),
         requirement("numpy"),
         requirement("zk_dtypes"),
-        requirement("zkx_cuda_pjrt"),
+        requirement("jax_cuda12_pjrt"),
     ],
 )
 
@@ -135,6 +139,7 @@ py_test(
     srcs = ["verifier_test.py"],
     deps = [
         ":verifier",
+        "//sp1_zorch:testkit",
         "//sp1_zorch/shard_prover:chain_testkit",
         "//sp1_zorch/shard_prover:prove_shard",
         "//sp1_zorch/shard_prover:verify_shard",

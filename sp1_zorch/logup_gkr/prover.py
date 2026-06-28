@@ -49,10 +49,10 @@ from zorch.logup_gkr.circuit import (
     scan_build_jagged_pyramid,
 )
 from zorch.logup_gkr.jagged_prover import (
+    JaggedGkrLayerRound,
     JaggedLayerProof,
-    prove_jagged_pyramid,
 )
-from zorch.round import Round
+from zorch.round import ProveChain, Round
 from zorch.transcript import Transcript
 
 
@@ -335,17 +335,16 @@ def prove_logup_gkr_body(
     output = extract_sp1_outputs(layers[-1])
     carry, transcript, _ = OutputBindRound(output)(None, transcript)
 
-    # Prove the floor-outward layer chain as ONE lax.scan (prove_jagged_pyramid),
-    # O(1) in the layer count -- the marked path collapses the per-layer compile
-    # (sp1-zorch#55), and zorch#275 bounds its peak to O(plane_width) (independent
-    # of the layer count), so the per-layer plane stack stays bounded at shard
-    # scale. This is the sole prove path; its byte-match is gated by the SP1
-    # reference (verify_gkr_prove) and a captured CPU golden
-    # (test_rolled_pyramid_matches_golden).
+    # Prove the floor-outward layer chain as an unrolled ProveChain of per-layer
+    # JaggedGkrLayerRound. zorch retired the device-FS rolled `prove_jagged_pyramid`
+    # (Fiat-Shamir now runs on the host between kernel launches); the unrolled
+    # chain is byte-identical and the production path. Each layer traces once per
+    # shape, and the generator releases a proved layer before building the next so
+    # at most one big-witness layer stays live. Byte-match is gated by the SP1
+    # reference (verify_gkr_prove) and a captured CPU golden.
     proved = [layers.pop() for _ in range(len(layers))]
-    (_, _, eval_point), transcript, round_proofs = prove_jagged_pyramid(
-        proved, carry, transcript, challenge_limbs=EF_LIMBS
-    )
+    chain = ProveChain(JaggedGkrLayerRound(layer, EF_LIMBS) for layer in proved)
+    (_, _, eval_point), transcript, round_proofs = chain(carry, transcript)
 
     transcript, chip_openings = open_traces(
         main_region,
