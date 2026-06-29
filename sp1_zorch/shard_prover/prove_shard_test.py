@@ -43,15 +43,6 @@ from sp1_zorch.shard_prover.replay import JitPermutation
 from sp1_zorch.shard_prover.types import MachineVerifyingKey
 from sp1_zorch.zerocheck.stage import prove_shard_zerocheck
 
-# The pinned jaxlib wheel's embedded zkx CPU emitter CHECK-fails
-# (symbolic_map.cc:196) on an engaged zorch.constraint_eval region — the
-# jax-0.10.0-series successor to the rank-1 linalg.broadcast variant
-# (fractalyze/zkx#605). Inline every marker's decomposition instead —
-# byte-identical output, only the fusion marker is dropped. Tracked removal:
-# fractalyze/sp1-zorch#62.
-from sp1_zorch.testkit import force_inline_composite_markers
-
-force_inline_composite_markers()
 
 BF = koalabear_mont
 EF = koalabearx4_mont

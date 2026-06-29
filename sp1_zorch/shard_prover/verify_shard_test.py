@@ -30,16 +30,6 @@ from sp1_zorch.shard_prover.verify_shard import (
     ShardZerocheckVerifierRound,
 )
 
-# The pinned jaxlib wheel's embedded zkx CPU emitter CHECK-fails
-# (symbolic_map.cc:196) on an engaged zorch.constraint_eval region — the
-# jax-0.10.0-series successor to the rank-1 linalg.broadcast variant
-# (fractalyze/zkx#605). Inline every marker's decomposition instead —
-# byte-identical output, only the fusion marker is dropped. Tracked removal:
-# fractalyze/sp1-zorch#62.
-from sp1_zorch.testkit import force_inline_composite_markers
-
-force_inline_composite_markers()
-
 from sp1_zorch.shard_prover.chain_testkit import (
     CHIP_HEIGHT,
     CHIP_WIDTH,

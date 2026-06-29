@@ -33,15 +33,7 @@ from sp1_zorch.jagged.prover import (
     JaggedEvalRound,
     assemble_columns,
 )
-from sp1_zorch.testkit import force_inline_composite_markers
 
-# The pinned jaxlib wheel's embedded zkx CPU emitter CHECK-fails
-# (symbolic_map.cc:196) on an engaged zorch composite region — here the
-# jagged-eval sumcheck marker — the jax-0.10.0-series successor to the rank-1
-# linalg.broadcast variant (fractalyze/zkx#605). Inline every marker's
-# decomposition instead — byte-identical output, only the fusion marker is
-# dropped. Tracked removal: fractalyze/sp1-zorch#62.
-force_inline_composite_markers()
 
 BF = koalabear_mont
 EF = koalabearx4_mont

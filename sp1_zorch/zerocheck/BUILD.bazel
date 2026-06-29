@@ -72,7 +72,6 @@ py_test(
     srcs = ["jagged_test.py"],
     deps = [
         ":zerocheck",
-        "//sp1_zorch:testkit",
         "@zorch//zorch:transcript",
         "@zorch//zorch/testkit:transcript",
         "@zorch//zorch/poly:poly",
@@ -95,7 +94,6 @@ py_test(
     data = glob(["testdata/gpu_fibonacci/**"]),
     deps = [
         ":zerocheck",
-        "//sp1_zorch:testkit",
         "//sp1_zorch/commit:region",
         "//sp1_zorch/shard_prover",
         "@zorch//zorch/poly:poly",
@@ -219,7 +217,6 @@ py_test(
     srcs = ["stage_test.py"],
     deps = [
         ":zerocheck",
-        "//sp1_zorch:testkit",
         "//sp1_zorch/commit:region",
         "//sp1_zorch/logup_gkr",
         "@zorch//zorch/testkit:transcript",
@@ -239,7 +236,6 @@ py_test(
     srcs = ["verifier_test.py"],
     deps = [
         ":zerocheck",
-        "//sp1_zorch:testkit",
         "//sp1_zorch/commit:region",
         "//sp1_zorch/logup_gkr",
         "@zorch//zorch/testkit:transcript",

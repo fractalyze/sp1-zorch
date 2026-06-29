@@ -50,7 +50,6 @@ py_test(
     ],
     deps = [
         ":prover",
-        "//sp1_zorch:testkit",
         "@zorch//zorch:round",
         "@zorch//zorch:transcript",
         "@zorch//zorch/testkit:transcript",
@@ -139,7 +138,6 @@ py_test(
     srcs = ["verifier_test.py"],
     deps = [
         ":verifier",
-        "//sp1_zorch:testkit",
         "//sp1_zorch/shard_prover:chain_testkit",
         "//sp1_zorch/shard_prover:prove_shard",
         "//sp1_zorch/shard_prover:verify_shard",
