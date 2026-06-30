@@ -20,10 +20,10 @@ numpy
 # against jax 0.10.0.dev20260628052515. zorch#283's jagged PCS is markerless
 # (recompile-free symbolic-K export), so this lockstep no longer rides a
 # sumcheck/jagged marker-version cut — but the wheel must still match the pin.
-jax==0.10.0.dev20260630064705
-jaxlib==0.10.0.dev20260630064705
-jax-cuda12-pjrt==0.10.0.dev20260630064705
-jax-cuda12-plugin==0.10.0.dev20260630064705
+jax==0.10.0.dev20260630211516
+jaxlib==0.10.0.dev20260630211516
+jax-cuda12-pjrt==0.10.0.dev20260630211516
+jax-cuda12-plugin==0.10.0.dev20260630211516
 # zk_dtypes ships the native field dtypes jax lowers. It arrives transitively
 # via jax, but the resolver leaves it at the lowest compatible version, which
 # lags the jax build: 0.0.7 adds the Pallas scalar field (pallas_sf) the jax
