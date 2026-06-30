@@ -32,8 +32,8 @@ jobs:
         # really ran on GPU; a GPU init failure fails loudly instead of silently
         # passing on CPU.
         run: |
-          cpu='{"backend":"cpu","runs_on":["self-hosted","cpu"],"jax_platforms":"cpu"}'
-          gpu='{"backend":"gpu","runs_on":["self-hosted","gpu"],"jax_platforms":"cuda"}'
+          cpu='{"backend":"cpu","runs_on":["self-hosted","cpu"],"jax_platforms":"cpu","test_tag_filters":"-gpu_only"}'
+          gpu='{"backend":"gpu","runs_on":["self-hosted","gpu"],"jax_platforms":"cuda","test_tag_filters":""}'
           include="${cpu}"
           if [ "${{ vars.HAS_GPU_RUNNER }}" = "true" ]; then
             include="${cpu},${gpu}"
@@ -52,9 +52,12 @@ jobs:
       # ~/.bazelrc; on self-hosted runners bazel/caches already persist.
       # --test_env selects the backend per leg, overriding the repo default
       # (.bazelrc pins JAX_PLATFORMS=cpu). The GPU leg pins cuda — needed for the
-      # SP1 FFI byte-match tests, which require a CUDA GPU.
+      # SP1 FFI byte-match tests, which require a CUDA GPU. The CPU leg filters
+      # `-gpu_only` so the full-shard byte-match validation (too slow to compile
+      # on CPU — fractalyze/xla#121) runs on the GPU leg only; the GPU leg's
+      # empty filter runs everything.
       - name: Run bazel test
-        run: bazel test --test_env=JAX_PLATFORMS=${{ matrix.jax_platforms }} -- //...
+        run: bazel test --test_env=JAX_PLATFORMS=${{ matrix.jax_platforms }} --test_tag_filters=${{ matrix.test_tag_filters }} -- //...
 
       # Capture the runner-local test.log a failed test leaves behind — the CI
       # stream only carries the FAIL summary, not the gtest output.
