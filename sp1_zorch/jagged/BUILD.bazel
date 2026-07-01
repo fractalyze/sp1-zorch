@@ -136,6 +136,12 @@ py_test(
     size = "large",
     timeout = "eternal",
     srcs = ["verifier_test.py"],
+    # With the CPU composite engaged, the constraint_eval EF body inside the
+    # zerocheck round scan aborts CPU compile at symbolic_map.cc:196
+    # (Compose 1 vs 0) — fractalyze/xla#153. That is a CPU-emitter crash, so
+    # run this on the GPU leg only; the CPU leg filters `-gpu_only`. Drop the
+    # tag (and the cuda deps) when xla#153 lands.
+    tags = ["gpu_only"],
     deps = [
         ":verifier",
         "//sp1_zorch/shard_prover:chain_testkit",
@@ -145,6 +151,8 @@ py_test(
         "@zorch//zorch/testkit:transcript",
         requirement("absl_py"),
         requirement("jax"),
+        requirement("jax_cuda12_pjrt"),
+        requirement("jax_cuda12_plugin"),
         requirement("zk_dtypes"),
     ],
 )
