@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sp1-zorch"
+dynamic = ["version"]
+description = "sp1-zorch — a lean SP1 prover built on zorch's scheme-agnostic blocks."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+authors = [{ name = "The sp1-zorch Authors" }]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+]
+# `pip install sp1-zorch` pulls its two Fractalyze-index siblings automatically:
+#   - zorch: the scheme-agnostic blocks sp1-zorch is a thin layer over.
+#   - rw-constraints: the SP1 chip definitions the shard prover loads.
+# Both are dev-only (>=…dev0 opts the resolver into the prerelease line); the
+# consuming workspace may still override them to an exact pin.
+# The jax fork stack (jax / jaxlib / jax-cuda12-* / zk-dtypes) is deliberately
+# NOT pinned here — it is the GPU-correctness-sensitive build the consuming
+# workspace controls, and pinning it would only force resolver conflicts there
+# (same convention as zorch and riscv-witness).
+dependencies = [
+    "absl-py",
+    "numpy",
+    "zorch>=0.1.0.dev0",
+    "rw-constraints>=0.1.0.dev0",
+]
+
+[project.urls]
+Repository = "https://github.com/fractalyze/sp1-zorch"
+
+[tool.setuptools.dynamic]
+version = { attr = "sp1_zorch.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["sp1_zorch*"]
