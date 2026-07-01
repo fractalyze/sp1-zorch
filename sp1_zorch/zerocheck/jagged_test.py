@@ -35,7 +35,6 @@ from zorch.poly.univariate import compute_inv_vandermonde, eval_coeffs
 from zorch.testkit.transcript import cheap_transcript
 from zorch.transcript import sample_challenge
 
-from sp1_zorch.testkit import inline_composite_markers
 from sp1_zorch.zerocheck.jagged import (
     DEGREE,
     _zero_extend_cols,
@@ -200,18 +199,17 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
             beta = _rand(77, ())
             gkr_powers, claims = _gkr_inputs(beta, traces, zeta)
 
-        with inline_composite_markers():
-            _, _, msgs = prove_jagged_zerocheck(
-                eval_fns,
-                traces,
-                num_reals,
-                alphas,
-                lambdas,
-                zeta,
-                _ScriptedTranscript.replaying(challenges),
-                beta=beta,
-                claims=claims,
-            )
+        _, _, msgs = prove_jagged_zerocheck(
+            eval_fns,
+            traces,
+            num_reals,
+            alphas,
+            lambdas,
+            zeta,
+            _ScriptedTranscript.replaying(challenges),
+            beta=beta,
+            claims=claims,
+        )
         want = _naive_round_polys(
             eval_fns, traces, num_reals, alphas, lambdas, zeta, challenges, gkr_powers
         )
@@ -380,18 +378,17 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
         beta = _rand(70, ())
         _, claims = _gkr_inputs(beta, traces, zeta)
 
-        with inline_composite_markers():
-            _, _, msgs = prove_jagged_zerocheck(
-                [_eval_fn] * nchips,
-                traces,
-                num_reals,
-                alphas,
-                lambdas,
-                zeta,
-                cheap_transcript(KB),
-                beta=beta,
-                claims=claims,
-            )
+        _, _, msgs = prove_jagged_zerocheck(
+            [_eval_fn] * nchips,
+            traces,
+            num_reals,
+            alphas,
+            lambdas,
+            zeta,
+            cheap_transcript(KB),
+            beta=beta,
+            claims=claims,
+        )
 
         claim = jnp.zeros((), KB)
         for i in range(nchips):
@@ -406,16 +403,15 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
         lambdas = _rand(50, (nchips,))
         zeta = _rand(3, (num_vars,))
 
-        with inline_composite_markers():
-            finals, _, msgs = prove_jagged_zerocheck(
-                [_eval_fn] * nchips,
-                traces,
-                num_reals,
-                alphas,
-                lambdas,
-                zeta,
-                cheap_transcript(KB),
-            )
+        finals, _, msgs = prove_jagged_zerocheck(
+            [_eval_fn] * nchips,
+            traces,
+            num_reals,
+            alphas,
+            lambdas,
+            zeta,
+            cheap_transcript(KB),
+        )
 
         # Pure zerocheck: the claim thread starts at zero.
         self._assert_claim_thread(msgs, jnp.zeros((), KB))
@@ -444,14 +440,9 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
         lambdas = _rand_ef(50, (1,))
         zeta = _rand_ef(3, (num_vars,))
 
-        # Inline the constraint_eval marker for this executing case — the zkx
-        # CPU emitter CHECK-fails on an engaged region (symbolic_map.cc:196) —
-        # keeping the marker-text tests above on the real composite path.
-        # Tracked removal: fractalyze/sp1-zorch#62.
-        with inline_composite_markers():
-            _, _, msgs = prove_jagged_zerocheck(
-                [_eval_fn], traces, [nr], alphas, lambdas, zeta, cheap_transcript(KB)
-            )
+        _, _, msgs = prove_jagged_zerocheck(
+            [_eval_fn], traces, [nr], alphas, lambdas, zeta, cheap_transcript(KB)
+        )
 
         self.assertEqual(msgs.challenge.dtype, EF)
         t = cheap_transcript(KB)
