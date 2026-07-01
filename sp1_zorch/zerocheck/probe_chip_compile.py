@@ -6,8 +6,14 @@ a `zorch.constraint_eval` composite, which lowers to one kernel per chip. On a
 real shard the joint jit spends >12 min in LLVM-NVPTX codegen on a single giant
 kernel; the suspect is the koalabear `Global` chip (~241 cols, ~10k-op formula).
 This tool compiles each chip's `constraint_eval` in isolation -- exactly the
-per-row fold `_fold_chip` builds, base-field trace and EF-RLC alpha -- and times
-`.compile()` per chip, so the per-chip codegen cost is attributable.
+per-row fold the jagged prover builds (`prove_jagged_zerocheck`, jagged.py):
+base-field trace, EF-RLC alpha, AND the runtime `live_width` row bound. That
+bound is load-bearing: it is what makes the composite lower to the bounded
+`zorch.constraint_eval_bounded` kernel. Omitting it compiles the *unbounded*
+variant, which the compiler inlines to plain multiply/adds -- a different,
+cliff-free body -- so the probe would never see the per-chip kernel it exists to
+localize. Times `.compile()` per chip, so the per-chip codegen cost is
+attributable.
 
 Codegen is host-bound (LLVM-NVPTX, GPU ~0% util) and the kernel's instruction
 count is driven by the constraint circuit and column count, not the row count,
@@ -32,6 +38,7 @@ import time
 from pathlib import Path
 
 import jax
+import jax.numpy as jnp
 from zk_dtypes import koalabearx4_mont
 
 from sp1_zorch.shard_prover.fixture_loader import load_fixture_shard
@@ -107,11 +114,16 @@ def main() -> int:
         if args.list:
             print(f"{name:<30}{nc:>5}{k:>6}{nr:>10}{'(list)':>12}", flush=True)
             continue
-        fn = jax.jit(lambda t, a: constraint_eval(eval_fn, t, a))
+        # `live_width` rides as a runtime scalar operand exactly as
+        # `prove_jagged_zerocheck` passes `num_non_padded` (jagged.py) — its value
+        # is irrelevant to codegen (the kernel is row-count-independent), but its
+        # presence is what selects the bounded kernel over the inlined body.
+        fn = jax.jit(lambda t, a, lw: constraint_eval(eval_fn, t, a, live_width=lw))
         print(f"[start] {name} nc={nc} K={k} ...", flush=True)
         lowered = fn.lower(
             jax.ShapeDtypeStruct((args.rows, nc), bf),
             jax.ShapeDtypeStruct((k,), ef),
+            jax.ShapeDtypeStruct((), jnp.int32),
         )
         t0 = time.perf_counter()
         lowered.compile()
