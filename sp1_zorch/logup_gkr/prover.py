@@ -354,11 +354,16 @@ def prove_logup_gkr_body(
     # JaggedGkrLayerRound. zorch retired the device-FS rolled `prove_jagged_pyramid`
     # (Fiat-Shamir now runs on the host between kernel launches); the unrolled
     # chain is byte-identical and the production path. Each layer traces once per
-    # shape, and the generator releases a proved layer before building the next so
-    # at most one big-witness layer stays live. Byte-match is gated by the SP1
-    # reference (verify_gkr_prove) and a captured CPU golden.
-    proved = [layers.pop() for _ in range(len(layers))]
-    chain = ProveChain(JaggedGkrLayerRound(layer, EF_LIMBS) for layer in proved)
+    # shape. Pop the layers into their rounds through a lazy generator (floor
+    # first via `layers.pop()` per yield, NOT a materialized `proved` list): only
+    # then does ProveChain's lazy consume release each proved layer before
+    # building the next, so at most one big-witness layer stays live. A resident
+    # list would pin the whole pyramid and defeat that invariant -- the runtime
+    # host-RAM half of zorch#362 (the builder is the other half). Byte-match is
+    # gated by the SP1 reference (verify_gkr_prove) and a captured CPU golden.
+    chain = ProveChain(
+        JaggedGkrLayerRound(layers.pop(), EF_LIMBS) for _ in range(len(layers))
+    )
     (_, _, eval_point), transcript, round_proofs = chain(carry, transcript)
 
     transcript, chip_openings = open_traces(
