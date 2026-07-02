@@ -76,11 +76,14 @@ py_test(
 
 py_test(
     name = "trace_commit_test",
-    # medium: these tests exercise the eager commit (commit_region's default
-    # jit=False), where poseidon2 recompiles its composite on every call -- a
-    # fixed per-call cost (see trace_commit.py's module docstring) that pushes
-    # the suite past the small ceiling even on these tiny synthetic regions.
+    # medium size, long timeout: the tests exercise the eager commit
+    # (commit_region's default jit=False), where poseidon2 recompiles its
+    # composite on every call -- a fixed per-call cost (see trace_commit.py's
+    # module docstring), ~99s locally. Cold CI runs ~2-3x slower
+    # (docs/testing.md), so the explicit long timeout keeps this heavy test off
+    # the medium 300s cap (same reason smcs_test is large).
     size = "medium",
+    timeout = "long",
     srcs = ["trace_commit_test.py"],
     deps = [
         ":region",
