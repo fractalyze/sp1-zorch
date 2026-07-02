@@ -700,6 +700,18 @@ def _jagged_eval_body(
     return transcript, eval_msg, open_proof
 
 
+# Above ~2^_GKR_JIT_MAX_LOG_ROWS materialized rows, tracing the grind-free LogUp-GKR
+# body into one @jit co-residents the widest layer's full-width sumcheck plus every
+# round's buffers -- a host-RAM balloon that OOMs (rsp shard17 at 2^22: >=46 GB jit
+# vs ~25 GB eager, byte-identical; fractalyze/zorch#327, #362). So the default
+# size-gate runs that stage eagerly at/above this width -- zorch's per-round
+# jax.export host-loop then releases each round -- and keeps jit=True below it (fused,
+# no host-dispatch wall; sp1-zorch#119). A safety boundary from the single shard17
+# data point: raise it as larger shards are profiled to fit jit, or once the
+# compute-only fusion marker removes the balloon. `gkr_jit` overrides it outright.
+_GKR_JIT_MAX_LOG_ROWS = 16
+
+
 def prove_shard_chain(
     *,
     smcs: SingleMatrixCommitmentScheme,
@@ -716,6 +728,7 @@ def prove_shard_chain(
     pow_bits: int = 0,
     witness: Array | None = None,
     jit: bool = True,
+    gkr_jit: bool | None = None,
 ) -> ProveChain:
     """The SP1 shard chain. One definition for the stage wiring so the
     benchmark, the byte-match runnables, and proof assembly cannot drift
@@ -727,7 +740,25 @@ def prove_shard_chain(
     eagerly, sp1-zorch#119), and the zerocheck + jagged-eval bodies — eagerly
     those two rebuild their closure-keyed ``scan``/``while`` bodies each prove,
     so JAX's compile cache misses and every warm prove re-pays the stage
-    compile. Byte-identical either way."""
+    compile. Byte-identical either way.
+
+    ``gkr_jit`` controls the LogUp-GKR stage's jit alone. ``None`` (the default)
+    size-gates it on ``max_log_row_count`` (see ``_GKR_JIT_MAX_LOG_ROWS``); an
+    explicit bool overrides the gate. Tracing the whole grind-free body into one
+    ``@jit`` forces XLA to co-resident the widest layer's full-width sumcheck plus
+    every round's buffers -- a host-RAM balloon that OOMs a wide shard (rsp
+    shard17 at 2^22: >=46 GB). Running that stage eagerly instead lets zorch's
+    per-round ``jax.export`` host-loop dispatch and release each round's buffers,
+    bounding peak host RAM (~25 GB measured on shard17), while the trace-commit
+    stage keeps its required ``jit=True``. Byte-identical (fractalyze/zorch#327,
+    #362)."""
+    # None => size-gate; an explicit bool overrides. A wide shard must run the
+    # GKR stage eagerly or its one-@jit trace OOMs host RAM (see the constant).
+    resolved_gkr_jit = (
+        gkr_jit
+        if gkr_jit is not None
+        else jit and max_log_row_count < _GKR_JIT_MAX_LOG_ROWS
+    )
     return ProveChain(
         [
             TraceCommitRound(
@@ -743,7 +774,7 @@ def prove_shard_chain(
                 num_row_variables=num_row_variables,
                 pow_bits=pow_bits,
                 witness=witness,
-                jit=jit,
+                jit=resolved_gkr_jit,
             ),
             ShardZerocheckRound(
                 chips, max_log_row_count=max_log_row_count, jit=jit
