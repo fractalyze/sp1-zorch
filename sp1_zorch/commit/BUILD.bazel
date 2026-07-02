@@ -18,11 +18,12 @@ py_library(
 
 py_test(
     name = "smcs_test",
-    # large: merkle_commit composite runs the slow no-CompositeOp fallback under
-    # the pinned jax. The b2a1582 pin's rolled Merkle reconstruct
-    # (fractalyze/zorch#182/#184) enlarges the cold-compile graph, tipping the CI
-    # runner past the medium (300s) ceiling (warm-local is ~136s). Back to small
-    # once jax#164 lands in the pin.
+    # large: every case commits eagerly on tiny matrices, so eager poseidon2
+    # recompiles its composite per call (see trace_commit.py) and zorch#182/#184's
+    # rolled Merkle reconstruct makes that per-call graph large -- ~112s for the
+    # suite locally. On a loaded CI runner the cold compile clears the medium
+    # (300s) ceiling, so large gives the headroom. (jax#164's CompositeOp is in
+    # the pin now; it does not shrink this eager-compile cost.)
     size = "large",
     srcs = ["smcs_test.py"],
     deps = [
