@@ -53,7 +53,7 @@ from zorch.logup_gkr.jagged_prover import (
     JaggedLayerProof,
 )
 from zorch.round import ProveChain, Round
-from zorch.transcript import Transcript
+from zorch.transcript import GrindingTranscript, Transcript
 
 
 # Pytree: both evals are array leaves (preprocessed is None for prep-less
@@ -262,7 +262,7 @@ def extract_sp1_outputs(floor: JaggedGkrLayer) -> LogUpGkrOutput:
 
 
 def resolve_witness_and_grind(
-    transcript: Transcript,
+    transcript: GrindingTranscript,
     *,
     pow_bits: int,
     witness: Array | None,
@@ -270,6 +270,10 @@ def resolve_witness_and_grind(
 ) -> tuple[Transcript, Array]:
     """Apply the witness-default policy and run the grind, returning the
     post-grind transcript and the resolved witness.
+
+    With no witness and ``pow_bits > 0`` this now **searches** for one (the grind
+    the docstring at the top of this module names); a supplied witness is
+    **replayed** unchanged, byte-identical to the reference-dump path.
 
     Split out from ``prove_logup_gkr`` so the production stage can run it
     eagerly while jitting the grind-free body below (``LogupGkrRound(jit=True)``):
@@ -282,9 +286,19 @@ def resolve_witness_and_grind(
         # Fail closed at the stage boundary: a negative bit count is nonsense,
         # and the branch below would otherwise treat it as the zero-bit replay.
         raise ValueError("pow_bits must be non-negative")
-    if pow_bits > 0:
-        if witness is None:
-            raise ValueError("pow_bits > 0 needs a witness (grinding not built)")
+    if pow_bits > 0 and witness is None:
+        # Grind for the witness -- the "search" half this function's name
+        # promises, now built. zorch's windowed grinder enumerates canonical
+        # witnesses 0, 1, 2, ... for the lowest whose ``check_witness`` gate has
+        # ``pow_bits`` zero low bits, host-validating it (``GrindError`` if none
+        # is found in range) -- the exact gate ``GrindRound`` re-judges below, so
+        # the found witness passes. Transcripts are immutable: grinding on
+        # ``transcript`` only READS it to find the witness; the ``GrindRound``
+        # line then advances the ORIGINAL transcript with that witness, a stream
+        # byte-identical to the recorded-witness replay path (and to the FRI
+        # open-phase grind already built the same way in ``jagged/open.py``:
+        # ``t.grind(pow_bits)``).
+        _, witness = transcript.grind(pow_bits)
     elif witness is None:
         # pow_bits == 0 with no witness: a dummy zero just advances the stream.
         # A *passed* witness at pow_bits == 0 is a recorded-witness replay -- the
