@@ -166,7 +166,7 @@ class Sp1ZerocheckBenchmark(JaxBenchmark):
 
         yield BenchmarkOp(
             # The real-shard zerocheck stage time, joinable on the dashboard with
-            # bench_sp1_logup_gkr / bench_smcs_*.
+            # bench_sp1_logup_gkr.
             name="zerocheck_total",
             fn=_run,
             metadata={

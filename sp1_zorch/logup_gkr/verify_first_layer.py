@@ -57,7 +57,7 @@ _ACCOUNTING_ONLY = flags.DEFINE_bool(
     "Check only the static slot accounting (no field math).",
 )
 
-# SP1 core machine parameters (same as verify_trace_commit).
+# SP1 core machine parameters (sp1-hypercube core config).
 _LOG_STACKING_HEIGHT = 21
 _MAX_LOG_ROW_COUNT = 22
 

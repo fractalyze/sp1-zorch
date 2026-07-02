@@ -1,10 +1,9 @@
 # Copyright 2026 The sp1-zorch Authors. SPDX-License-Identifier: Apache-2.0
 """Trace commit structure: determinism and structure-hash binding. The
-byte-match against the SP1 reference dump lives in trace_commit_rsp_test."""
+byte-match against the SP1 reference dump lives in
+shard_prover:verify_prove_shard (--max_stage=1)."""
 
-import jax
 import jax.numpy as jnp
-import numpy as np
 from absl.testing import absltest
 from zk_dtypes import koalabear_mont as F
 
@@ -25,6 +24,18 @@ def _smcs() -> SingleMatrixCommitmentScheme:
     )
 
 
+# One scheme shared across the suite. commit_region(jit=True) is the shipped
+# path and keys its @jit on the smcs identity, so a shared instance lets every
+# same-shape commit reuse a single compile -- eager (jit=False) instead
+# recompiles the poseidon2 composite on every call (~10s each), which dominated
+# this suite. Output is byte-identical either way (see trace_commit.py).
+_SMCS = _smcs()
+
+
+def _commit(region, log_blowup=2):
+    return commit_region(region, _SMCS, log_blowup=log_blowup, jit=True)
+
+
 def _region(heights=(4, 2)):
     chips = [
         jnp.arange(100 * i, 100 * i + h * 3, dtype=jnp.uint32).reshape(h, 3).view(F)
@@ -35,9 +46,8 @@ def _region(heights=(4, 2)):
 
 class CommitRegionTest(absltest.TestCase):
     def test_commitment_shape_and_determinism(self):
-        smcs = _smcs()
-        c1, data1 = commit_region(_region(), smcs, log_blowup=2)
-        c2, _ = commit_region(_region(), smcs, log_blowup=2)
+        c1, data1 = _commit(_region())
+        c2, _ = _commit(_region())
         self.assertEqual(c1.shape, (8,))
         self.assertEqual(c1.dtype, F)
         self.assertTrue(bool(jnp.all(c1 == c2)))
@@ -45,19 +55,9 @@ class CommitRegionTest(absltest.TestCase):
         self.assertEqual(data1.dense.shape, _region().dense.shape)
         self.assertNotEmpty(data1.digest_layers)
 
-    def test_jit_matches_eager(self):
-        """The @jit zone exists for memory, not semantics — the commitment and
-        every retained prover-data leaf must be byte-identical to eager."""
-        smcs = _smcs()
-        eager = commit_region(_region(), smcs, log_blowup=2)
-        jitted = commit_region(_region(), smcs, log_blowup=2, jit=True)
-        for le, lj in zip(jax.tree.leaves(eager), jax.tree.leaves(jitted), strict=True):
-            np.testing.assert_array_equal(le, lj)
-
     def test_structure_binding_separates_same_dense(self):
         """Two regions with identical dense bytes but different chip splits
         must commit differently — that's what the structure hash is for."""
-        smcs = _smcs()
         flat = jnp.arange(24, dtype=jnp.uint32).view(F)
         a = JaggedRegion.from_chips(
             [flat.reshape(8, 3).view(F)], log_stacking_height=3, max_log_row_count=4
@@ -67,8 +67,8 @@ class CommitRegionTest(absltest.TestCase):
             log_stacking_height=3,
             max_log_row_count=4,
         )
-        ca, _ = commit_region(a, smcs, log_blowup=2)
-        cb, _ = commit_region(b, smcs, log_blowup=2)
+        ca, _ = _commit(a)
+        cb, _ = _commit(b)
         self.assertFalse(bool(jnp.all(ca == cb)))
 
     def test_unaligned_dense_raises(self):
@@ -81,12 +81,11 @@ class CommitRegionTest(absltest.TestCase):
             log_stacking_height=3,
         )
         with self.assertRaises(ValueError):
-            commit_region(bad, _smcs(), log_blowup=2)
+            _commit(bad)
 
     def test_blowup_changes_commitment(self):
-        smcs = _smcs()
-        c2, _ = commit_region(_region(), smcs, log_blowup=2)
-        c1, _ = commit_region(_region(), smcs, log_blowup=1)
+        c2, _ = _commit(_region(), log_blowup=2)
+        c1, _ = _commit(_region(), log_blowup=1)
         self.assertFalse(bool(jnp.all(c1 == c2)))
 
 

@@ -99,8 +99,7 @@ def preamble_transcript(shard: ShardData, shard_dir: Path) -> Transcript:
     dump's commitment. The commitment is the dump's value -- our own
     main-commit byte-match is the trace-commit stage's concern."""
     commit_kv = _parse_kv_lines((shard_dir / "gpu_commitment.txt").read_text())
-    # gpu_commitment.txt carries canonical integers (the same convention
-    # verify_trace_commit reads it with), so encode rather than view.
+    # gpu_commitment.txt carries canonical integers, so encode rather than view.
     commitment = jnp.array(_parse_int_list(commit_kv["main_commit"]), F)
 
     traces = shard.main_trace_data.traces

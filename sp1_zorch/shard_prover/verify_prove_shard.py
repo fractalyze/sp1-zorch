@@ -26,10 +26,11 @@ via the ``sp1_verify_shard`` FFI (``SP1_JAX_FFI_LIB`` must point at
 ``libsp1_gpu_jax_ffi.so``) — the end-to-end acceptance gate of
 fractalyze/sp1-zorch#21.
 
-Each stage's internals are gated by its own runnable
-(``commit:verify_trace_commit``, ``logup_gkr:verify_gkr_prove``,
-``zerocheck:verify_zerocheck``, plus the eval stage's ``jagged:prover_test``
-/ ``jagged:open_test``); this tool checks the composition, not each stage's
+Each downstream stage's internals are gated by its own runnable
+(``logup_gkr:verify_gkr_prove``, ``zerocheck:verify_zerocheck``, plus the eval
+stage's ``jagged:prover_test`` / ``jagged:open_test``); the trace-commit stage's
+byte-match is this tool at ``--max_stage=1`` and its structure is unit-tested in
+``commit:trace_commit_test``. This tool checks the composition, not each stage's
 math. The chain wiring itself is unit-tested against a synthetic reference in
 ``prove_shard_test``.
 

@@ -42,8 +42,10 @@ export ZKX_REPO_ROOT="$HOME/Workspace/zkx"   # dev against a local ZKX checkout
 GPU runnables: a `py_binary` must dep `requirement("jax_cuda12_plugin")` +
 `requirement("jax_cuda12_pjrt")` or jax **silently falls back to CPU** — run
 with `JAX_PLATFORMS=cuda` so a missing plugin errors instead (`gpu` is wrong:
-it also initializes rocm and dies). `ZKX_GPU_PLUGIN_PATH=<.so>` swaps in a
-locally built zkx compiler over the wheel's.
+it also initializes rocm and dies). The new-jax loader takes no plugin-path env
+var; to measure a locally built zkx plugin you overwrite the wheel's bundled
+`xla_cuda_plugin.so` — see [`docs/sp1-baseline.md`](docs/sp1-baseline.md)
+"Measure shipped code" for the procedure.
 
 ## SP1 byte-match
 

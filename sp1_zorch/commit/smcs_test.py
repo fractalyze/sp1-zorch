@@ -6,6 +6,7 @@ an independent recomputation of SP1's separator formula, and a pinned regression
 vector. SP1 byte-match equivalence against the reference prover is the FFI slice.
 """
 
+import jax
 import jax.numpy as jnp
 from absl.testing import absltest
 from zk_dtypes import koalabear_mont as F
@@ -49,11 +50,23 @@ _SMCS_COMMIT_4X8 = jnp.array(
 )
 
 
-def _smcs():
+def _make_smcs():
     perm = Poseidon2(koalabear16_params())
     sponge = Sponge(perm, SpongeParams(rate=8, out=8))
     comp = Compression(perm, CompressionParams(arity=2, chunk=8))
     return sponge, comp, SingleMatrixCommitmentScheme(sponge, comp)
+
+
+# One scheme shared across the suite, with the hashing ops jitted. Eager
+# poseidon2 recompiles its composite on every call (~10s each), which dominated
+# this suite; jitting compiles each op once per input shape and then cache-hits.
+# Output is byte-identical (the goldens above are checked against _commit).
+_SPONGE, _COMP, _SMCS = _make_smcs()
+_commit = jax.jit(_SMCS.commit, static_argnames=("column_major",))
+# dims (height, width) are host-static; index rides as a traced arg so every
+# query shares one compile.
+_verify = jax.jit(_SMCS.verify_batch, static_argnums=(1,))
+_raw_commit = jax.jit(MerkleTree(_SPONGE, _COMP).commit)
 
 
 def _proof_for(proofs, q):
@@ -61,18 +74,21 @@ def _proof_for(proofs, q):
     return [proofs[level][q] for level in range(len(proofs))]
 
 
+def _verify_code(commitment, dims, index, row, proof) -> int:
+    return int(_verify(commitment, dims, jnp.array(index), row, proof))
+
+
 class SingleMatrixCommitmentSchemeTest(absltest.TestCase):
     def test_commit_applies_sp1_domain_separator(self) -> None:
-        sponge, comp, smcs = _smcs()
         matrix = jnp.arange(32, dtype=F).reshape(4, 8)
-        committed, _ = smcs.commit(matrix)
+        committed, _ = _commit(matrix)
 
-        raw_root, _ = MerkleTree(sponge, comp).commit(matrix)
+        raw_root, _ = _raw_commit(matrix)
         self.assertTrue(bool(jnp.array_equal(raw_root, _SP1_RAW_ROOT_4X8)))
 
         # Independent recomputation of SP1's separator over the golden root.
-        params = sponge.hash(jnp.array([2, 8], dtype=F))  # [log_height, width]
-        expected = comp.compress(jnp.stack([raw_root, params]))
+        params = _SPONGE.hash(jnp.array([2, 8], dtype=F))  # [log_height, width]
+        expected = _COMP.compress(jnp.stack([raw_root, params]))
         self.assertTrue(bool(jnp.array_equal(committed, expected)))
         self.assertTrue(bool(jnp.array_equal(committed, _SMCS_COMMIT_4X8)))
 
@@ -80,9 +96,8 @@ class SingleMatrixCommitmentSchemeTest(absltest.TestCase):
         # commit hands back the layered digest tree (zorch's stateless prover
         # data) alongside the commitment, so open_batch can produce sibling paths
         # without recommitting. Layers run leaf-digests -> ... -> root.
-        _, _, smcs = _smcs()
         matrix = jnp.arange(32, dtype=F).reshape(4, 8)  # height 4 -> 3 layers
-        committed, digest_layers = smcs.commit(matrix)
+        committed, digest_layers = _commit(matrix)
         self.assertEqual(committed.shape, (8,))
         self.assertEqual(
             [layer.shape for layer in digest_layers], [(4, 8), (2, 8), (1, 8)]
@@ -92,12 +107,11 @@ class SingleMatrixCommitmentSchemeTest(absltest.TestCase):
     def test_open_batch_returns_rows_and_sibling_path(self) -> None:
         # open_batch returns the queried rows plus, per Merkle layer, the sibling
         # digest of each query's node — log_height layers, batched over the queries.
-        _, _, smcs = _smcs()
         matrix = jnp.arange(32, dtype=F).reshape(4, 8)  # height 4 -> log_height 2
-        _, layers = smcs.commit(matrix)
+        _, layers = _commit(matrix)
         indices = jnp.array([0, 3])
 
-        rows, proofs = smcs.open_batch(indices, matrix, layers)
+        rows, proofs = _SMCS.open_batch(indices, matrix, layers)
 
         self.assertEqual(rows.shape, (2, 8))
         self.assertTrue(bool(jnp.array_equal(rows[0], matrix[0])))
@@ -112,16 +126,13 @@ class SingleMatrixCommitmentSchemeTest(absltest.TestCase):
     def test_open_verify_roundtrip_ok_for_every_index(self) -> None:
         # Opening any row and folding its sibling path back up must reconstruct the
         # bound commitment exactly -> OK. Structural, no golden needed.
-        _, _, smcs = _smcs()
         matrix = jnp.arange(32, dtype=F).reshape(4, 8)
-        commitment, layers = smcs.commit(matrix)
+        commitment, layers = _commit(matrix)
         indices = jnp.array([0, 1, 2, 3])
-        rows, proofs = smcs.open_batch(indices, matrix, layers)
+        rows, proofs = _SMCS.open_batch(indices, matrix, layers)
         for q, idx in enumerate(range(4)):
-            code = smcs.verify_batch(
-                commitment, (4, 8), idx, rows[q], _proof_for(proofs, q)
-            )
-            self.assertEqual(int(code), VerifyCode.OK)
+            code = _verify_code(commitment, (4, 8), idx, rows[q], _proof_for(proofs, q))
+            self.assertEqual(code, VerifyCode.OK)
 
     def test_commit_column_major_matches_row_major_transpose(self) -> None:
         # column_major is a PER-CALL choice on the same scheme (the FRI fold also
@@ -130,10 +141,9 @@ class SingleMatrixCommitmentSchemeTest(absltest.TestCase):
         # commitment + layers as committing the [height, width] leaf-major matrix
         # row-major (leaf r == column r == row r of the transpose), and
         # open/verify authenticate against it from the leaf-major matrix.
-        _, _, smcs = _smcs()
         leaf_major = jnp.arange(32, dtype=F).reshape(4, 8)  # [height=4, width=8]
-        row_commit, row_layers = smcs.commit(leaf_major)
-        col_commit, col_layers = smcs.commit(leaf_major.T, column_major=True)
+        row_commit, row_layers = _commit(leaf_major)
+        col_commit, col_layers = _commit(leaf_major.T, column_major=True)
         self.assertTrue(bool(jnp.array_equal(col_commit, row_commit)))
         self.assertEqual(
             [layer.shape for layer in col_layers],
@@ -141,50 +151,44 @@ class SingleMatrixCommitmentSchemeTest(absltest.TestCase):
         )
         for col_layer, row_layer in zip(col_layers, row_layers):
             self.assertTrue(bool(jnp.array_equal(col_layer, row_layer)))
-        rows, proofs = smcs.open_batch(jnp.array([0, 3]), leaf_major, col_layers)
+        rows, proofs = _SMCS.open_batch(jnp.array([0, 3]), leaf_major, col_layers)
         for q, idx in enumerate((0, 3)):
-            code = smcs.verify_batch(
-                col_commit, (4, 8), idx, rows[q], _proof_for(proofs, q)
-            )
-            self.assertEqual(int(code), VerifyCode.OK)
+            code = _verify_code(col_commit, (4, 8), idx, rows[q], _proof_for(proofs, q))
+            self.assertEqual(code, VerifyCode.OK)
 
     def test_verify_rejects_tampered_row(self) -> None:
         # A corrupted opened row re-hashes to a different leaf -> the rebound root
         # cannot match the commitment.
-        _, _, smcs = _smcs()
         matrix = jnp.arange(32, dtype=F).reshape(4, 8)
-        commitment, layers = smcs.commit(matrix)
-        rows, proofs = smcs.open_batch(jnp.array([1]), matrix, layers)
+        commitment, layers = _commit(matrix)
+        rows, proofs = _SMCS.open_batch(jnp.array([1]), matrix, layers)
         tampered = rows[0] + jnp.ones(8, dtype=F)
-        code = smcs.verify_batch(commitment, (4, 8), 1, tampered, _proof_for(proofs, 0))
-        self.assertEqual(int(code), VerifyCode.ROOT_MISMATCH)
+        code = _verify_code(commitment, (4, 8), 1, tampered, _proof_for(proofs, 0))
+        self.assertEqual(code, VerifyCode.ROOT_MISMATCH)
 
     def test_verify_rejects_index_out_of_bounds(self) -> None:
         # index >= height is caught even with a correctly-sized proof.
-        _, _, smcs = _smcs()
         matrix = jnp.arange(32, dtype=F).reshape(4, 8)
-        commitment, layers = smcs.commit(matrix)
-        rows, proofs = smcs.open_batch(jnp.array([0]), matrix, layers)
-        code = smcs.verify_batch(commitment, (4, 8), 4, rows[0], _proof_for(proofs, 0))
-        self.assertEqual(int(code), VerifyCode.INDEX_OUT_OF_BOUNDS)
+        commitment, layers = _commit(matrix)
+        rows, proofs = _SMCS.open_batch(jnp.array([0]), matrix, layers)
+        code = _verify_code(commitment, (4, 8), 4, rows[0], _proof_for(proofs, 0))
+        self.assertEqual(code, VerifyCode.INDEX_OUT_OF_BOUNDS)
 
     def test_verify_rejects_wrong_proof_length(self) -> None:
         # A proof whose length != log_height cannot authenticate any leaf.
-        _, _, smcs = _smcs()
         matrix = jnp.arange(32, dtype=F).reshape(4, 8)  # log_height 2
-        commitment, layers = smcs.commit(matrix)
-        rows, proofs = smcs.open_batch(jnp.array([0]), matrix, layers)
+        commitment, layers = _commit(matrix)
+        rows, proofs = _SMCS.open_batch(jnp.array([0]), matrix, layers)
         short_proof = _proof_for(proofs, 0)[:1]  # 1 sibling, expected 2
-        code = smcs.verify_batch(commitment, (4, 8), 0, rows[0], short_proof)
-        self.assertEqual(int(code), VerifyCode.WRONG_HEIGHT)
+        code = _verify_code(commitment, (4, 8), 0, rows[0], short_proof)
+        self.assertEqual(code, VerifyCode.WRONG_HEIGHT)
 
     def test_heap_digests_layout(self) -> None:
         # The layered tree flattens to SP1's heap buffer: root at index 0, then each
         # level top-down, leaves last. For 2^H leaves the buffer has 2^(H+1)-1 nodes.
-        _, _, smcs = _smcs()
         matrix = jnp.arange(64, dtype=F).reshape(8, 8)  # height 8 -> 15-node heap
-        _, layers = smcs.commit(matrix)
-        heap = smcs.heap_digests(layers)
+        _, layers = _commit(matrix)
+        heap = _SMCS.heap_digests(layers)
         self.assertEqual(heap.shape, (15, 8))
         self.assertTrue(bool(jnp.array_equal(heap[0], layers[-1][0])))  # root at 0
         self.assertTrue(bool(jnp.array_equal(heap[7:], layers[0])))  # leaves last
@@ -192,63 +196,56 @@ class SingleMatrixCommitmentSchemeTest(absltest.TestCase):
     def test_prove_openings_matches_open_batch_siblings(self) -> None:
         # The heap-indexed path kernel must select exactly the siblings that the
         # layered open_batch reads — same authentication path, two representations.
-        _, _, smcs = _smcs()
         matrix = jnp.arange(64, dtype=F).reshape(8, 8)  # height 8, tree_height 3
-        _, layers = smcs.commit(matrix)
-        heap = smcs.heap_digests(layers)
+        _, layers = _commit(matrix)
+        heap = _SMCS.heap_digests(layers)
         indices = jnp.array([0, 3, 5])
 
-        paths = smcs.prove_openings_at_indices(heap, indices, 3)
+        paths = _SMCS.prove_openings_at_indices(heap, indices, 3)
         self.assertEqual(paths.shape, (3, 3, 8))  # (Q, tree_height, digest_elems)
 
-        _, proofs = smcs.open_batch(indices, matrix, layers)
+        _, proofs = _SMCS.open_batch(indices, matrix, layers)
         for level in range(3):
             self.assertTrue(bool(jnp.array_equal(paths[:, level, :], proofs[level])))
 
     def test_open_verify_single_row_roundtrip(self) -> None:
         # height 1 boundary: log_height 0 -> empty proof; verify folds nothing and
         # just rebinds the lone leaf digest.
-        _, _, smcs = _smcs()
         matrix = jnp.arange(8, dtype=F).reshape(1, 8)
-        commitment, layers = smcs.commit(matrix)
-        rows, proofs = smcs.open_batch(jnp.array([0]), matrix, layers)
+        commitment, layers = _commit(matrix)
+        rows, proofs = _SMCS.open_batch(jnp.array([0]), matrix, layers)
         self.assertEqual(proofs, [])
-        code = smcs.verify_batch(commitment, (1, 8), 0, rows[0], _proof_for(proofs, 0))
-        self.assertEqual(int(code), VerifyCode.OK)
+        code = _verify_code(commitment, (1, 8), 0, rows[0], _proof_for(proofs, 0))
+        self.assertEqual(code, VerifyCode.OK)
 
     def test_commit_shape_and_determinism(self) -> None:
-        _, _, smcs = _smcs()
         m = jnp.arange(32, dtype=F).reshape(4, 8)
-        (c1, _), (c2, _) = smcs.commit(m), smcs.commit(m)
+        (c1, _), (c2, _) = _commit(m), _commit(m)
         self.assertEqual(c1.shape, (8,))
         self.assertTrue(bool(jnp.array_equal(c1, c2)))
 
     def test_single_row_commit_log_height_zero(self) -> None:
-        _, _, smcs = _smcs()
         # height 1 -> log_height 0; raw root is the lone leaf digest, then bound.
-        c, _ = smcs.commit(jnp.arange(8, dtype=F).reshape(1, 8))
+        c, _ = _commit(jnp.arange(8, dtype=F).reshape(1, 8))
         self.assertEqual(c.shape, (8,))
 
     def test_non_power_of_two_height_raises(self) -> None:
-        _, _, smcs = _smcs()
         with self.assertRaises(ValueError):
-            smcs.commit(jnp.arange(24, dtype=F).reshape(3, 8))  # height 3
+            _commit(jnp.arange(24, dtype=F).reshape(3, 8))  # height 3
 
     def test_extension_field_matrix_not_yet_supported(self) -> None:
         # EF commit (base-field reinterpretation of EF rows) is the FFI byte-match
         # slice; until then commit rejects EF up front rather than faulting in the
         # base-field permutation.
-        _, _, smcs = _smcs()
         with self.assertRaises(NotImplementedError):
-            smcs.commit(jnp.zeros((4, 4), dtype=EF))
+            _commit(jnp.zeros((4, 4), dtype=EF))
 
 
 class BindStructureTest(absltest.TestCase):
     def test_count_shape_mismatch_raises(self):
-        _, _, smcs = _smcs()
         commitment = jnp.arange(8, dtype=jnp.uint32).view(F)
         with self.assertRaises(ValueError):
-            smcs.bind_structure(
+            _SMCS.bind_structure(
                 commitment,
                 jnp.array([1, 2, 3], dtype=F),
                 jnp.array([1, 2], dtype=F),
