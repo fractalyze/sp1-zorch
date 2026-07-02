@@ -23,10 +23,14 @@ jagged eval) on the **same** rsp shard, and the outputs are byte-identical
 ### sp1-zorch side — `verify_prove_shard` (per-stage + golden)
 
 ```bash
-ZKX_GPU_PLUGIN_PATH=<composite-capable plugin.so> JAX_PLATFORMS=cuda \
+JAX_PLATFORMS=cuda \
   bazel run //sp1_zorch/shard_prover:verify_prove_shard -- \
     --shard_dir=/data/sp1_dumps/rsp_21740136_sp1/shard17 --ffi_verify --runs=2
 ```
+
+This runs the GPU plugin bundled in the pinned `jax_cuda12_pjrt` wheel. The
+new-jax 0.10 loader has no plugin-path env var; to measure a *locally built* zkx
+plugin instead, see "Measure shipped code" below.
 
 - Runs `prove_shard_chain` (the `ProveChain` of `TraceCommitRound` → LogUp-GKR →
   zerocheck → jagged-eval) on the real shard.
@@ -101,7 +105,14 @@ shipped path, not a stale local one:
 - `zorch` is the `MODULE.bazel` pin — or, if you dev against a local checkout via
   a `.bazelrc.user` `--override_module=zorch=`, that checkout is on the same
   `origin/main` commit, not behind it and not dirty;
-- `ZKX_GPU_PLUGIN_PATH` is the plugin you actually mean to measure.
+- the GPU plugin is the one you mean to measure. The new-jax loader
+  (`jax_plugins/xla_cuda12/__init__.py` in the pinned `jax_cuda12_pjrt` wheel)
+  reads no plugin-path env var — it loads the bundled `xla_cuda_plugin.so`. To
+  measure a locally built zkx plugin, overwrite that bundled `.so` (back it up)
+  and run the **prebuilt** binary directly — `bazel run` re-extracts the wheel
+  and reverts the swap. Confirm which ran with
+  `strings -a <.so> | grep service/hlo_verifier.cc` (`external/xla/…` = wheel,
+  `xla/service/…` = your build).
 
 (sp1-zorch#153: a first encode baseline was taken against a `zorch` override
 weeks behind `origin/main` and misread as the shipped number — the whole reason
