@@ -26,7 +26,7 @@ from jax import Array, lax
 from rw_constraints import Chip, Interaction
 
 from sp1_zorch.commit.region import JaggedRegion
-from zorch.logup_gkr.circuit import JaggedGkrLayer, jagged_layer_transition
+from zorch.logup_gkr.circuit import JaggedGkrLayer
 from zorch.utils.bits import log2_ceil_usize
 
 
@@ -133,9 +133,10 @@ def _chip_first_layer_batched(
     (``generate_interaction_vals_batch``) at a fraction of the dispatch count.
     Matmul + gather + element-wise field mul/add are the only ops -- a field
     ``segment_sum`` (scatter-add) does not lower on the GPU emitter. The even/odd
-    slot split and fold-neutral padding match ``populateLastCircuitLayer``. The
-    whole build rides one ``@jit`` boundary, so each chip is a single fused
-    dispatch (``generate_first_layer`` runs eagerly, outside any prove jit).
+    slot split and fold-neutral padding match ``populateLastCircuitLayer``. Each
+    chip rides one ``@jit`` boundary, so its build is a single fused dispatch when
+    ``generate_first_layer`` runs standalone; under the production
+    ``LogupGkrRound(jit=True)`` the outer jit inlines it.
     """
     interactions = chip.interactions
     num_inter = len(interactions)
@@ -335,19 +336,18 @@ def sp1_next_row_counts(row_counts: tuple[int, ...]) -> tuple[int, ...]:
     return tuple(((rc + 3) // 4) * 2 for rc in row_counts)
 
 
-def _sp1_schedules(
+def sp1_schedules(
     row_counts: tuple[int, ...], num_row_variables: int
 ) -> list[tuple[int, ...]]:
     """The per-transition ``out_row_counts`` SP1's fixed-depth circuit folds
     through: ``sp1_next_row_counts`` applied ``1 .. num_row_variables - 1`` times
-    to the first layer's ``row_counts``. This is exactly the schedule
-    ``generate_circuit_layers`` walks, so threading it into zorch's
-    ``scan_build_jagged_pyramid`` builds the same pyramid as one fused scan
-    instead of the eager per-transition dispatch loop (sp1-zorch#143)."""
-    # Fail closed on an invalid depth, matching generate_circuit_layers (the
-    # eager path this replaces in the prover): num_row_variables < 1 has no
-    # first layer to fold, so an empty schedule would silently build a
-    # degenerate pyramid instead of erroring.
+    to the first layer's ``row_counts``. Threading it into zorch's
+    ``scan_build_jagged_pyramid`` builds the pyramid as one fused scan instead of
+    an eager per-transition dispatch loop (sp1-zorch#143); the fused build is
+    byte-matched against that eager reference loop in the tests."""
+    # Fail closed on an invalid depth: num_row_variables < 1 has no first layer
+    # to fold, so an empty schedule would silently build a degenerate pyramid
+    # instead of erroring.
     if num_row_variables < 1:
         raise ValueError(f"num_row_variables must be >= 1, got {num_row_variables}")
     schedules: list[tuple[int, ...]] = []
@@ -356,28 +356,3 @@ def _sp1_schedules(
         counts = sp1_next_row_counts(counts)
         schedules.append(counts)
     return schedules
-
-
-def generate_circuit_layers(
-    first_layer: JaggedGkrLayer, num_row_variables: int
-) -> list[JaggedGkrLayer]:
-    """Every layer of the SP1-aligned circuit, first layer to the floor.
-
-    SP1's circuit depth is fixed: ``num_row_variables - 1`` transitions
-    (``max_log_row_count - 1`` row variables on a core shard) regardless of
-    where individual segments saturate.
-
-    A host-orchestrated Python loop, per the ``@jit`` convention
-    (``fractalyze/zorch:docs/conventions.md``): the pyramid is heterogeneous
-    step to step, so the fold/gather bodies inside ``jagged_layer_transition``
-    are the fusion target, not this driver — and one fused pyramid graph
-    would recompile per shard shape.
-    """
-    if num_row_variables < 1:
-        raise ValueError(f"num_row_variables must be >= 1, got {num_row_variables}")
-    layers = [first_layer]
-    counts = first_layer.row_counts
-    for _ in range(num_row_variables - 1):
-        counts = sp1_next_row_counts(counts)
-        layers.append(jagged_layer_transition(layers[-1], counts))
-    return layers
