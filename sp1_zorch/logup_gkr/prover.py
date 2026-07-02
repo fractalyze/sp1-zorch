@@ -32,8 +32,8 @@ from sp1_zorch.commit.region import JaggedRegion
 from sp1_zorch.logup_gkr.circuit import (
     GkrChip,
     _chip_view,
-    _sp1_schedules,
     generate_first_layer,
+    sp1_schedules,
 )
 from sp1_zorch.logup_gkr.head import (
     EF_LIMBS,
@@ -344,7 +344,7 @@ def prove_logup_gkr_body(
         gkr_chips, main_region, prep_region, head.alpha, head.betas
     )
     layers = scan_build_jagged_pyramid(
-        first, _sp1_schedules(first.row_counts, num_row_variables)
+        first, sp1_schedules(first.row_counts, num_row_variables)
     )
     output = extract_sp1_outputs(layers[-1])
     carry, transcript, _ = OutputBindRound(output)(None, transcript)
