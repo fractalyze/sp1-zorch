@@ -34,10 +34,10 @@ test load. A test that finishes in 150 s locally can blow past the 300 s
 `medium` cap on CI and fail as a `TIMEOUT` even though nothing is actually
 wrong.
 
-Heavy tests currently carrying explicit timeouts: `commit:smcs_test`,
-`commit:trace_commit_test`, `shard_prover:prove_shard_test`,
-`shard_prover:verify_shard_test`, `jagged:verifier_test`,
-`logup_gkr:prover_test`, `zerocheck:jagged_test`.
+Heavy tests currently carrying explicit timeouts:
+`shard_prover:prove_shard_test`, `shard_prover:verify_shard_test`,
+`jagged:verifier_test`, `logup_gkr:prover_test`, `zerocheck:jagged_test`.
+(The `commit:*` tests jit their hashing, so they fit `medium` without one.)
 
 > A green CI on a branch with **no** recent dep bump is usually an all-cache-hit
 > run (~20 s), not evidence the tests fit their caps — the cold path only

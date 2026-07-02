@@ -18,13 +18,10 @@ py_library(
 
 py_test(
     name = "smcs_test",
-    # large: every case commits eagerly on tiny matrices, so eager poseidon2
-    # recompiles its composite per call (see trace_commit.py) and zorch#182/#184's
-    # rolled Merkle reconstruct makes that per-call graph large -- ~112s for the
-    # suite locally. On a loaded CI runner the cold compile clears the medium
-    # (300s) ceiling, so large gives the headroom. (jax#164's CompositeOp is in
-    # the pin now; it does not shrink this eager-compile cost.)
-    size = "large",
+    # medium: commit/verify are jitted (smcs_test.py) so each compiles once per
+    # shape instead of recompiling the poseidon2 composite per eager call -- ~50s
+    # locally, within the 300s cap even at cold CI's ~2-3x (docs/testing.md).
+    size = "medium",
     srcs = ["smcs_test.py"],
     deps = [
         ":smcs",
@@ -76,14 +73,11 @@ py_test(
 
 py_test(
     name = "trace_commit_test",
-    # medium size, long timeout: the tests exercise the eager commit
-    # (commit_region's default jit=False), where poseidon2 recompiles its
-    # composite on every call -- a fixed per-call cost (see trace_commit.py's
-    # module docstring), ~99s locally. Cold CI runs ~2-3x slower
-    # (docs/testing.md), so the explicit long timeout keeps this heavy test off
-    # the medium 300s cap (same reason smcs_test is large).
+    # medium: commits run through the jitted commit_region path
+    # (trace_commit_test.py), compiling once per shape instead of recompiling the
+    # poseidon2 composite per eager call -- ~43s locally, within the 300s cap
+    # even at cold CI's ~2-3x (docs/testing.md).
     size = "medium",
-    timeout = "long",
     srcs = ["trace_commit_test.py"],
     deps = [
         ":region",
@@ -98,3 +92,4 @@ py_test(
         requirement("zk_dtypes"),
     ],
 )
+
