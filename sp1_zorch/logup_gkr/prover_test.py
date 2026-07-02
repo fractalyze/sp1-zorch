@@ -33,6 +33,7 @@ from sp1_zorch.logup_gkr.prover import (
     extract_sp1_outputs,
     num_beta_values,
     prove_logup_gkr,
+    resolve_witness_and_grind,
 )
 from sp1_zorch.shard_prover.chip_loader import make_chip_stub
 from zorch.logup_gkr.circuit import JaggedGkrLayer, jagged_layer_transition
@@ -312,6 +313,45 @@ class ChipOpeningsRoundTest(absltest.TestCase):
         _, raw_next = raw.sample(1)
         self.assertTrue(bool(jnp.all(round_next == raw_next)))
         self.assertIs(msg, openings)
+
+
+class LiveGrindTest(absltest.TestCase):
+    """``resolve_witness_and_grind`` must SEARCH for the witness when none is
+    supplied (sp1-zorch#197) -- producing a witness the ``GrindRound`` gate
+    accepts, and a transcript byte-identical to replaying that witness."""
+
+    def test_grind_finds_gate_passing_witness_and_replays_identically(self) -> None:
+        # Small pow_bits: fast to grind, still exercises the real search + gate.
+        pow_bits = 6
+        orig = cheap_transcript(F)
+        # witness=None -> must grind. resolve runs GrindRound(pow_bits) internally,
+        # which raises unless the witness passes the pow_bits gate; returning at
+        # all proves the search found a gate-passing witness.
+        t_grind, witness = resolve_witness_and_grind(
+            orig, pow_bits=pow_bits, witness=None, bf_dtype=F
+        )
+        self.assertIsNotNone(witness)
+        # Replaying the found witness (the recorded-dump path) must reproduce the
+        # exact post-grind stream: same resolved witness, same next challenge.
+        t_replay, w_replay = resolve_witness_and_grind(
+            orig, pow_bits=pow_bits, witness=witness, bf_dtype=F
+        )
+        self.assertTrue(bool(jnp.all(w_replay == witness)))
+        _, c_grind = t_grind.sample(1)
+        _, c_replay = t_replay.sample(1)
+        self.assertTrue(bool(jnp.all(c_grind == c_replay)))
+
+    def test_zero_pow_bits_defaults_to_zero_witness(self) -> None:
+        _, witness = resolve_witness_and_grind(
+            cheap_transcript(F), pow_bits=0, witness=None, bf_dtype=F
+        )
+        self.assertTrue(bool(jnp.all(witness == jnp.zeros((), witness.dtype))))
+
+    def test_negative_pow_bits_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            resolve_witness_and_grind(
+                cheap_transcript(F), pow_bits=-1, witness=None, bf_dtype=F
+            )
 
 
 if __name__ == "__main__":
