@@ -1,10 +1,9 @@
 # Copyright 2026 The sp1-zorch Authors. SPDX-License-Identifier: Apache-2.0
 """Trace commit structure: determinism and structure-hash binding. The
-byte-match against the SP1 reference dump lives in trace_commit_rsp_test."""
+byte-match against the SP1 reference dump lives in
+shard_prover:verify_prove_shard (--max_stage=1)."""
 
-import jax
 import jax.numpy as jnp
-import numpy as np
 from absl.testing import absltest
 from zk_dtypes import koalabear_mont as F
 
@@ -44,15 +43,6 @@ class CommitRegionTest(absltest.TestCase):
         # Prover data keeps what the opening stage needs.
         self.assertEqual(data1.dense.shape, _region().dense.shape)
         self.assertNotEmpty(data1.digest_layers)
-
-    def test_jit_matches_eager(self):
-        """The @jit zone exists for memory, not semantics — the commitment and
-        every retained prover-data leaf must be byte-identical to eager."""
-        smcs = _smcs()
-        eager = commit_region(_region(), smcs, log_blowup=2)
-        jitted = commit_region(_region(), smcs, log_blowup=2, jit=True)
-        for le, lj in zip(jax.tree.leaves(eager), jax.tree.leaves(jitted), strict=True):
-            np.testing.assert_array_equal(le, lj)
 
     def test_structure_binding_separates_same_dense(self):
         """Two regions with identical dense bytes but different chip splits

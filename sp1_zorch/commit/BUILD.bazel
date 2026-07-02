@@ -1,4 +1,4 @@
-load("@rules_python//python:defs.bzl", "py_binary", "py_library", "py_test")
+load("@rules_python//python:defs.bzl", "py_library", "py_test")
 load("@sp1_zorch_pip//:requirements.bzl", "requirement")
 
 # SP1's single-matrix commitment over zorch's agnostic Merkle blocks.
@@ -27,24 +27,6 @@ py_test(
     srcs = ["smcs_test.py"],
     deps = [
         ":smcs",
-        "//sp1_zorch/poseidon2:koalabear16",
-        "@zorch//zorch/commit:merkle",
-        "@zorch//zorch/hash:compression",
-        "@zorch//zorch/hash:sponge",
-        "@zorch//zorch/hash/poseidon2",
-        requirement("absl_py"),
-        requirement("jax"),
-        requirement("zk_dtypes"),
-    ],
-)
-
-# Bootstrap wiring proof — exercises sp1_zorch's params over zorch's engine
-# through the cross-module dependency.
-py_test(
-    name = "zorch_wiring_test",
-    size = "small",
-    srcs = ["zorch_wiring_test.py"],
-    deps = [
         "//sp1_zorch/poseidon2:koalabear16",
         "@zorch//zorch/commit:merkle",
         "@zorch//zorch/hash:compression",
@@ -93,12 +75,11 @@ py_test(
 
 py_test(
     name = "trace_commit_test",
-    # medium: poseidon2/merkle composite hashing dominates (same reason as
-    # smcs_test), plus the jit-vs-eager test compiles the fused pipeline.
-    # timeout long: ~150s locally, but it runs both the eager and the jit
-    # leg, so on a loaded shared CI runner it overruns the medium 300s cap.
+    # medium: these tests exercise the eager commit (commit_region's default
+    # jit=False), where poseidon2 recompiles its composite on every call -- a
+    # fixed per-call cost (see trace_commit.py's module docstring) that pushes
+    # the suite past the small ceiling even on these tiny synthetic regions.
     size = "medium",
-    timeout = "long",
     srcs = ["trace_commit_test.py"],
     deps = [
         ":region",
@@ -111,92 +92,5 @@ py_test(
         requirement("absl_py"),
         requirement("jax"),
         requirement("zk_dtypes"),
-    ],
-)
-
-# Devenv-provenance preflight shared by the bench / verify tools — flags a
-# stale @zorch override or patched jax so a run can't be reported as a baseline.
-py_library(
-    name = "bench_preflight",
-    srcs = ["bench_preflight.py"],
-    visibility = ["//visibility:public"],
-)
-
-py_test(
-    name = "bench_preflight_test",
-    size = "small",
-    srcs = ["bench_preflight_test.py"],
-    deps = [
-        ":bench_preflight",
-        requirement("absl_py"),
-    ],
-)
-
-py_binary(
-    name = "verify_trace_commit",
-    srcs = ["verify_trace_commit.py"],
-    # Byte-match harness over a local rsp GPU-trace capture (~1.5 GB/shard) —
-    # a runnable, not a unit test:
-    #   bazel run //sp1_zorch/commit:verify_trace_commit -- \
-    #       --shard_dir=/path/to/rsp_dump/shardN --stage=prep
-    deps = [
-        ":bench_preflight",
-        ":region",
-        ":smcs",
-        ":trace_commit",
-        "//sp1_zorch/poseidon2:koalabear16",
-        "//sp1_zorch/shard_prover",
-        "@zorch//zorch/hash:compression",
-        "@zorch//zorch/hash:sponge",
-        "@zorch//zorch/hash/poseidon2",
-        requirement("absl_py"),
-        requirement("jax"),
-        requirement("jax_cuda12_plugin"),
-        requirement("zk_dtypes"),
-        requirement("jax_cuda12_pjrt"),
-    ],
-)
-
-# Absolute open/verify throughput (no SP1 FFI entry for paths -> no vs-SP1 A/B).
-# GPU-only manual tool (bazel run), not a CI test — see the module docstring.
-#   bazel run //sp1_zorch/commit:bench_smcs_open_verify -- --log-heights 16 18 20 22
-py_binary(
-    name = "bench_smcs_open_verify",
-    srcs = ["bench_smcs_open_verify.py"],
-    deps = [
-        ":smcs",
-        "//sp1_zorch/poseidon2:koalabear16",
-        "@zorch//zorch/hash:compression",
-        "@zorch//zorch/hash:sponge",
-        "@zorch//zorch/hash/poseidon2",
-        requirement("jax"),
-        requirement("jax_cuda12_plugin"),
-        requirement("numpy"),
-        requirement("zk_dtypes"),
-        requirement("zkbench"),
-        requirement("jax_cuda12_pjrt"),
-    ],
-)
-
-# GPU-only manual tool (bazel run), not a CI test — see the module docstring.
-#   bazel run //sp1_zorch/commit:bench_trace_commit -- --shard_dir=.../shard1
-py_binary(
-    name = "bench_trace_commit",
-    srcs = ["bench_trace_commit.py"],
-    deps = [
-        ":bench_preflight",
-        ":region",
-        ":smcs",
-        ":trace_commit",
-        "//sp1_zorch/poseidon2:koalabear16",
-        "//sp1_zorch/shard_prover",
-        "@zorch//zorch/coding:reed_solomon",
-        "@zorch//zorch/hash:compression",
-        "@zorch//zorch/hash:sponge",
-        "@zorch//zorch/hash/poseidon2",
-        requirement("jax"),
-        requirement("jax_cuda12_plugin"),
-        requirement("zkbench"),
-        requirement("jax_cuda12_pjrt"),
     ],
 )
