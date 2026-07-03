@@ -24,13 +24,15 @@ bazel_dep(name = "zorch", version = "0.0.0")
 git_override(
     module_name = "zorch",
     remote = "https://github.com/fractalyze/zorch.git",
-    # zorch main (#283: self-contained JAX-native jagged PCS + recompile-free
-    # symbolic-K export). Keep the requirements.in wheel set on jax
-    # 0.10.0.dev20260628052515 in lockstep with this pin — the wheel must match
+    # zorch main (#363: device-FS logup-GKR warm-prove routed through the fused
+    # zorch.duplex_fs Fiat-Shamir kernel). The duplex_fs marker fuses only with a
+    # jax wheel that carries the matching xla duplex_fs emitter (fractalyze/xla
+    # #167, jax >= 0.10.0.dev20260703054857); an older wheel still proves
+    # correctly but decomposes the FS hop into loop fusions. Keep the
+    # requirements.in wheel set in lockstep with this pin — the wheel must match
     # the jax this zorch commit builds against, or the GPU codeword desyncs
-    # (CPU-only CI can't catch it). #283's jagged PCS is markerless, so the
-    # lockstep no longer rides a sumcheck/jagged marker-version cut.
-    commit = "72b9cf7156540dba71cdee7ed632586213929b16",
+    # (CPU-only CI can't catch it).
+    commit = "478fd8c76c0253d4bcdf094cbb280f2b2ebdc9f0",
 )
 
 python = use_extension("@rules_python//python/extensions:python.bzl", "python")
