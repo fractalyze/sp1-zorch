@@ -29,6 +29,13 @@ GPU:
     timeout 240 env JAX_PLATFORMS=cuda bazel run \
         //sp1_zorch/zerocheck:probe_chip_compile -- \
         --shard-dir=/data/sp1_dumps/rsp_21740136_sp1/shard17 --only=Global
+
+`--run` adds a RUNTIME measurement on the same compiled kernel (warm-up, then
+`--run-iters` timed executions, ms/iter): unlike codegen, runtime scales with
+rows, so pass `--rows` near the chip's real `num_real`. Zeros operands time
+like real data — field-op cost is data-independent. This is the runtime arm of
+compile/runtime A/Bs (e.g. the fractalyze/xla#200 interpreter-retirement gate);
+see docs/testing.md.
 """
 
 from __future__ import annotations
@@ -66,6 +73,15 @@ def main() -> int:
         action="store_true",
         help="print each chip's nc/K/num_real and exit without compiling.",
     )
+    p.add_argument(
+        "--run",
+        action="store_true",
+        help="allocate a real (zeros) trace and time execution (ms/iter) of the "
+        "compiled kernel. Runtime scales with rows, so pass --rows near the "
+        "chip's real num_real for a representative number (codegen itself is "
+        "row-independent, so compile-only probes keep the tiny default).",
+    )
+    p.add_argument("--run-iters", type=int, default=10, help="timed execution iters.")
     args = p.parse_args()
 
     only = set(args.only.split(",")) if args.only else None
@@ -130,6 +146,21 @@ def main() -> int:
         dt = time.perf_counter() - t0
         print(f"{name:<30}{nc:>5}{k:>6}{nr:>10}{dt:>12.2f}", flush=True)
         timed.append((name, nc, k, nr, dt))
+
+        if args.run:
+            # Real (zeros) operands of the compiled shapes so the executable is
+            # reused and the kernel actually runs hot.
+            t = jnp.zeros((args.rows, nc), bf)
+            a = jnp.zeros((k,), ef)
+            lw = jnp.int32(args.rows)
+            out = fn(t, a, lw)
+            jax.block_until_ready(out)  # warm
+            t0 = time.perf_counter()
+            for _ in range(args.run_iters):
+                out = fn(t, a, lw)
+            jax.block_until_ready(out)
+            dt_run = (time.perf_counter() - t0) / args.run_iters
+            print(f"RUN {name} rows={args.rows}: {dt_run * 1000:.3f} ms/iter", flush=True)
 
     if len(timed) > 1:
         print("\n=== sorted by compile_s (desc) ===", flush=True)

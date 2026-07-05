@@ -23,6 +23,12 @@ ran):
     timeout -k 10 -s KILL 240 env JAX_PLATFORMS=cuda bazel run \
         //sp1_zorch/zerocheck:probe_round_compile -- \
         --shard-dir=/data/sp1_dumps/rsp_21740136_sp1/shard17 --only=Global
+
+`--run` adds a RUNTIME measurement of the compiled round: real (zeros) traces
+replace the abstract shapes so the executable is reused hot, then `--run-iters`
+timed executions print ms/iter. Zeros time like real data -- field-op cost is
+data-independent. The runtime arm of compile/runtime A/Bs (e.g. the
+fractalyze/xla#200 interpreter-retirement gate); see docs/testing.md.
 """
 
 from __future__ import annotations
@@ -53,6 +59,13 @@ def main() -> int:
         action="store_true",
         help="prove the pure zero-sum (no beta/claims column term).",
     )
+    p.add_argument(
+        "--run",
+        action="store_true",
+        help="allocate real (zeros) traces and time execution (ms/iter), so the "
+        "constraint_eval kernel is actually hot (for an nsys runtime A/B).",
+    )
+    p.add_argument("--run-iters", type=int, default=10, help="timed execution iters.")
     args = p.parse_args()
 
     only = set(args.only.split(",")) if args.only else None
@@ -134,6 +147,23 @@ def main() -> int:
     lowered.compile()
     dt = time.perf_counter() - t0
     print(f"COMPILE prove_jagged_zerocheck [{','.join(names)}]: {dt:.2f} s", flush=True)
+
+    if args.run:
+        # Real traces (zeros) of the same aval as the abstract compile operands, so
+        # the compiled executable is reused and the constraint_eval kernel executes.
+        real_traces = [jnp.zeros((ncs[i], nrs[i]), bf) for i in range(num_chips)]
+        out = jf(real_traces, alphas, lambdas, zeta, transcript, beta, claims)
+        jax.block_until_ready(out)  # warm
+        iters = args.run_iters
+        t0 = time.perf_counter()
+        for _ in range(iters):
+            out = jf(real_traces, alphas, lambdas, zeta, transcript, beta, claims)
+        jax.block_until_ready(out)
+        dt_run = (time.perf_counter() - t0) / iters
+        print(
+            f"RUN prove_jagged_zerocheck [{','.join(names)}]: {dt_run * 1000:.3f} ms/iter",
+            flush=True,
+        )
     return 0
 
 
