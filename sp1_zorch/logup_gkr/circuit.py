@@ -342,7 +342,7 @@ def sp1_schedules(
     """The per-transition ``out_row_counts`` SP1's fixed-depth circuit folds
     through: ``sp1_next_row_counts`` applied ``1 .. num_row_variables - 1`` times
     to the first layer's ``row_counts``. Threading it into zorch's
-    ``scan_build_jagged_pyramid`` builds the pyramid as one fused scan instead of
+    ``build_jagged_pyramid`` builds the pyramid as one fused scan instead of
     an eager per-transition dispatch loop (sp1-zorch#143); the fused build is
     byte-matched against that eager reference loop in the tests."""
     # Fail closed on an invalid depth: num_row_variables < 1 has no first layer
