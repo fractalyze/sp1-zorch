@@ -8,4 +8,4 @@ pointer).
 | --- | --- |
 | [conventions.md](conventions.md) | Comment scoping (why-not-what) and how the SP1 reference code is cited. |
 | [shard-pipeline.md](shard-pipeline.md) | The shard proof as Round compositions; the SP1 dump "phase" vocabulary. |
-| [testing.md](testing.md) | Running tests, `size` vs `timeout` conventions, and fixtures. |
+| [testing.md](testing.md) | Running tests, `size` vs `timeout` conventions, fixtures, and the zerocheck perf probes. |

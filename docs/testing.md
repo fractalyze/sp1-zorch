@@ -54,3 +54,56 @@ bytes, no tolerances):
 - **External** full-shard dumps are too large to vendor; they stay out of the
   repo and are checked with the `verify_*` `py_binary` tools via `--shard_dir`
   (GPU). See the SP1 byte-match notes in [`../CLAUDE.md`](../CLAUDE.md).
+
+## Zerocheck perf probes (compile + runtime)
+
+Two `py_binary` tools under `sp1_zorch/zerocheck` attribute
+`constraint_eval_bounded` cost to a chip, on real shard-dump shapes, without
+running the prover. They exist because whole-prove timings can't localize a
+compile cliff (the ptxas/LLVM cost of one wide chip hides inside a joint jit),
+and because emitter A/Bs — e.g. the decode-loop-interpreter retirement in
+fractalyze/xla#200, whose acceptance gate was "runtime ≤ the interpreter's
+s/exec at real rows" — need compile time AND execution time measured on the
+same isolated kernel.
+
+- **`probe_chip_compile`** compiles each chip's `constraint_eval` in isolation
+  — with the runtime `live_width` bound, which is load-bearing: omitting it
+  compiles the *unbounded* variant, a different cliff-free body. Times
+  `.compile()` per chip. Codegen cost is row-independent, so the default
+  `--rows` stays tiny.
+- **`probe_round_compile`** compiles the real `prove_jagged_zerocheck` scan
+  body (constraint_eval inlined ×3 t-points alongside the eq sums and
+  round-poly machinery) from abstract `ShapeDtypeStruct` operands — the
+  in-stage compile, where super-linear costs actually surface. Bisect with
+  `--only` / `--skip`.
+
+Both take `--run` / `--run-iters`, which re-execute the just-compiled kernel
+on real (zeros) operands and print ms/iter — field-op cost is
+data-independent, so zeros time like real data. Runtime (unlike codegen)
+scales with rows: pair `--run` with `--rows` near the chip's real height in
+`probe_chip_compile`.
+
+```sh
+# per-chip compile sweep (skip the known-heavy chip), GPU emitter
+JAX_PLATFORMS=cuda bazel run //sp1_zorch/zerocheck:probe_chip_compile -- \
+    --shard-dir=/data/sp1_dumps/rsp_21740136_sp1/shard17 --skip=Global
+
+# one chip, compile + runtime at real height (CPU backend here)
+JAX_PLATFORMS=cpu bazel run //sp1_zorch/zerocheck:probe_chip_compile -- \
+    --shard-dir=/data/sp1_dumps/rsp_21740136_sp1/shard17 --only=Global \
+    --rows=134048 --run --run-iters=5
+
+# the full round body, compile + runtime
+JAX_PLATFORMS=cpu bazel run //sp1_zorch/zerocheck:probe_round_compile -- \
+    --shard-dir=/data/sp1_dumps/rsp_21740136_sp1/shard17 --only=Global --run
+```
+
+`JAX_PLATFORMS` must be explicit: `cuda` makes a missing GPU plugin error
+instead of silently probing the CPU emitter (both print a `backend=` line —
+trust that, not the flag). For emitter-path A/Bs on CPU, the
+`XLA_CPU_CONSTRAINT_EVAL_CONE_PROGRAM_MIN_OPS` env var overrides the
+cone-program floor (0 forces the cone-aware path, a huge value forces the
+monolithic body; both arms compute the same result). Wheels pinned before
+fractalyze/xla#202 spell it `XLA_CPU_CONSTRAINT_EVAL_LOOP_FORM_MIN_OPS`.
+Measure cold: unset `JAX_COMPILATION_CACHE_DIR`, or compile numbers are cache
+reads.
