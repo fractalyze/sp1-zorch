@@ -51,6 +51,7 @@ from zorch.logup_gkr.circuit import (
 from zorch.logup_gkr.jagged_prover import (
     JaggedGkrLayerRound,
     JaggedLayerProof,
+    RoundWidthCaps,
 )
 from zorch.round import ProveChain, Round
 from zorch.transcript import GrindingTranscript, Transcript
@@ -361,8 +362,22 @@ def prove_logup_gkr_body(
     # list would pin the whole pyramid and defeat that invariant -- the runtime
     # host-RAM half of zorch#362 (the builder is the other half). Byte-match is
     # gated by the SP1 reference (verify_gkr_prove) and a captured CPU golden.
+    #
+    # Fixed-width round buffers (fractalyze/xla#179): the caps pin ONE operand
+    # shape per round phase across every round and layer -- and across shards
+    # of the same padded shape class -- so the FS-less round kernels compile
+    # once instead of once per width. They derive from the widest layer's
+    # (the floor's) even-padded round-0 layout and the trace's row-variable
+    # depth; only the host-int row counts are captured, never the layer.
+    floor_padded = sum(rc + rc % 2 for rc in first.row_counts)
+    caps = RoundWidthCaps(
+        row=floor_padded + (-floor_padded % 4),
+        eq_row=1 << num_row_variables,
+        interaction=max(4, len(first.row_counts)),
+    )
     chain = ProveChain(
-        JaggedGkrLayerRound(layers.pop(), EF_LIMBS) for _ in range(len(layers))
+        JaggedGkrLayerRound(layers.pop(), EF_LIMBS, caps=caps)
+        for _ in range(len(layers))
     )
     (_, _, eval_point), transcript, round_proofs = chain(carry, transcript)
 
