@@ -28,7 +28,7 @@ from sp1_zorch.shard_prover.chip_loader import make_chip_stub
 from zorch.logup_gkr.circuit import (
     JaggedGkrLayer,
     jagged_layer_transition,
-    scan_build_jagged_pyramid,
+    build_jagged_pyramid,
 )
 from zorch.utils.bits import log2_ceil_usize
 
@@ -39,7 +39,7 @@ def generate_circuit_layers(
     """Eager reference pyramid: fold the first layer to the floor through SP1's
     fixed-depth schedule -- ``num_row_variables - 1`` transitions
     (``max_log_row_count - 1`` on a core shard), one ``jagged_layer_transition``
-    per step. The reference the fused ``scan_build_jagged_pyramid`` is checked
+    per step. The reference the fused ``build_jagged_pyramid`` is checked
     against.
     """
     if num_row_variables < 1:
@@ -141,7 +141,7 @@ class GenerateFirstLayerTest(absltest.TestCase):
         # 3 real interactions pad to 4; the pad slot is 2 * sp1_col_h(0) = 4
         # rows of the neutral fraction.
         self.assertEqual(layer.row_counts, (4, 4, 4, 4))
-        self.assertEqual(layer.num_interaction_variables, 2)
+        self.assertEqual(layer.num_batch_variables, 2)
         lo = layer.start_indices[3]
         self.assertTrue(bool(jnp.all(layer.numerator_0[lo:] == jnp.array(0, F))))
         self.assertTrue(bool(jnp.all(layer.denominator_0[lo:] == jnp.array(1, F))))
@@ -247,7 +247,7 @@ class GenerateCircuitLayersTest(absltest.TestCase):
 
 class ScanBuildJaggedPyramidWiringTest(absltest.TestCase):
     """Lever A (sp1-zorch#143): building the pyramid via zorch's fused
-    `scan_build_jagged_pyramid` under the SP1 schedule must be byte-identical to
+    `build_jagged_pyramid` under the SP1 schedule must be byte-identical to
     the eager `generate_circuit_layers` reference loop."""
 
     def _first_layer(self, alpha, betas):
@@ -296,7 +296,7 @@ class ScanBuildJaggedPyramidWiringTest(absltest.TestCase):
         # Base-field alpha keeps numerator and denominator in one field, so
         # scan_build takes its pure-scan path (no base->EF carve-out).
         first = self._first_layer(ALPHA, BETAS)
-        scanned = scan_build_jagged_pyramid(first, sp1_schedules(first.row_counts, 4))
+        scanned = build_jagged_pyramid(first, sp1_schedules(first.row_counts, 4))
         self._assert_layers_byte_equal(scanned, generate_circuit_layers(first, 4))
 
     def test_scan_build_matches_eager_mixed_field(self) -> None:
@@ -305,7 +305,7 @@ class ScanBuildJaggedPyramidWiringTest(absltest.TestCase):
         # carves the base->EF promoting first transition out eagerly. Pin that
         # carve-out path byte-identical to the eager loop too.
         first = self._first_layer(ALPHA.astype(EF), BETAS.astype(EF))
-        scanned = scan_build_jagged_pyramid(first, sp1_schedules(first.row_counts, 4))
+        scanned = build_jagged_pyramid(first, sp1_schedules(first.row_counts, 4))
         self._assert_layers_byte_equal(scanned, generate_circuit_layers(first, 4))
 
 

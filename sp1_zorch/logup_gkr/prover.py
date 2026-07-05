@@ -46,7 +46,7 @@ from zorch.logup_gkr.circuit import (
     LogUpGkrOutput,
     extract_jagged_outputs,
     jagged_layer_transition,
-    scan_build_jagged_pyramid,
+    build_jagged_pyramid,
 )
 from zorch.logup_gkr.jagged_prover import (
     JaggedGkrLayerRound,
@@ -257,7 +257,7 @@ def extract_sp1_outputs(floor: JaggedGkrLayer) -> LogUpGkrOutput:
     inline. Run the missing transition, then interleave.
     """
     if all(rc == 2 for rc in floor.row_counts):
-        floor = jagged_layer_transition(floor, (1,) * floor.num_interactions)
+        floor = jagged_layer_transition(floor, (1,) * floor.num_batches)
     return extract_jagged_outputs(floor)
 
 
@@ -335,15 +335,16 @@ def prove_logup_gkr_body(
     """
     _, transcript, head = HeadChallengesRound(num_betas)(None, transcript)
 
-    # Build the pyramid as one fused lax.scan over the transitions (zorch's
-    # scan_build_jagged_pyramid) rather than the eager per-transition dispatch
-    # loop -- it collapses the ~20 heterogeneous transition layers into one
-    # traced region, O(1) in the depth (sp1-zorch#143). scan_build reads the
-    # first layer's row_counts to derive SP1's fold schedule, so build it first.
+    # Build the pyramid as one fused traced region over the transitions (zorch's
+    # build_jagged_pyramid, natural-width per zorch#370) rather than the eager
+    # per-transition dispatch loop -- it collapses the ~20 heterogeneous
+    # transition layers into one traced region, O(1) in the depth (sp1-zorch#143).
+    # build_jagged_pyramid reads the first layer's row_counts to derive SP1's fold
+    # schedule, so build it first.
     first = generate_first_layer(
         gkr_chips, main_region, prep_region, head.alpha, head.betas
     )
-    layers = scan_build_jagged_pyramid(
+    layers = build_jagged_pyramid(
         first, sp1_schedules(first.row_counts, num_row_variables)
     )
     output = extract_sp1_outputs(layers[-1])
