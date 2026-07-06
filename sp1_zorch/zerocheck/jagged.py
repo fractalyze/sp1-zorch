@@ -140,6 +140,8 @@ def _chip_round_poly(
     has_constraints = alpha.shape[-1] > 0
     num_non_padded = (nr_live + 1) // 2
 
+    # The computed evaluation points {0, 2, 4} — SP1's choice of materialized
+    # t-points; t = 1 and the eq root come free (claim identity / Gruen zero).
     t_traces = (p0, p0 + two * diff, p0 + four * diff)
 
     if gkr_powers is None:
@@ -226,7 +228,11 @@ def _chip_round_poly(
     msb_lagrange = eq_adj * eq[threshold_half]
 
     def correct(y: Array, t_val: Array) -> Array:
-        # The bound eq factor scales every term.
+        # Scale by the bound eq factor and subtract the zero-extension leak:
+        # rows past the live prefix read as the MLE's canonical zero-extension,
+        # whose constant constraint value (padded_row_adj = C_alpha(0_row))
+        # enters the inner sum; the virtual geq's closed form removes that
+        # mass without materializing the 2**num_vars indicator.
         eq_last = eq_factor(t_val, last)
         vg = vgeq.fix_last_variable(t_val).eval_at(threshold_half)
         return eq_last * (y * eq_adj - padded_row_adj * vg * msb_lagrange)
@@ -255,8 +261,11 @@ def prove_jagged_zerocheck(
     trace — exactly its real rows; the driver owns all padding (the zero-tail
     soundness contract is internal). ``alphas[c]`` is its constraint-RLC
     vector (``prover.rlc_coeffs``; empty for a lookup-only chip with no
-    transition constraints) and ``lambdas[c]`` its cross-chip coefficient;
-    ``zeta`` is the eq point, one round per coordinate.
+    transition constraints) and ``lambdas[c]`` its cross-chip coefficient —
+    chips are RLC'd anew every round, never folded (a chip index is a batch
+    axis, not a sumcheck variable), so the reduction is single-phase:
+    ``zeta`` is the eq point and each of its coordinates gets exactly one
+    round.
 
     ``beta`` and ``claims`` switch on GKR column batching: chip ``c``'s
     summand gains ``sum_j beta**(j+1) * col_j`` and ``claims[c]`` — its GKR
@@ -360,10 +369,11 @@ def prove_jagged_zerocheck(
 
     # Round-varying scan inputs, all O(1) to build (no per-round constraint
     # work): `last` is zeta back-to-front (the round binds zeta[n-1-rnd]); the
-    # Gruen matrix maps each round's {0, 1, 2, 4} evaluations (plus the
-    # implicit zero at the bound eq factor's root) to coefficients, prebuilt
-    # per round outside the scan as `zorch.sumcheck.gruen` prescribes for
-    # fixed-shape drivers; `is_round0` flags the constraint skip at t=0.
+    # Gruen matrix maps each round's computed evaluations at {0, 2, 4} plus
+    # the two free points (t=1 from the claim identity, the implicit zero at
+    # the bound eq factor's root) to coefficients, prebuilt per round outside
+    # the scan as `zorch.sumcheck.gruen` prescribes for fixed-shape drivers;
+    # `is_round0` flags the constraint skip at t=0.
     last_xs = zeta[::-1]
     extra_ts = (jnp.array(2, ef), jnp.array(4, ef))
     interp_xs = jax.vmap(lambda z: interp_matrix(extra_ts, z))(last_xs)
@@ -431,16 +441,13 @@ def prove_jagged_zerocheck(
         # SP1 binds each variable with one extension element (its
         # ``sample_ext_element``) — the shared ``sample_challenge`` rule.
         transcript = transcript.observe(rlc)
-        transcript, alpha_r = sample_challenge(transcript, ef, ef_limbs)
+        transcript, r = sample_challenge(transcript, ef, ef_limbs)
 
-        bufs = [
-            zero_extend(p0s[i] + alpha_r * diffs[i], widths[i])
-            for i in range(num_chips)
-        ]
-        vgeqs = [vg.fix_last_variable(alpha_r) for vg in vgeqs]
+        bufs = [zero_extend(p0s[i] + r * diffs[i], widths[i]) for i in range(num_chips)]
+        vgeqs = [vg.fix_last_variable(r) for vg in vgeqs]
         nrs_live = [(nr + 1) // 2 for nr in nrs_live]
-        chip_claims = eval_coeffs(polys, alpha_r)
-        eq_adj = eq_adj * eq_factor(alpha_r, last)
+        chip_claims = eval_coeffs(polys, r)
+        eq_adj = eq_adj * eq_factor(r, last)
 
         carry = (
             bufs,
@@ -451,7 +458,7 @@ def prove_jagged_zerocheck(
             fold_eq(eq_buf),
             transcript,
         )
-        return carry, RoundMsg(round_poly=rlc, challenge=alpha_r)
+        return carry, RoundMsg(round_poly=rlc, challenge=r)
 
     init = (bufs, vgeqs, chip_claims, eq_adj, nrs_live, eq_buf, transcript)
     (bufs, *_, transcript), msgs = lax.scan(
