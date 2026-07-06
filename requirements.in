@@ -20,16 +20,17 @@ numpy
 # against jax 0.10.0.dev20260628052515. zorch#283's jagged PCS is markerless
 # (recompile-free symbolic-K export), so this lockstep no longer rides a
 # sumcheck/jagged marker-version cut — but the wheel must still match the pin.
-jax==0.10.0.dev20260705083732
-jaxlib==0.10.0.dev20260705083732
-jax-cuda12-pjrt==0.10.0.dev20260705083732
-jax-cuda12-plugin==0.10.0.dev20260705083732
+jax==0.10.0.dev20260706024414
+jaxlib==0.10.0.dev20260706024414
+jax-cuda12-pjrt==0.10.0.dev20260706024414
+jax-cuda12-plugin==0.10.0.dev20260706024414
 # zk_dtypes ships the native field dtypes jax lowers. It arrives transitively
 # via jax, but the resolver leaves it at the lowest compatible version, which
-# lags the jax build: 0.0.7 adds the Pallas scalar field (pallas_sf) the jax
-# wheel now references (Pasta GPU MSM, fractalyze/zkx#699). Pin it explicitly
-# so the lock tracks the jax wheel, not an older transitive pick.
-zk-dtypes==0.0.7
+# lags the jax build: 0.0.8 adds the flat GHASH GF(2^128) field and the
+# Fan-Paar/Binius canonical binary tower the jax wheel now requires
+# (zk_dtypes#146/#148). Pin it explicitly so the lock tracks the jax wheel,
+# not an older transitive pick.
+zk-dtypes==0.0.8
 
 # SP1 chip definitions (constraints + LogUp interactions) exported from
 # riscv-witness; consumed by the shard fixture loader. Same pin as whir-zorch.
