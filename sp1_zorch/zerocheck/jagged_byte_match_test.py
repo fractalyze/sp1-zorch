@@ -35,6 +35,7 @@ from absl.testing import absltest
 from zk_dtypes import koalabear_mont, koalabearx4_mont
 
 from zorch.poly.eq import eval_eq
+from zorch.sumcheck.prover import zero_extend
 
 from zorch.pcs.jagged.region import JaggedRegion
 from sp1_zorch.shard_prover.chip_loader import load_sp1_chips, sp1_name_to_rw
@@ -123,6 +124,18 @@ class JaggedZerocheckByteMatchTest(absltest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        cls._setup_inputs()
+        cls.finals, _, cls.msgs = prove_jagged_zerocheck(
+            cls.summand,
+            cls.traces,
+            cls.num_reals,
+            cls.zeta,
+            _ScriptedTranscript.replaying(cls.zc_sumcheck_point[::-1]),
+            claims=cls.claims,
+        )
+
+    @classmethod
+    def _setup_inputs(cls):
         meta = json.loads((_FIXTURE / "meta.json").read_text())
         chip_names = list(meta["chip_names"])
         num_reals = [int(meta["num_reals"][n]) for n in chip_names]
@@ -185,16 +198,12 @@ class JaggedZerocheckByteMatchTest(absltest.TestCase):
 
         # ``zc_sumcheck_point`` is the challenge list reversed (SP1's
         # ``jagged_point`` order); un-reverse to feed rounds in order.
-        cls.finals, _, cls.msgs = prove_jagged_zerocheck(
-            JaggedZerocheckSummand(
-                eval_fns=eval_fns, alphas=alphas, lambdas=lambdas, beta=beta
-            ),
-            traces,
-            num_reals,
-            zeta,
-            _ScriptedTranscript.replaying(cls.zc_sumcheck_point[::-1]),
-            claims=list(chip_claims),
+        cls.summand = JaggedZerocheckSummand(
+            eval_fns=eval_fns, alphas=alphas, lambdas=lambdas, beta=beta
         )
+        cls.traces = traces
+        cls.num_reals = num_reals
+        cls.claims = list(chip_claims)
 
     def test_round_polys_byte_match_reference(self):
         expected = self.expected_round_polys.reshape(-1)
@@ -215,6 +224,9 @@ class JaggedZerocheckByteMatchTest(absltest.TestCase):
         """Each chip's final per-column scalars, permuted back to the
         reference's ``[prep, main, eq_final]`` order (the driver folds
         ``[main | prep]`` traces)."""
+        # Inherited by the capped subclass: a capped zero-height chip widens
+        # its final from (nc, 0) to (nc, 2) dead zeros, and both shapes take
+        # the matching branch below to the same values.
         eq_final = eval_eq(self.zeta, self.zc_sumcheck_point)
         for i, final in enumerate(self.finals):
             nc = final.shape[0]
@@ -230,6 +242,33 @@ class JaggedZerocheckByteMatchTest(absltest.TestCase):
                 bool(np.array_equal(_u32(got), _u32(expected))),
                 f"chip {i} final openings diverged",
             )
+
+
+class CappedJaggedZerocheckByteMatchTest(JaggedZerocheckByteMatchTest):
+    """The cap-class path on the real fixture: pow2-capped pre-padded traces
+    with every height riding as a traced int32 — including the zero-height
+    cluster fillers — must reproduce the exact replay's golden bytes. The
+    byte-compare tests are inherited."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._setup_inputs()
+        caps = [
+            max(4, 1 << (int(nr) - 1).bit_length()) if nr else 4
+            for nr in cls.num_reals
+        ]
+        padded = [
+            zero_extend(t, c) for t, c in zip(cls.traces, caps, strict=True)
+        ]
+        cls.finals, _, cls.msgs = prove_jagged_zerocheck(
+            cls.summand,
+            padded,
+            [jnp.asarray(nr, jnp.int32) for nr in cls.num_reals],
+            cls.zeta,
+            _ScriptedTranscript.replaying(cls.zc_sumcheck_point[::-1]),
+            claims=cls.claims,
+            width_caps=caps,
+        )
 
 
 if __name__ == "__main__":
