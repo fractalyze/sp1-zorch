@@ -1,6 +1,21 @@
 # Copyright 2026 The sp1-zorch Authors. SPDX-License-Identifier: Apache-2.0
 """SP1-schedule jagged zerocheck: the height-aware multi-chip sumcheck round.
 
+The statement, in one sum — the claim the transcript carries::
+
+    sum_{x in {0,1}^nrv} eq(zeta, x) * sum_c lambda_c * (
+        C_{alpha_c}(trace_c(x)) - C_{alpha_c}(0_row) * geq_c(x)
+        + sum_j beta**(j+1) * col_{c,j}(x)
+    )  =  sum_c lambda_c * v_c
+
+Per chip the constraint part sums to ZERO (AIR constraints vanish on real
+witness rows — the zerocheck statement) and the column part to v_c, the
+chip's GKR opening claim at ``zeta`` — so one single-phase sumcheck over the
+``nrv`` row variables proves every chip's constraint zero-sum and its
+opening claim together; there is no separate opening pass. The three
+challenges batch three dimensions (`JaggedZerocheckSummand`): alpha a
+chip's constraints, beta its columns, lambda across chips.
+
 Chips keep their own heights: each trace lives in a fixed-width buffer — its
 real height padded to the next multiple of 4, SP1's round-0 alignment — with
 the live prefix packed at the front, halving per round
@@ -387,7 +402,10 @@ def prove_jagged_zerocheck(
     chip_gkr = [gkr_all[: t.shape[0]] for t in traces]
     eq_adj = one
     # Only a chip that starts empty is ever empty (see `chip_evals`); the
-    # rest carry their live height as a traced int32 round carry.
+    # rest carry their live height as a traced int32 round carry. Zero-height
+    # chips are production, not defensive: an SP1 shard carries its shape's
+    # FULL chip set, and chips the program never exercised ship zero rows
+    # (six of the fibonacci fixture's 35 main chips).
     is_zero_chip = [nr == 0 for nr in nrs]
     nrs_live = [jnp.asarray(nr, jnp.int32) for nr in nrs]
 
@@ -406,6 +424,9 @@ def prove_jagged_zerocheck(
         )
     last_xs = zeta[::-1]
     interp_xs = jax.vmap(lambda z: interp_matrix(extra_ts, z))(last_xs)
+    # A traced flag rather than a peeled first round: unrolling round 0 out
+    # of the scan would put a second copy of every chip circuit in the graph
+    # — the compile cliff the O(1) scan exists to avoid.
     is_round0_xs = jnp.arange(num_vars) == 0
 
     # The eq table over the not-yet-bound variables, folded in-carry: summing
