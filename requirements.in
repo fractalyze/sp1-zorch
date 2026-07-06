@@ -10,26 +10,10 @@
 # on the SP1 byte-match path.
 absl-py
 numpy
-# Lockstep with the zorch git pin in MODULE.bazel (zkx marker contract) —
-# bump both together; the rationale lives on the git_override there. The wheel
-# set must match the jax that the pinned zorch commit builds against, or the
-# GPU codeword desyncs, which CPU-only CI cannot catch.
-# Migrated to the consolidated fractalyze/jax (the 0.10.0 line, renamed from the
-# old 0.0.5 zkx stack); zkx-cuda-pjrt is now published as jax-cuda12-pjrt. This
-# wheel set matches the pinned zorch commit (72b9cf71, zorch#283), which builds
-# against jax 0.10.0.dev20260628052515. zorch#283's jagged PCS is markerless
-# (recompile-free symbolic-K export), so this lockstep no longer rides a
-# sumcheck/jagged marker-version cut — but the wheel must still match the pin.
 jax==0.10.0.dev20260706201127
 jaxlib==0.10.0.dev20260706201127
 jax-cuda12-pjrt==0.10.0.dev20260706201127
 jax-cuda12-plugin==0.10.0.dev20260706201127
-# zk_dtypes ships the native field dtypes jax lowers. It arrives transitively
-# via jax, but the resolver leaves it at the lowest compatible version, which
-# lags the jax build: 0.0.8 adds the flat GHASH GF(2^128) field and the
-# Fan-Paar/Binius canonical binary tower the jax wheel now requires
-# (zk_dtypes#146/#148). Pin it explicitly so the lock tracks the jax wheel,
-# not an older transitive pick.
 zk-dtypes==0.0.8
 
 # SP1 chip definitions (constraints + LogUp interactions) exported from
