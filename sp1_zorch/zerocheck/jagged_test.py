@@ -285,6 +285,88 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
                 msg=f"chip {i}",
             )
 
+    def test_runtime_heights_match_static_and_share_one_compile(self) -> None:
+        # The cap-class contract's second half: live heights ride as traced
+        # int32 operands over cap-padded traces, so two proves that differ
+        # only in row counts (same caps) share ONE jit compile and emit the
+        # same bytes as the static-height prove.
+        num_vars, caps = 4, [16, 8, 12]
+        alphas = [rlc_coeffs(_rand(99 + i, ()), _K) for i in range(3)]
+        lambdas = _rand(55, (3,))
+        zeta = _rand(7, (num_vars,))
+        challenges = [_rand(1000 + r, ()) for r in range(num_vars)]
+        beta = _rand(77, ())
+
+        def prove(traces, num_reals, claims):  # type: ignore[no-untyped-def]
+            finals, _, msgs = prove_jagged_zerocheck(
+                JaggedZerocheckSummand(
+                    eval_fns=[_eval_fn] * 3,
+                    alphas=alphas,
+                    lambdas=lambdas,
+                    beta=beta,
+                ),
+                traces,
+                num_reals,
+                zeta,
+                _ScriptedTranscript.replaying(challenges),
+                claims=claims,
+                width_caps=caps,
+            )
+            return finals, msgs
+
+        # The [5, 0, 3] case pins the load-bearing zero-height property: a
+        # RUNTIME height of 0 must byte-match the static is_zero skip (the
+        # masked sums and the vgeq correction vanish at nr_live == 0), so a
+        # zero-height chip does NOT need to join the static compile key.
+        jit_prove = jax.jit(prove)
+        for seed_base, num_reals in ((0, [5, 2, 3]), (10, [9, 4, 1]), (20, [5, 0, 3])):
+            traces = [
+                _witness_trace(seed_base + i, nr) for i, nr in enumerate(num_reals)
+            ]
+            _, claims = _gkr_inputs(beta, traces, zeta)
+            want_finals, want_msgs = prove(traces, num_reals, claims)
+
+            padded = [zero_extend(t, c) for t, c in zip(traces, caps, strict=True)]
+            got_finals, got_msgs = jit_prove(
+                padded, [jnp.asarray(nr, jnp.int32) for nr in num_reals], claims
+            )
+            self.assertTrue(
+                bool(jnp.all(want_msgs.round_poly == got_msgs.round_poly)),
+                msg=f"nrs {num_reals}",
+            )
+            for i in range(3):
+                self.assertTrue(
+                    bool(jnp.all(want_finals[i] == got_finals[i])), msg=f"chip {i}"
+                )
+        self.assertEqual(jit_prove._cache_size(), 1)
+
+    def test_runtime_heights_require_caps_and_padded_traces(self) -> None:
+        traces = [zero_extend(_witness_trace(0, 5), 8)]
+        alphas = [rlc_coeffs(_rand(99, ()), _K)]
+        beta = _rand(77, ())
+        _, claims = _gkr_inputs(beta, traces, _rand(7, (3,)))
+
+        def run(**kwargs):  # type: ignore[no-untyped-def]
+            return prove_jagged_zerocheck(
+                JaggedZerocheckSummand(
+                    eval_fns=[_eval_fn],
+                    alphas=alphas,
+                    lambdas=_rand(55, (1,)),
+                    beta=beta,
+                ),
+                traces,
+                [jnp.asarray(5, jnp.int32)],
+                _rand(7, (3,)),
+                _ScriptedTranscript.replaying([_rand(1000 + r, ()) for r in range(3)]),
+                claims=claims,
+                **kwargs,
+            )
+
+        with self.assertRaisesRegex(ValueError, "width_caps"):
+            run()
+        with self.assertRaisesRegex(ValueError, "pre-padded"):
+            run(width_caps=[4])
+
     def test_width_caps_reject_underruns_and_misalignment(self) -> None:
         num_vars, num_reals = 3, [5, 3]
         traces = [_witness_trace(i, nr) for i, nr in enumerate(num_reals)]

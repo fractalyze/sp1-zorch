@@ -359,7 +359,7 @@ if TYPE_CHECKING:
 def prove_jagged_zerocheck(
     summand: JaggedZerocheckSummand,
     traces: Sequence[Array],
-    num_reals: Sequence[int],
+    num_reals: Sequence[int | Array],
     zeta: Array,
     transcript: Transcript,
     *,
@@ -374,10 +374,16 @@ def prove_jagged_zerocheck(
     SP1-schedule plumbing: the fixed-width buffers, the scan, the Gruen
     assembly, the Fiat-Shamir thread, and the per-round fold.
 
-    ``traces[c]`` is chip ``c``'s column-major ``(num_cols_c, num_reals[c])``
-    trace — exactly its real rows; the driver owns all padding (the zero-tail
-    soundness contract is internal). ``zeta`` is the eq point and each of its
-    coordinates gets exactly one round.
+    ``traces[c]`` is chip ``c``'s column-major trace. A chip's
+    ``num_reals[c]`` entry is either a host int — the trace holds exactly its
+    real rows and the driver owns all padding (the zero-tail soundness
+    contract is internal) — or a traced int32 scalar, in which case the trace
+    must arrive pre-padded to ``width_caps[c]`` and the CALLER owns the zero
+    tail past the live rows. Which entries are traced is a compile-time
+    property: a host ``0`` statically empties the chip, while a traced height
+    keeps the chip's circuit live and only bounds its rows at run time.
+    ``zeta`` is the eq point and each of its coordinates gets exactly one
+    round.
 
     ``claims[c]`` — chip ``c``'s GKR opening at ``zeta`` — seeds its
     ``p(1) = claim - p(0)`` identity; the matching column term rides
@@ -391,7 +397,8 @@ def prove_jagged_zerocheck(
     sp1-zorch#230). Byte-transparent: a cap only adds dead zero width past
     the exact pin — live rows, the vgeq bound, and the eq prefix terms are
     untouched. Each cap must be a multiple of 4, at least the chip's exact
-    pin, and at most ``2**len(zeta)``.
+    pin, and at most ``2**len(zeta)``. Required whenever any ``num_reals``
+    entry is traced — a buffer width cannot derive from a runtime height.
 
     Returns the final per-chip ``(num_cols_c, h)`` folded traces
     (``h in {0, 2}``; position 0 holds the column's evaluation at the
@@ -421,10 +428,20 @@ def prove_jagged_zerocheck(
         )
     num_vars = int(zeta.shape[0])
     width = 1 << num_vars
-    nrs = [int(nr) for nr in num_reals]
-    for i, (trace, nr) in enumerate(zip(traces, nrs)):
+    # A host-int height keeps the exact-rows contract; a traced entry (int32
+    # scalar) switches the chip to runtime height. The split is a
+    # compile-time property, so the zero-chip skips below stay static.
+    static_nrs = [None if isinstance(nr, Array) else int(nr) for nr in num_reals]
+    if width_caps is None and any(nr is None for nr in static_nrs):
+        raise ValueError(
+            "a traced num_reals entry requires width_caps: a buffer width "
+            "cannot derive from a runtime height"
+        )
+    for i, (trace, nr) in enumerate(zip(traces, static_nrs)):
         if trace.ndim != 2:
             raise ValueError(f"traces[{i}] must be 2-D, got shape {trace.shape}")
+        if nr is None:
+            continue  # runtime height: the shape is pinned to its cap below
         if not 0 <= nr <= width:
             raise ValueError(f"num_reals[{i}] must be within [0, {width}], got {nr}")
         if trace.shape[1] != nr:
@@ -449,7 +466,7 @@ def prove_jagged_zerocheck(
     # ~785 instrs and Global cold-compiles in a few seconds.
     adjs = [
         zero
-        if nrs[i] == 0 or alphas[i].shape[-1] == 0
+        if static_nrs[i] == 0 or alphas[i].shape[-1] == 0
         else constraint_eval(
             eval_fns[i],
             jnp.zeros((1, traces[i].shape[0]), dtype=ef),
@@ -466,31 +483,40 @@ def prove_jagged_zerocheck(
     # front: a base-field trace would otherwise change dtype the first time it
     # folds against an extension-field challenge, which a fixed-shape carry
     # forbids (the embedding is exact, so the round polys are unchanged).
-    widths = [((nr + 3) // 4) * 4 for nr in nrs]
     if width_caps is not None:
         if len(width_caps) != num_chips:
             raise ValueError(
                 f"width_caps must give one cap per chip: got {len(width_caps)} "
                 f"for {num_chips} chips"
             )
-        for i, (cap, pin) in enumerate(zip(width_caps, widths, strict=True)):
+        for i, cap in enumerate(width_caps):
             cap = int(cap)
             if cap % 4:
                 raise ValueError(f"width_caps[{i}] must be a multiple of 4, got {cap}")
-            if cap < pin:
+            nr = static_nrs[i]
+            if nr is None:
+                if traces[i].shape[1] != cap:
+                    raise ValueError(
+                        f"traces[{i}] has a runtime height, so it must arrive "
+                        f"pre-padded to its cap: height {traces[i].shape[1]} != {cap}"
+                    )
+            elif cap < ((nr + 3) // 4) * 4:
                 raise ValueError(
-                    f"width_caps[{i}] = {cap} is below its exact pin {pin} "
-                    f"(num_reals[{i}] = {nrs[i]})"
+                    f"width_caps[{i}] = {cap} is below its exact pin "
+                    f"{((nr + 3) // 4) * 4} (num_reals[{i}] = {nr})"
                 )
             if cap > width:
                 raise ValueError(
                     f"width_caps[{i}] = {cap} exceeds the virtual row space {width}"
                 )
         widths = [int(cap) for cap in width_caps]
+    else:
+        # All heights are static here (traced entries required caps above).
+        widths = [((int(nr) + 3) // 4) * 4 for nr in num_reals]
     bufs = [zero_extend(traces[i], widths[i]).astype(ef) for i in range(num_chips)]
     # int32 threshold from the start: as a scan carry it must keep the same
     # leaf type fix_last_variable produces (it folds to a traced int32).
-    vgeqs = [VirtualGeq(jnp.asarray(nr, jnp.int32), one, zero) for nr in nrs]
+    vgeqs = [VirtualGeq(jnp.asarray(nr, jnp.int32), one, zero) for nr in num_reals]
     chip_claims = jnp.stack(list(claims))
     # The summand's beta expanded into per-chip column weights, each sliced to
     # its chip's width.
@@ -502,9 +528,11 @@ def prove_jagged_zerocheck(
     # rest carry their live height as a traced int32 round carry. Zero-height
     # chips are production, not defensive: an SP1 shard carries its shape's
     # FULL chip set, and chips the program never exercised ship zero rows
-    # (six of the fibonacci fixture's 35 main chips).
-    is_zero_chip = [nr == 0 for nr in nrs]
-    nrs_live = [jnp.asarray(nr, jnp.int32) for nr in nrs]
+    # (six of the fibonacci fixture's 35 main chips). A traced height is
+    # statically live — its chip may be empty at run time, where the live
+    # bound and the vgeq correction already zero its terms.
+    is_zero_chip = [nr == 0 for nr in static_nrs]
+    nrs_live = [jnp.asarray(nr, jnp.int32) for nr in num_reals]
 
     # Round-varying scan inputs, all O(1) to build (no per-round constraint
     # work): `last` is zeta back-to-front (the round binds zeta[n-1-rnd]); the
