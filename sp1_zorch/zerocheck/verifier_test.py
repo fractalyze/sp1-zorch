@@ -4,7 +4,7 @@
 Accept: a proof off the prover verifies and leaves the sponge in the
 prover's exact state, so the two streams enter the evaluation stage in
 sync. The fixture's GKR openings are honest column-MLE evaluations at zeta
-(unlike ``stage_test``'s random ones): the dual's final oracle check closes
+(unlike ``prover_test``'s random ones): the dual's final oracle check closes
 the claim chain back to the opened row, which only an internally consistent
 proof satisfies. Reject: each tamper lands on the acceptance leg that owns
 it — the wire's challenge/claim copies, the round-poly replay, the sampled
@@ -27,7 +27,7 @@ from zorch.testkit.transcript import cheap_transcript
 
 from zorch.pcs.jagged.region import JaggedRegion
 from sp1_zorch.logup_gkr.prover import ChipEvaluation, _open_chip
-from sp1_zorch.zerocheck.stage import prove_shard_zerocheck
+from sp1_zorch.zerocheck.prover import prove_shard_zerocheck
 from sp1_zorch.zerocheck.verifier import verify_shard_zerocheck
 
 

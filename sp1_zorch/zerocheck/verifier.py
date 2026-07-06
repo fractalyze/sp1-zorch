@@ -43,8 +43,8 @@ from zk_dtypes import efinfo
 from sp1_zorch.logup_gkr.prover import ChipEvaluation, select_openings
 from sp1_zorch.logup_gkr.verifier import padding_geqs
 from sp1_zorch.zerocheck.jagged import DEGREE
-from sp1_zorch.zerocheck.prover import constraint_rlc, rlc_coeffs
-from sp1_zorch.zerocheck.stage import (
+from sp1_zorch.zerocheck.coeffs import constraint_rlc, rlc_coeffs
+from sp1_zorch.zerocheck.prover import (
     OpenedValuesRound,
     ZerocheckProof,
     bind_pv,

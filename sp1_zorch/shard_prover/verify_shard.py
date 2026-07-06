@@ -39,7 +39,7 @@ from sp1_zorch.shard_prover.prove_shard import (
     ShardJaggedEvalProof,
 )
 from sp1_zorch.shard_prover.types import ChipShape, MachineVerifyingKey
-from sp1_zorch.zerocheck.stage import ZerocheckProof
+from sp1_zorch.zerocheck.prover import ZerocheckProof
 from sp1_zorch.zerocheck.verifier import verify_shard_zerocheck
 from zorch.coding.reed_solomon import BitReversedReedSolomon
 from zorch.round import Round, VerifyChain

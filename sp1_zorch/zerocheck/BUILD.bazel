@@ -7,9 +7,9 @@ py_library(
     name = "zerocheck",
     srcs = [
         "__init__.py",
+        "coeffs.py",
         "jagged.py",
         "prover.py",
-        "stage.py",
         "verifier.py",
     ],
     visibility = ["//visibility:public"],
@@ -50,9 +50,9 @@ filegroup(
 )
 
 py_test(
-    name = "prover_test",
+    name = "coeffs_test",
     size = "small",
-    srcs = ["prover_test.py"],
+    srcs = ["coeffs_test.py"],
     deps = [
         ":zerocheck",
         requirement("absl_py"),
@@ -172,9 +172,9 @@ py_test(
 )
 
 py_test(
-    name = "stage_test",
+    name = "prover_test",
     size = "small",
-    srcs = ["stage_test.py"],
+    srcs = ["prover_test.py"],
     deps = [
         ":zerocheck",
         "@zorch//zorch/pcs/jagged:region",
