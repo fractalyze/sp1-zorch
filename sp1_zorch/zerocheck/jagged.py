@@ -17,7 +17,7 @@ live bound — field zero-adds are exact. Storage stays proportional to
 constraint value ``C_alpha(0_row)`` is subtracted via a virtual
 ``x >= num_real`` indicator, making the effective summand
 ``eq * (C_alpha(trace) - C_alpha(0_row) * geq)`` — zero past the real prefix.
-With GKR column batching (``beta`` + ``claims``) the summand gains
+The GKR column batch (``beta`` + ``claims``) adds
 ``sum_j beta**(j+1) * col_j``, turning each chip's proved sum from zero into
 its GKR opening at ``zeta``; padded rows are unaffected (a zero row's column
 term vanishes with it). The protocol content is declared on
@@ -63,6 +63,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from typing import ClassVar
 
 import jax
 import jax.numpy as jnp
@@ -78,11 +79,6 @@ from zorch.sumcheck.prover import RoundMsg, split_pairs, zero_extend
 from zorch.transcript import Transcript, sample_challenge
 
 from sp1_zorch.zerocheck.prover import gkr_powers
-
-# SP1's zerocheck round-poly degree: constraint degree <= 3 plus the eq
-# factor. The 4-point evaluation trick below is specific to this degree;
-# the constraint-degree bound is the caller's contract (not probeable).
-DEGREE = 4
 
 
 def _challenge_limbs(dtype) -> int:
@@ -108,25 +104,44 @@ class JaggedZerocheckSummand:
     and the round polynomial is the ``lambdas``-RLC across chips — three
     batchings under three challenges: ``alphas[c]`` folds chip ``c``'s K
     constraints (descending powers, ``prover.rlc_coeffs``; empty for a
-    lookup-only chip), ``beta`` batches its columns (the GKR opening term;
-    ``None`` for a pure zerocheck), and ``lambdas`` batches across chips.
-    Chips are RLC'd anew every round, never folded — a chip index is a
-    batch axis, not a sumcheck variable, so the reduction is single-phase.
+    lookup-only chip — SP1's Byte / Program / Range ship K = 0 in every
+    real shard), ``beta`` batches its columns (the GKR opening term), and
+    ``lambdas`` batches across chips. Chips are RLC'd anew every round,
+    never folded — a chip index is a batch axis, not a sumcheck variable,
+    so the reduction is single-phase.
 
     Evaluation points: ``{0, 2, 4}`` are computed (`chip_evals`); t = 1 and
     the bound eq factor's root come free (the claim identity and the Gruen
-    zero, assembled by the driver through ``zorch.sumcheck.gruen``). Round 0
-    drops the constraint term at t = 0 — that term IS the zerocheck
-    statement (constraints vanish on real witness rows) — but never the
-    column term, which does not vanish there. The ``C(0_row) * geq``
-    subtraction is the zero-extension correction: rows past a chip's real
-    height read as the MLE's canonical zero-extension, whose constant
+    zero, assembled by the driver through ``zorch.sumcheck.gruen`` — this
+    class satisfies its ``GruenSummand`` seam: ``degree - 2`` extra points
+    beyond s(0)). Round 0 drops the constraint term at t = 0 — that term IS
+    the zerocheck statement (constraints vanish on real witness rows) — but
+    never the column term, which does not vanish there. The
+    ``C(0_row) * geq`` subtraction is this summand's padding correction
+    (every jagged summand has one; LogUp's dual is the neutral-fraction
+    virtual mass in ``zorch.logup_gkr.jagged_prover``): rows past a chip's
+    real height read as the MLE's canonical zero-extension, whose constant
     constraint value would otherwise leak into the sum."""
+
+    # SP1's zerocheck round-poly degree: constraint degree <= 3 plus the eq
+    # factor; the constraint-degree bound is the caller's contract (not
+    # probeable).
+    DEGREE: ClassVar[int] = 4
 
     eval_fns: Sequence[Callable[[Array], Array]]
     alphas: Sequence[Array]
     lambdas: Array
-    beta: Array | None = None
+    beta: Array
+
+    @property
+    def degree(self) -> int:
+        return self.DEGREE
+
+    def extra_ts(self, dtype) -> tuple[Array, ...]:
+        """SP1's materialized extra points ``{2, 4}`` — degree 4 makes
+        d - 2 = 2 extras beyond s(0) (the Gruen seam's invariant); the
+        {0, 2, 4} choice is SP1's ``sum_as_poly_in_last_variable``."""
+        return (jnp.array(2, dtype), jnp.array(4, dtype))
 
     def chip_evals(
         self,
@@ -134,7 +149,7 @@ class JaggedZerocheckSummand:
         p0: Array,
         diff: Array,
         eq: Array,
-        gkr_powers: Array | None,
+        gkr_powers: Array,
         padded_row_adj: Array,
         last: Array,
         eq_adj: Array,
@@ -168,8 +183,10 @@ class JaggedZerocheckSummand:
         if is_zero:
             return zero, zero, zero
 
-        # `constraint_eval` rejects an empty alpha — a lookup-only chip (e.g. SP1's
-        # Byte) has no transition constraints to evaluate.
+        # A lookup-only chip has NO transition constraints — SP1's Byte /
+        # Program / Range ship K = 0 in every real shard, so this is a
+        # production case, not a defensive one (`constraint_eval` rejects an
+        # empty alpha).
         has_constraints = alpha.shape[-1] > 0
         num_non_padded = (nr_live + 1) // 2
 
@@ -177,86 +194,52 @@ class JaggedZerocheckSummand:
         # t-points; t = 1 and the eq root come free (claim identity / Gruen zero).
         t_traces = (p0, p0 + two * diff, p0 + four * diff)
 
-        if gkr_powers is None:
-            # Pure zerocheck (no GKR opening batch). The three constraint t-point
-            # evals share one circuit, so they batch into a SINGLE `constraint_eval`
-            # launch instead of three — the dominant zerocheck cost is launch count
-            # (3 per chip per round x num_vars rounds), not per-launch math.
-            # Interleave the three lifted traces as [pair, 3, nc] so each row's three
-            # t-points stay adjacent, then `live_width = 3 * num_non_padded` masks
-            # exactly the live rows (which come first, three flattened rows each).
-            # Per row and per t-point the result equals three separate calls, so
-            # y_0/y_2/y_4 are byte-identical.
-            cs = None
+        # On GPU the per-row column term `sum_c rows[r,c] * gkr_powers[c]` is
+        # folded INTO `constraint_eval` via its `column_weights` operand (the
+        # emitter adds the dot in-kernel and keeps the cross-row reduce
+        # external, so the big round stays one-thread-per-row — unlike the
+        # dropped #726 reduce-fold). Other backends keep it a SEPARATE
+        # reduction: there the composite inlines, and an inlined masked select
+        # + column matmul in this scan body hits an XLA while-loop lowering
+        # miscompile. Field add is associative, so both are byte-identical.
+        #
+        # The t-points run separately (not batched) so the t-point-specific
+        # round-0 t=0 constraint drop can be applied by zeroing `alpha`
+        # (`sum_k C_k*0 = 0`), leaving the alpha-independent column term
+        # intact.
+        fold_column_into_kernel = jax.default_backend() != "cpu"
+
+        def inner(rows: Array, *, mask_round0: bool) -> Array:
+            rows_t = rows.T
             if has_constraints:
-                stacked = jnp.stack([t.T for t in t_traces], axis=1)  # [pair, 3, nc]
-                cs = constraint_eval(
-                    eval_fn,
-                    stacked.reshape(
-                        -1, stacked.shape[-1]
-                    ),  # [3 * pair, nc], row = r*3 + t
-                    alpha,
-                    live_width=3 * num_non_padded,
-                ).reshape(-1, 3)  # [pair, 3]: columns are t = 0, 2, 4
-
-            def inner(c: Array | None, *, mask_round0: bool) -> Array:
-                if not has_constraints:
-                    return zero
-                # Round 0 drops the constraint term at t=0 (constraints vanish on
-                # real witness rows); the batched kernel still emits it and is masked
-                # here, so the per-chip marker count stays flat across rounds.
-                c = jnp.where(is_round0, jnp.zeros_like(c), c) if mask_round0 else c
-                return jnp.sum(c * eq)
-
-            inner_0 = inner(cs[:, 0] if cs is not None else None, mask_round0=True)
-            inner_2 = inner(cs[:, 1] if cs is not None else None, mask_round0=False)
-            inner_4 = inner(cs[:, 2] if cs is not None else None, mask_round0=False)
-        else:
-            # Claims path (GKR opening batch). On GPU the per-row column term
-            # `sum_c rows[r,c] * gkr_powers[c]` is folded INTO `constraint_eval` via
-            # its `column_weights` operand (the emitter adds the dot in-kernel and
-            # keeps the cross-row reduce external, so the big round stays
-            # one-thread-per-row — unlike the dropped #726 reduce-fold). Other backends
-            # keep it a SEPARATE reduction: there the composite inlines, and an inlined
-            # masked select + column matmul in this scan body hits an XLA while-loop
-            # lowering miscompile. Field add is associative, so both are byte-identical.
-            #
-            # The t-points run separately (not batched) so the t-point-specific round-0
-            # t=0 constraint drop can be applied by zeroing `alpha` (`sum_k C_k*0 = 0`),
-            # leaving the alpha-independent column term intact.
-            fold_column_into_kernel = jax.default_backend() != "cpu"
-
-            def inner(rows: Array, *, mask_round0: bool) -> Array:
-                rows_t = rows.T
-                if has_constraints:
-                    a = (
-                        jnp.where(is_round0, jnp.zeros_like(alpha), alpha)
-                        if mask_round0
-                        else alpha
-                    )
-                    if fold_column_into_kernel:
-                        return jnp.sum(
-                            constraint_eval(
-                                eval_fn,
-                                rows_t,
-                                a,
-                                live_width=num_non_padded,
-                                column_weights=gkr_powers,
-                            )
-                            * eq
+                a = (
+                    jnp.where(is_round0, jnp.zeros_like(alpha), alpha)
+                    if mask_round0
+                    else alpha
+                )
+                if fold_column_into_kernel:
+                    return jnp.sum(
+                        constraint_eval(
+                            eval_fn,
+                            rows_t,
+                            a,
+                            live_width=num_non_padded,
+                            column_weights=gkr_powers,
                         )
-                    c = jnp.sum(
-                        constraint_eval(eval_fn, rows_t, a, live_width=num_non_padded)
                         * eq
                     )
-                    return c + jnp.sum((rows_t @ gkr_powers) * eq)
-                # Lookup-only chip (`constraint_eval` rejects an empty alpha): only the
-                # column term, always a standalone matmul.
-                return jnp.sum((rows_t @ gkr_powers) * eq)
+                c = jnp.sum(
+                    constraint_eval(eval_fn, rows_t, a, live_width=num_non_padded) * eq
+                )
+                return c + jnp.sum((rows_t @ gkr_powers) * eq)
+            # Lookup-only chip (SP1's Byte / Program / Range ship K = 0 in
+            # every real shard; `constraint_eval` rejects an empty alpha):
+            # only the column term, always a standalone matmul.
+            return jnp.sum((rows_t @ gkr_powers) * eq)
 
-            inner_0 = inner(t_traces[0], mask_round0=True)
-            inner_2 = inner(t_traces[1], mask_round0=False)
-            inner_4 = inner(t_traces[2], mask_round0=False)
+        inner_0 = inner(t_traces[0], mask_round0=True)
+        inner_2 = inner(t_traces[1], mask_round0=False)
+        inner_4 = inner(t_traces[2], mask_round0=False)
 
         # A live chip keeps nr_live >= 1, so threshold_half is in [0, eq.shape[0]):
         # an in-bounds dynamic gather, the same element a static index would read.
@@ -264,11 +247,14 @@ class JaggedZerocheckSummand:
         msb_lagrange = eq_adj * eq[threshold_half]
 
         def correct(y: Array, t_val: Array) -> Array:
-            # Scale by the bound eq factor and subtract the zero-extension leak:
-            # rows past the live prefix read as the MLE's canonical zero-extension,
-            # whose constant constraint value (padded_row_adj = C_alpha(0_row))
-            # enters the inner sum; the virtual geq's closed form removes that
-            # mass without materializing the 2**num_vars indicator.
+            # The padding correction (the jagged summands' shared concept —
+            # LogUp's dual is the neutral-fraction virtual mass in
+            # zorch.logup_gkr.jagged_prover): scale by the bound eq factor and
+            # subtract the zero-extension leak — rows past the live prefix
+            # read as the MLE's canonical zero-extension, whose constant
+            # constraint value (padded_row_adj = C_alpha(0_row)) enters the
+            # inner sum; the virtual geq's closed form removes that mass
+            # without materializing the 2**num_vars indicator.
             eq_last = eq_factor(t_val, last)
             vg = vgeq.fix_last_variable(t_val).eval_at(threshold_half)
             return eq_last * (y * eq_adj - padded_row_adj * vg * msb_lagrange)
@@ -284,6 +270,11 @@ class JaggedZerocheckSummand:
         return jnp.dot(self.lambdas, polys)
 
 
+# Wire-shape alias: the verifier and the byte-match harness size the round
+# polys off the summand's degree.
+DEGREE = JaggedZerocheckSummand.DEGREE
+
+
 def prove_jagged_zerocheck(
     summand: JaggedZerocheckSummand,
     traces: Sequence[Array],
@@ -291,7 +282,7 @@ def prove_jagged_zerocheck(
     zeta: Array,
     transcript: Transcript,
     *,
-    claims: Sequence[Array] | None = None,
+    claims: Sequence[Array],
 ) -> tuple[list[Array], Transcript, RoundMsg]:
     """Run the SP1-schedule jagged multi-chip zerocheck sumcheck.
 
@@ -306,11 +297,9 @@ def prove_jagged_zerocheck(
     soundness contract is internal). ``zeta`` is the eq point and each of its
     coordinates gets exactly one round.
 
-    ``summand.beta`` and ``claims`` switch on GKR column batching: chip
-    ``c``'s summand gains ``sum_j beta**(j+1) * col_j`` and ``claims[c]`` —
-    its GKR opening at ``zeta`` — seeds the ``p(1) = claim - p(0)`` identity.
-    They come together (either alone breaks round 0's identity); omitted, the
-    round proves the pure zero sum.
+    ``claims[c]`` — chip ``c``'s GKR opening at ``zeta`` — seeds its
+    ``p(1) = claim - p(0)`` identity; the matching column term rides
+    ``summand.beta``.
 
     Returns the final per-chip ``(num_cols_c, h)`` folded traces
     (``h in {0, 2}``; position 0 holds the column's evaluation at the
@@ -333,12 +322,7 @@ def prove_jagged_zerocheck(
             f"chip count: {len(eval_fns)}, {num_chips}, {len(num_reals)}, "
             f"{len(alphas)}, {lambdas.shape[0]}"
         )
-    if (beta is None) != (claims is None):
-        raise ValueError(
-            "summand.beta and claims come together: the GKR column term reshapes "
-            "every round poly and claims seed its p(1) = claim - p(0) identity"
-        )
-    if claims is not None and len(claims) != num_chips:
+    if len(claims) != num_chips:
         raise ValueError(
             f"claims must give one GKR opening per chip: got {len(claims)} "
             f"for {num_chips} chips"
@@ -395,15 +379,12 @@ def prove_jagged_zerocheck(
     # int32 threshold from the start: as a scan carry it must keep the same
     # leaf type fix_last_variable produces (it folds to a traced int32).
     vgeqs = [VirtualGeq(jnp.asarray(nr, jnp.int32), one, zero) for nr in nrs]
-    if claims is None:
-        # Pure zerocheck: sum eq * (C - C(0)*geq) = 0.
-        chip_claims: Array = jnp.zeros((num_chips,), ef)
-        chip_gkr: list[Array | None] = [None] * num_chips
-    else:
-        chip_claims = jnp.stack(list(claims))
-        max_cols = max(t.shape[0] for t in traces)
-        gkr_all = gkr_powers(beta, max_cols) if max_cols else jnp.zeros(0, ef)
-        chip_gkr = [gkr_all[: t.shape[0]] for t in traces]
+    chip_claims = jnp.stack(list(claims))
+    # The summand's beta expanded into per-chip column weights, each sliced to
+    # its chip's width.
+    max_cols = max(t.shape[0] for t in traces)
+    gkr_all = gkr_powers(beta, max_cols) if max_cols else jnp.zeros(0, ef)
+    chip_gkr = [gkr_all[: t.shape[0]] for t in traces]
     eq_adj = one
     # Only a chip that starts empty is ever empty (see `chip_evals`); the
     # rest carry their live height as a traced int32 round carry.
@@ -412,13 +393,18 @@ def prove_jagged_zerocheck(
 
     # Round-varying scan inputs, all O(1) to build (no per-round constraint
     # work): `last` is zeta back-to-front (the round binds zeta[n-1-rnd]); the
-    # Gruen matrix maps each round's computed evaluations at {0, 2, 4} plus
-    # the two free points (t=1 from the claim identity, the implicit zero at
-    # the bound eq factor's root) to coefficients, prebuilt per round outside
-    # the scan as `zorch.sumcheck.gruen` prescribes for fixed-shape drivers;
-    # `is_round0` flags the constraint skip at t=0.
+    # Gruen matrix maps each round's computed evaluations at the summand's
+    # points plus the two free ones (t=1 from the claim identity, the implicit
+    # zero at the bound eq factor's root) to coefficients, prebuilt per round
+    # outside the scan as `zorch.sumcheck.gruen` prescribes for fixed-shape
+    # drivers; `is_round0` flags the constraint skip at t=0.
+    extra_ts = summand.extra_ts(ef)
+    if len(extra_ts) != summand.degree - 2:
+        raise ValueError(
+            f"a degree-{summand.degree} Gruen round materializes s(0) plus "
+            f"{summand.degree - 2} extra points, got {len(extra_ts)}"
+        )
     last_xs = zeta[::-1]
-    extra_ts = (jnp.array(2, ef), jnp.array(4, ef))
     interp_xs = jax.vmap(lambda z: interp_matrix(extra_ts, z))(last_xs)
     is_round0_xs = jnp.arange(num_vars) == 0
 
