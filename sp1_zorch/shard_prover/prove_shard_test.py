@@ -30,7 +30,7 @@ from zorch.pcs.jagged.region import JaggedRegion
 from zorch.commit.smcs import SingleMatrixCommitmentScheme
 from zorch.pcs.jagged.commit import commit_region
 from sp1_zorch.logup_gkr.circuit import GkrChip
-from sp1_zorch.logup_gkr.prover import prove_logup_gkr
+from sp1_zorch.logup_gkr.prover import ChipEvaluation, prove_logup_gkr
 from sp1_zorch.poseidon2.koalabear16 import koalabear16_params
 from sp1_zorch.shard_prover.prove_shard import (
     PreambleRound,
@@ -538,6 +538,77 @@ class JitPermutationTest(absltest.TestCase):
     def test_distinct_from_a_non_jitpermutation(self) -> None:
         p = Poseidon2(koalabear16_params())
         self.assertNotEqual(JitPermutation(p), p)
+
+
+class ZerocheckRoundCapClassTest(absltest.TestCase):
+    """ShardZerocheckRound's cap-class plumbing: the name-keyed caps mapping
+    is reordered to the region's chip order, the eager repack + traced
+    heights feed the class-level capped jit body, and two shards of one cap
+    class share its compile while byte-matching the eager exact prove. The
+    chip is pv-free — like `_jit_body`, the capped body threads
+    public_values as a tracer, which pv-reading constraint closures reject."""
+
+    class _PvFreeChip:
+        def eval_constraints(self, trace, public_values):
+            a, b = trace[:, 0], trace[:, 1]
+            one = jnp.ones((), trace.dtype)
+            return jnp.stack([(a - one) * (b - one)], axis=-1)
+
+    def _rand_ef(self, seed: int, shape) -> jnp.ndarray:
+        return _rand_bf(seed, tuple(shape) + (4,)).view(EF).reshape(shape)
+
+    def test_capped_round_matches_eager_and_shares_one_compile(self) -> None:
+        chips = {"alpha": self._PvFreeChip()}
+        eager = ShardZerocheckRound(
+            chips, max_log_row_count=_MAX_LOG_ROW_COUNT, jit=False
+        )
+        capped = ShardZerocheckRound(
+            chips,
+            max_log_row_count=_MAX_LOG_ROW_COUNT,
+            width_caps={"alpha": 16},
+            jit=True,
+        )
+        before = ShardZerocheckRound._jit_body_capped._cache_size()
+        for seed, rows in ((40, 5), (50, 9)):
+            main_region = JaggedRegion.from_chips(
+                [
+                    jnp.concatenate(
+                        [jnp.ones((rows, 1), dtype=BF), _rand_bf(seed, (rows, 1))],
+                        axis=1,
+                    )
+                ],
+                log_stacking_height=4,
+                max_log_row_count=_MAX_LOG_ROW_COUNT,
+                chip_names=("alpha",),
+            )
+            carry = replace(
+                ShardCarry(main_region, None, _rand_bf(seed + 1, (8,))),
+                gkr_eval_point=self._rand_ef(seed + 2, (7,)),
+                gkr_chip_openings={
+                    "alpha": ChipEvaluation(
+                        main=self._rand_ef(seed + 3, (2,)), preprocessed=None
+                    )
+                },
+            )
+            _, _, want = eager(carry, cheap_transcript(BF))
+            got_carry, _, got = capped(carry, cheap_transcript(BF))
+
+            label = f"rows {rows}"
+            _assert_bytes_equal(got.msgs.round_poly, want.msgs.round_poly, label)
+            _assert_bytes_equal(got.msgs.challenge, want.msgs.challenge, label)
+            _assert_bytes_equal(got.claimed_sum, want.claimed_sum, label)
+            _assert_bytes_equal(got.finals[0], want.finals[0], label)
+            _assert_bytes_equal(
+                got.opened_values["alpha"].main,
+                want.opened_values["alpha"].main,
+                label,
+            )
+            _assert_bytes_equal(
+                got_carry.zc_sumcheck_point, got.msgs.challenge, label
+            )
+        self.assertEqual(
+            ShardZerocheckRound._jit_body_capped._cache_size() - before, 1
+        )
 
 
 if __name__ == "__main__":

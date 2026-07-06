@@ -46,7 +46,11 @@ from sp1_zorch.logup_gkr.prover import (
     resolve_witness_and_grind,
 )
 from sp1_zorch.shard_prover.types import MachineVerifyingKey
-from sp1_zorch.zerocheck.prover import ZerocheckProof, prove_shard_zerocheck
+from sp1_zorch.zerocheck.prover import (
+    ZerocheckProof,
+    prove_shard_zerocheck,
+    repack_region_to_caps,
+)
 from zorch.coding.reed_solomon import BitReversedReedSolomon
 from zorch.logup_gkr.circuit import LogUpGkrOutput
 from zorch.round import ProveChain, Round
@@ -349,17 +353,28 @@ class ShardZerocheckRound(Round):
     compile. Byte-identical either way. ``jit=False`` remains for constraint
     circuits that read ``public_values``: the ``bind_pv`` closure would carry
     the traced pv into the ``zorch.constraint_eval`` composite, and
-    ``lax.composite`` rejects closure tracers."""
+    ``lax.composite`` rejects closure tracers.
+
+    ``width_caps`` (name -> buffer width) switches the jit path to the
+    cap-class contract: the main region is cap-repacked in an eager prologue,
+    the shard's real heights ride as one traced int32 vector, and the jitted
+    body's compile keys on the caps and the chip set alone -- shards that
+    differ only in row counts share one executable (today every shard's exact
+    heights bust the cache; 22 distinct shape signatures across the 25-shard
+    rsp block). Byte-identical to the exact-heights paths."""
 
     def __init__(
         self,
         chips: Mapping[str, Chip],
         *,
         max_log_row_count: int,
+        width_caps: Mapping[str, int] | None = None,
         jit: bool = True,
     ) -> None:
         self._chips = chips
         self._max_log_row_count = max_log_row_count
+        self._width_caps = width_caps
+        self._jit = jit
         # Class-level jitted body for the same reason as LogupGkrRound: the
         # wrapper (and its compile cache) is shared by every instance, so a
         # rebuilt chain reuses the executable. `chips` keys the cache by the
@@ -370,7 +385,7 @@ class ShardZerocheckRound(Round):
                 chips=tuple(chips.items()),
                 max_log_row_count=max_log_row_count,
             )
-            if jit
+            if jit and width_caps is None
             else None
         )
 
@@ -410,6 +425,50 @@ class ShardZerocheckRound(Round):
             proof.msgs,
         )
 
+    @staticmethod
+    @partial(
+        jax.jit, static_argnames=("chips", "max_log_row_count", "width_caps")
+    )
+    def _jit_body_capped(
+        capped_main,
+        prep_region,
+        public_values,
+        eval_point,
+        chip_openings,
+        num_reals,
+        transcript,
+        *,
+        chips,
+        max_log_row_count,
+        width_caps,
+    ):
+        # The cap-class twin of `_jit_body`: the main region arrives
+        # cap-repacked (class-stable shapes) and the shard's real heights ride
+        # in `num_reals` (one traced int32 vector), so the compile keys on
+        # (chips, caps) alone and shards of a cap class share the executable.
+        transcript, proof = prove_shard_zerocheck(
+            dict(chips),
+            capped_main,
+            prep_region,
+            public_values,
+            eval_point,
+            chip_openings,
+            transcript,
+            max_log_row_count=max_log_row_count,
+            num_reals=[num_reals[i] for i in range(len(width_caps))],
+            width_caps=width_caps,
+        )
+        return transcript, (
+            proof.batching_challenge,
+            proof.gkr_opening_batch_challenge,
+            proof.lambda_,
+            proof.zeta,
+            proof.claimed_sum,
+            proof.finals,
+            proof.opened_values,
+            proof.msgs,
+        )
+
     def __call__(
         self, carry: ShardCarry, transcript: Transcript
     ) -> tuple[ShardCarry, Transcript, ZerocheckProof]:
@@ -418,7 +477,34 @@ class ShardZerocheckRound(Round):
                 "zerocheck needs the LogUp-GKR stage's outputs on the carry; "
                 "sequence a LogupGkrRound before this Round"
             )
-        if self._body is not None:
+        if self._width_caps is not None:
+            names = carry.main_region.chip_names
+            missing = [n for n in names if n not in self._width_caps]
+            if missing:
+                raise ValueError(f"width_caps is missing chips {missing}")
+            caps = tuple(int(self._width_caps[n]) for n in names)
+        else:
+            caps = None
+        if self._jit and caps is not None:
+            # Eager prologue: per-shard shapes stop at the repack — everything
+            # past this call sees cap-class shapes only.
+            capped = repack_region_to_caps(
+                carry.main_region, caps, max_log_row_count=self._max_log_row_count
+            )
+            num_reals = jnp.asarray(carry.main_region.chip_heights, jnp.int32)
+            transcript, fields = self._jit_body_capped(
+                capped,
+                carry.prep_region,
+                carry.public_values,
+                carry.gkr_eval_point,
+                carry.gkr_chip_openings,
+                num_reals,
+                transcript,
+                chips=tuple(self._chips.items()),
+                max_log_row_count=self._max_log_row_count,
+                width_caps=caps,
+            )
+        elif self._body is not None:
             transcript, fields = self._body(
                 carry.main_region,
                 carry.prep_region,
@@ -427,6 +513,9 @@ class ShardZerocheckRound(Round):
                 carry.gkr_chip_openings,
                 transcript,
             )
+        else:
+            fields = None
+        if fields is not None:
             (
                 batching_challenge,
                 gkr_batch,
@@ -457,6 +546,7 @@ class ShardZerocheckRound(Round):
                 carry.gkr_chip_openings,
                 transcript,
                 max_log_row_count=self._max_log_row_count,
+                width_caps=caps,
             )
         carry = replace(
             carry,
@@ -701,6 +791,7 @@ def prove_shard_chain(
     pow_bits: int = 0,
     witness: Array | None = None,
     jit: bool = True,
+    zerocheck_width_caps: Mapping[str, int] | None = None,
 ) -> ProveChain:
     """The SP1 shard chain. One definition for the stage wiring so the
     benchmark, the byte-match runnables, and proof assembly cannot drift
@@ -731,7 +822,10 @@ def prove_shard_chain(
                 jit=jit,
             ),
             ShardZerocheckRound(
-                chips, max_log_row_count=max_log_row_count, jit=jit
+                chips,
+                max_log_row_count=max_log_row_count,
+                width_caps=zerocheck_width_caps,
+                jit=jit,
             ),
             ShardJaggedEvalRound(
                 smcs,
