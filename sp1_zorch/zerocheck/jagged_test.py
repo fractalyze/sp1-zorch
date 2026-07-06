@@ -38,6 +38,7 @@ from zorch.transcript import sample_challenge
 
 from sp1_zorch.zerocheck.jagged import (
     DEGREE,
+    JaggedZerocheckSummand,
     prove_jagged_zerocheck,
 )
 from sp1_zorch.zerocheck.prover import rlc_coeffs
@@ -200,14 +201,13 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
             gkr_powers, claims = _gkr_inputs(beta, traces, zeta)
 
         _, _, msgs = prove_jagged_zerocheck(
-            eval_fns,
+            JaggedZerocheckSummand(
+                eval_fns=eval_fns, alphas=alphas, lambdas=lambdas, beta=beta
+            ),
             traces,
             num_reals,
-            alphas,
-            lambdas,
             zeta,
             _ScriptedTranscript.replaying(challenges),
-            beta=beta,
             claims=claims,
         )
         want = _naive_round_polys(
@@ -274,11 +274,11 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
 
         def run(traces, alphas, lambdas, zeta):  # type: ignore[no-untyped-def]
             return prove_jagged_zerocheck(
-                [_eval_fn] * nchips,
+                JaggedZerocheckSummand(
+                    eval_fns=[_eval_fn] * nchips, alphas=alphas, lambdas=lambdas
+                ),
                 traces,
                 num_reals,
-                alphas,
-                lambdas,
                 zeta,
                 _ScriptedTranscript.replaying(challenges),
             )[2].round_poly
@@ -338,11 +338,11 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
 
         def run(traces, alphas, lambdas, zeta):  # type: ignore[no-untyped-def]
             return prove_jagged_zerocheck(
-                [_eval_fn] * nchips,
+                JaggedZerocheckSummand(
+                    eval_fns=[_eval_fn] * nchips, alphas=alphas, lambdas=lambdas
+                ),
                 traces,
                 num_reals,
-                alphas,
-                lambdas,
                 zeta,
                 _ScriptedTranscript.replaying(challenges),
             )[2].round_poly
@@ -379,14 +379,13 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
         _, claims = _gkr_inputs(beta, traces, zeta)
 
         _, _, msgs = prove_jagged_zerocheck(
-            [_eval_fn] * nchips,
+            JaggedZerocheckSummand(
+                eval_fns=[_eval_fn] * nchips, alphas=alphas, lambdas=lambdas, beta=beta
+            ),
             traces,
             num_reals,
-            alphas,
-            lambdas,
             zeta,
             cheap_transcript(KB),
-            beta=beta,
             claims=claims,
         )
 
@@ -404,11 +403,11 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
         zeta = _rand(3, (num_vars,))
 
         finals, _, msgs = prove_jagged_zerocheck(
-            [_eval_fn] * nchips,
+            JaggedZerocheckSummand(
+                eval_fns=[_eval_fn] * nchips, alphas=alphas, lambdas=lambdas
+            ),
             traces,
             num_reals,
-            alphas,
-            lambdas,
             zeta,
             cheap_transcript(KB),
         )
@@ -441,7 +440,11 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
         zeta = _rand_ef(3, (num_vars,))
 
         _, _, msgs = prove_jagged_zerocheck(
-            [_eval_fn], traces, [nr], alphas, lambdas, zeta, cheap_transcript(KB)
+            JaggedZerocheckSummand(eval_fns=[_eval_fn], alphas=alphas, lambdas=lambdas),
+            traces,
+            [nr],
+            zeta,
+            cheap_transcript(KB),
         )
 
         self.assertEqual(msgs.challenge.dtype, EF)
@@ -457,32 +460,34 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
         trace = _witness_trace(0, 4)
         with self.assertRaisesRegex(ValueError, "num_reals"):
             prove_jagged_zerocheck(
-                [_eval_fn],
+                JaggedZerocheckSummand(
+                    eval_fns=[_eval_fn],
+                    alphas=[rlc_coeffs(_rand(99, ()), _K)],
+                    lambdas=_rand(55, (1,)),
+                ),
                 [trace],
                 [5],
-                [rlc_coeffs(_rand(99, ()), _K)],
-                _rand(55, (1,)),
                 _rand(7, (3,)),
                 cheap_transcript(KB),
             )
 
     def test_validation_rejects_split_or_short_gkr_inputs(self) -> None:
-        args = (
-            [_eval_fn],
-            [_witness_trace(0, 4)],
-            [4],
-            [rlc_coeffs(_rand(99, ()), _K)],
-            _rand(55, (1,)),
-            _rand(7, (3,)),
-            cheap_transcript(KB),
-        )
+        def summand(beta=None):  # type: ignore[no-untyped-def]
+            return JaggedZerocheckSummand(
+                eval_fns=[_eval_fn],
+                alphas=[rlc_coeffs(_rand(99, ()), _K)],
+                lambdas=_rand(55, (1,)),
+                beta=beta,
+            )
+
+        args = ([_witness_trace(0, 4)], [4], _rand(7, (3,)), cheap_transcript(KB))
         with self.assertRaisesRegex(ValueError, "come together"):
-            prove_jagged_zerocheck(*args, beta=_rand(77, ()))
+            prove_jagged_zerocheck(summand(beta=_rand(77, ())), *args)
         with self.assertRaisesRegex(ValueError, "come together"):
-            prove_jagged_zerocheck(*args, claims=[jnp.zeros((), KB)])
+            prove_jagged_zerocheck(summand(), *args, claims=[jnp.zeros((), KB)])
         with self.assertRaisesRegex(ValueError, "per chip"):
             prove_jagged_zerocheck(
-                *args, beta=_rand(77, ()), claims=[jnp.zeros((), KB)] * 2
+                summand(beta=_rand(77, ())), *args, claims=[jnp.zeros((), KB)] * 2
             )
 
 

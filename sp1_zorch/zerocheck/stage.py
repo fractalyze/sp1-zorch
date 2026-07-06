@@ -34,7 +34,10 @@ from sp1_zorch.logup_gkr.prover import (
     flat_openings_absorb,
     select_openings,
 )
-from sp1_zorch.zerocheck.jagged import prove_jagged_zerocheck
+from sp1_zorch.zerocheck.jagged import (
+    JaggedZerocheckSummand,
+    prove_jagged_zerocheck,
+)
 from sp1_zorch.zerocheck.prover import gkr_powers, rlc_coeffs
 from zorch.round import Round
 from zorch.sumcheck.prover import RoundMsg
@@ -264,9 +267,7 @@ def prove_shard_zerocheck(
     traces = chip_traces(chip_names, num_reals, main_region, prep_region)
     eval_fns = [bind_pv(chips[name], public_values) for name in chip_names]
 
-    claims = gkr_opening_claims(
-        [chip_openings[name] for name in chip_names], gkr_batch
-    )
+    claims = gkr_opening_claims([chip_openings[name] for name in chip_names], gkr_batch)
 
     alphas = [
         rlc_coeffs(batching_challenge, probe_num_constraints(fn, t.shape[0], ef))
@@ -275,14 +276,13 @@ def prove_shard_zerocheck(
     lambdas = rlc_coeffs(lambda_, len(chip_names))
 
     finals, transcript, msgs = prove_jagged_zerocheck(
-        eval_fns,
+        JaggedZerocheckSummand(
+            eval_fns=eval_fns, alphas=alphas, lambdas=lambdas, beta=gkr_batch
+        ),
         traces,
         num_reals,
-        alphas,
-        lambdas,
         zeta,
         transcript,
-        beta=gkr_batch,
         claims=claims,
     )
 

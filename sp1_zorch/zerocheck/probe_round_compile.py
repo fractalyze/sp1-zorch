@@ -38,7 +38,10 @@ from zk_dtypes import koalabearx4_mont
 
 from sp1_zorch.shard_prover.fixture_loader import load_fixture_shard
 from sp1_zorch.shard_prover.replay import MAX_LOG_ROW_COUNT, shard_regions
-from sp1_zorch.zerocheck.jagged import prove_jagged_zerocheck
+from sp1_zorch.zerocheck.jagged import (
+    JaggedZerocheckSummand,
+    prove_jagged_zerocheck,
+)
 from sp1_zorch.zerocheck.stage import bind_pv, probe_num_constraints
 from zorch.testkit.transcript import cheap_transcript
 
@@ -103,14 +106,16 @@ def main() -> int:
 
     def f(traces, alphas, lambdas, zeta, transcript, beta, claims):
         return prove_jagged_zerocheck(
-            eval_fns,
+            JaggedZerocheckSummand(
+                eval_fns=eval_fns,
+                alphas=alphas,
+                lambdas=lambdas,
+                beta=beta if use_gkr else None,
+            ),
             traces,
             nrs,
-            alphas,
-            lambdas,
             zeta,
             transcript,
-            beta=beta if use_gkr else None,
             claims=claims if use_gkr else None,
         )
 
