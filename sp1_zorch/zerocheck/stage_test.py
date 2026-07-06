@@ -27,7 +27,10 @@ from zorch.transcript import sample_challenge
 
 from zorch.pcs.jagged.region import JaggedRegion
 from sp1_zorch.logup_gkr.prover import ChipEvaluation
-from sp1_zorch.zerocheck.jagged import prove_jagged_zerocheck
+from sp1_zorch.zerocheck.jagged import (
+    JaggedZerocheckSummand,
+    prove_jagged_zerocheck,
+)
 from sp1_zorch.zerocheck.prover import gkr_powers, rlc_coeffs
 from sp1_zorch.zerocheck.stage import (
     OpenedValuesRound,
@@ -162,14 +165,13 @@ class ProveZerocheckTest(absltest.TestCase):
         lambdas = rlc_coeffs(lambda_, 2)
 
         want_finals, t, want_msgs = prove_jagged_zerocheck(
-            eval_fns,
+            JaggedZerocheckSummand(
+                eval_fns=eval_fns, alphas=alphas, lambdas=lambdas, beta=beta
+            ),
             traces,
             [5, 3],
-            alphas,
-            lambdas,
             zeta,
             t,
-            beta=beta,
             claims=claims,
         )
         # The stage's transcript tail replayed raw — the deliberate second

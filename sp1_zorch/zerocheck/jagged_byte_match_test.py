@@ -39,7 +39,11 @@ from zorch.poly.eq import eval_eq
 from zorch.pcs.jagged.region import JaggedRegion
 from sp1_zorch.shard_prover.chip_loader import load_sp1_chips, sp1_name_to_rw
 from sp1_zorch.shard_prover.types import PROOF_MAX_NUM_PVS
-from sp1_zorch.zerocheck.jagged import DEGREE, prove_jagged_zerocheck
+from sp1_zorch.zerocheck.jagged import (
+    DEGREE,
+    JaggedZerocheckSummand,
+    prove_jagged_zerocheck,
+)
 from sp1_zorch.zerocheck.prover import rlc_coeffs
 from sp1_zorch.zerocheck.stage import chip_traces
 
@@ -182,14 +186,13 @@ class JaggedZerocheckByteMatchTest(absltest.TestCase):
         # ``zc_sumcheck_point`` is the challenge list reversed (SP1's
         # ``jagged_point`` order); un-reverse to feed rounds in order.
         cls.finals, _, cls.msgs = prove_jagged_zerocheck(
-            eval_fns,
+            JaggedZerocheckSummand(
+                eval_fns=eval_fns, alphas=alphas, lambdas=lambdas, beta=beta
+            ),
             traces,
             num_reals,
-            alphas,
-            lambdas,
             zeta,
             _ScriptedTranscript.replaying(cls.zc_sumcheck_point[::-1]),
-            beta=beta,
             claims=list(chip_claims),
         )
 

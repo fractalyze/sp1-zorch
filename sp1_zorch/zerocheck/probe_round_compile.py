@@ -38,7 +38,10 @@ from zk_dtypes import koalabearx4_mont
 
 from sp1_zorch.shard_prover.fixture_loader import load_fixture_shard
 from sp1_zorch.shard_prover.replay import MAX_LOG_ROW_COUNT, shard_regions
-from sp1_zorch.zerocheck.jagged import prove_jagged_zerocheck
+from sp1_zorch.zerocheck.jagged import (
+    JaggedZerocheckSummand,
+    prove_jagged_zerocheck,
+)
 from sp1_zorch.zerocheck.stage import bind_pv, probe_num_constraints
 from zorch.testkit.transcript import cheap_transcript
 
@@ -48,11 +51,6 @@ def main() -> int:
     p.add_argument("--shard-dir", required=True, help="rsp shard dump directory.")
     p.add_argument("--only", default=None, help="comma-separated chip names to keep.")
     p.add_argument("--skip", default=None, help="comma-separated chip names to drop.")
-    p.add_argument(
-        "--no-gkr",
-        action="store_true",
-        help="prove the pure zero-sum (no beta/claims column term).",
-    )
     args = p.parse_args()
 
     only = set(args.only.split(",")) if args.only else None
@@ -95,23 +93,22 @@ def main() -> int:
     num_vars = MAX_LOG_ROW_COUNT
     print(
         f"backend={jax.default_backend()} num_vars={num_vars} chips={num_chips}: "
-        + ", ".join(f"{n}(nc={c},K={k},nr={r})" for n, c, k, r in zip(names, ncs, ks, nrs)),
+        + ", ".join(
+            f"{n}(nc={c},K={k},nr={r})" for n, c, k, r in zip(names, ncs, ks, nrs)
+        ),
         flush=True,
     )
 
-    use_gkr = not args.no_gkr
-
     def f(traces, alphas, lambdas, zeta, transcript, beta, claims):
         return prove_jagged_zerocheck(
-            eval_fns,
+            JaggedZerocheckSummand(
+                eval_fns=eval_fns, alphas=alphas, lambdas=lambdas, beta=beta
+            ),
             traces,
             nrs,
-            alphas,
-            lambdas,
             zeta,
             transcript,
-            beta=beta if use_gkr else None,
-            claims=claims if use_gkr else None,
+            claims=claims,
         )
 
     # Trace operands abstract (no alloc); everything else a real (tiny) traced

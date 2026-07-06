@@ -2,7 +2,8 @@
 """SP1's zerocheck stage: the shard-prover glue around the jagged round engine.
 
 Everything here is derivation, not proving: the three stage challenges in
-SP1's order (constraint batching -> GKR opening batch -> chip-RLC lambda),
+SP1's order (alpha constraint batching -> beta GKR opening batch -> chip-RLC
+lambda; the mapping lives on ``sample_stage_challenges``),
 zeta as the row tail of the GKR evaluation point, each chip's GKR opening
 claim as the beta-power weighting of its ``[main | prep]`` column openings,
 the per-chip column-major traces sliced out of the committed regions, and the
@@ -33,7 +34,10 @@ from sp1_zorch.logup_gkr.prover import (
     flat_openings_absorb,
     select_openings,
 )
-from sp1_zorch.zerocheck.jagged import prove_jagged_zerocheck
+from sp1_zorch.zerocheck.jagged import (
+    JaggedZerocheckSummand,
+    prove_jagged_zerocheck,
+)
 from sp1_zorch.zerocheck.prover import gkr_powers, rlc_coeffs
 from zorch.round import Round
 from zorch.sumcheck.prover import RoundMsg
@@ -129,11 +133,14 @@ def probe_num_constraints(
 def sample_stage_challenges(
     transcript: Transcript, ef: Any
 ) -> tuple[Transcript, Array, Array, Array]:
-    """The three zerocheck stage challenges in SP1's order — constraint
-    batching, GKR opening batch, chip-RLC lambda (sampled inside zerocheck,
-    after the GKR stage). One definition driven by the prover and the
-    verifier dual, so the sampling schedule cannot drift between their
-    Fiat-Shamir streams."""
+    """The three zerocheck stage challenges in SP1's order, one per batching
+    dimension: ``batching`` is alpha — one RLC across a chip's K constraints
+    (``prover.rlc_coeffs``); ``gkr_batch`` is beta — across a chip's columns
+    (``prover.gkr_powers``); ``lambda_`` batches across chips (the jagged
+    engine re-applies it every round; a chip index is a batch axis, not a
+    sumcheck variable). Sampled inside zerocheck, after the GKR stage. One
+    definition driven by the prover and the verifier dual, so the sampling
+    schedule cannot drift between their Fiat-Shamir streams."""
     limbs = efinfo(ef).degree
     transcript, batching = sample_challenge(transcript, ef, limbs)
     transcript, gkr_batch = sample_challenge(transcript, ef, limbs)
@@ -260,9 +267,7 @@ def prove_shard_zerocheck(
     traces = chip_traces(chip_names, num_reals, main_region, prep_region)
     eval_fns = [bind_pv(chips[name], public_values) for name in chip_names]
 
-    claims = gkr_opening_claims(
-        [chip_openings[name] for name in chip_names], gkr_batch
-    )
+    claims = gkr_opening_claims([chip_openings[name] for name in chip_names], gkr_batch)
 
     alphas = [
         rlc_coeffs(batching_challenge, probe_num_constraints(fn, t.shape[0], ef))
@@ -271,14 +276,13 @@ def prove_shard_zerocheck(
     lambdas = rlc_coeffs(lambda_, len(chip_names))
 
     finals, transcript, msgs = prove_jagged_zerocheck(
-        eval_fns,
+        JaggedZerocheckSummand(
+            eval_fns=eval_fns, alphas=alphas, lambdas=lambdas, beta=gkr_batch
+        ),
         traces,
         num_reals,
-        alphas,
-        lambdas,
         zeta,
         transcript,
-        beta=gkr_batch,
         claims=claims,
     )
 
