@@ -74,7 +74,7 @@ A few conventions the emit code preserves (each verified by byte-match):
    `point_and_eval[1]`.
 3. `chip_claims` are not in the proof directly — they are the β-power weighting of
    each chip's `[main | prep]` GKR openings (`logup_evaluations.chip_openings`),
-   recomputed exactly as `sp1_zorch/zerocheck/stage.py` does.
+   recomputed exactly as `sp1_zorch/zerocheck/prover.py` does.
 
 The open's Fiat-Shamir challenges (`batch_challenges`, `fri_betas`,
 `query_indices`) are recovered from the recording challenger's transcript log

@@ -45,7 +45,7 @@ from sp1_zorch.shard_prover.serialize import (
     encode_vk,
 )
 from sp1_zorch.shard_prover.types import ChipOpenedValues, MachineVerifyingKey
-from sp1_zorch.zerocheck.stage import ZerocheckProof
+from sp1_zorch.zerocheck.prover import ZerocheckProof
 
 
 class BincodePrimitivesTest(absltest.TestCase):
@@ -515,7 +515,7 @@ def _zerocheck_proof() -> ZerocheckProof:
 class ChipOpenedValuesTest(absltest.TestCase):
     def test_bridges_carry_openings_with_live_row_degree(self) -> None:
         # The split itself is the zerocheck stage's
-        # (zerocheck.stage.split_opened_values, pinned in stage_test); this
+        # (zerocheck.prover.split_opened_values, pinned in prover_test); this
         # bridge adds the wire's degree off the chip heights.
         values = chip_opened_values(_carry())
         self.assertLen(values, 2)

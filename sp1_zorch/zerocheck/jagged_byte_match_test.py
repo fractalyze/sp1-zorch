@@ -45,7 +45,7 @@ from sp1_zorch.zerocheck.jagged import (
     prove_jagged_zerocheck,
 )
 from sp1_zorch.zerocheck.coeffs import rlc_coeffs
-from sp1_zorch.zerocheck.stage import chip_traces
+from sp1_zorch.zerocheck.prover import chip_traces
 
 
 BF = koalabear_mont

@@ -9,7 +9,7 @@ py_library(
         "__init__.py",
         "coeffs.py",
         "jagged.py",
-        "stage.py",
+        "prover.py",
         "verifier.py",
     ],
     visibility = ["//visibility:public"],
@@ -172,9 +172,9 @@ py_test(
 )
 
 py_test(
-    name = "stage_test",
+    name = "prover_test",
     size = "small",
-    srcs = ["stage_test.py"],
+    srcs = ["prover_test.py"],
     deps = [
         ":zerocheck",
         "@zorch//zorch/pcs/jagged:region",

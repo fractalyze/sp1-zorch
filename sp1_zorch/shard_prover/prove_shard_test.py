@@ -41,7 +41,7 @@ from sp1_zorch.shard_prover.prove_shard import (
 )
 from sp1_zorch.shard_prover.replay import JitPermutation
 from sp1_zorch.shard_prover.types import MachineVerifyingKey
-from sp1_zorch.zerocheck.stage import prove_shard_zerocheck
+from sp1_zorch.zerocheck.prover import prove_shard_zerocheck
 
 
 BF = koalabear_mont

@@ -32,7 +32,7 @@ from sp1_zorch.zerocheck.jagged import (
     prove_jagged_zerocheck,
 )
 from sp1_zorch.zerocheck.coeffs import gkr_powers, rlc_coeffs
-from sp1_zorch.zerocheck.stage import (
+from sp1_zorch.zerocheck.prover import (
     OpenedValuesRound,
     prove_shard_zerocheck,
     split_opened_values,

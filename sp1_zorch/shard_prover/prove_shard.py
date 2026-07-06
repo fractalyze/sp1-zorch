@@ -46,7 +46,7 @@ from sp1_zorch.logup_gkr.prover import (
     resolve_witness_and_grind,
 )
 from sp1_zorch.shard_prover.types import MachineVerifyingKey
-from sp1_zorch.zerocheck.stage import ZerocheckProof, prove_shard_zerocheck
+from sp1_zorch.zerocheck.prover import ZerocheckProof, prove_shard_zerocheck
 from zorch.coding.reed_solomon import BitReversedReedSolomon
 from zorch.logup_gkr.circuit import LogUpGkrOutput
 from zorch.round import ProveChain, Round
@@ -338,7 +338,7 @@ class LogupGkrRound(Round):
 class ShardZerocheckRound(Round):
     """Zerocheck stage over ``prove_shard_zerocheck``, consuming the GKR
     point and openings off the carry. The stage absorbs the per-chip opened
-    values itself (``OpenedValuesRound`` in ``zerocheck.stage``); this Round
+    values itself (``OpenedValuesRound`` in ``zerocheck.prover``); this Round
     threads them onto the carry for the jagged-eval stage's claims and the
     wire's ShardOpenedValues.
 

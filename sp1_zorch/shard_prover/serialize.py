@@ -31,7 +31,7 @@ if TYPE_CHECKING:
     from zorch.pcs.jagged.open import Opening, StackedOpenProof
     from sp1_zorch.logup_gkr.prover import LogupGkrProof
     from sp1_zorch.shard_prover.prove_shard import ShardCarry, ShardJaggedEvalProof
-    from sp1_zorch.zerocheck.stage import ZerocheckProof
+    from sp1_zorch.zerocheck.prover import ZerocheckProof
 
 
 def _u64(v: int) -> bytes:
@@ -341,7 +341,7 @@ def encode_vk(vk: MachineVerifyingKey) -> bytes:
 def chip_opened_values(carry: ShardCarry) -> list[ChipOpenedValues]:
     """Bridge the carry's zerocheck opened values to the wire's per-chip
     shape. The split off the final folded traces is the zerocheck stage's
-    (``zerocheck.stage.split_opened_values`` — one view shared with the
+    (``zerocheck.prover.split_opened_values`` — one view shared with the
     transcript absorbs and the jagged-eval claims); ``degree`` is the chip's
     live row count — the height whose bits the wire spells out.
     """

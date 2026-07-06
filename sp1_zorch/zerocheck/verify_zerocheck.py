@@ -57,7 +57,7 @@ from sp1_zorch.shard_prover.replay import (
     shard_regions,
     to_u32,
 )
-from sp1_zorch.zerocheck.stage import ZerocheckProof, prove_shard_zerocheck
+from sp1_zorch.zerocheck.prover import ZerocheckProof, prove_shard_zerocheck
 from zorch.poly.univariate import eval_coeffs
 
 _SHARD_DIR = flags.DEFINE_string(

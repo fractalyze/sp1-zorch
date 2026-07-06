@@ -42,7 +42,7 @@ from sp1_zorch.shard_prover.replay import (
     seed_gkr_outputs_rolled,
     shard_regions,
 )
-from sp1_zorch.zerocheck.stage import prove_shard_zerocheck
+from sp1_zorch.zerocheck.prover import prove_shard_zerocheck
 
 
 def _seed_gkr_sealed(shard, shard_dir: Path, main_region, prep_region):
