@@ -4,8 +4,9 @@
 
 sp1-zorch follows the team playbook and inherits zorch's conventions
 (`fractalyze/zorch:docs/conventions.md` — `@jit`, naming, type annotations).
-This file records the two rules that bite hardest in an SP1 *consumer* repo:
-how comments are scoped, and how we cite the SP1 reference we mirror. The
+This file records the rules that bite hardest in an SP1 *consumer* repo:
+how comments are scoped, how we cite the SP1 reference we mirror, and how
+protocol verifiers are named apart from the byte-match harnesses. The
 repo-level "SP1-specific only" rule lives in [`../CLAUDE.md`](../CLAUDE.md);
 test `size`/`timeout` and fixture conventions live in [`testing.md`](testing.md).
 
@@ -59,3 +60,19 @@ in its module docstring:
 ```
 https://github.com/fractalyze/sp1/blob/e2c02f376/sp1-gpu/crates/logup_gkr/bin/logup_gkr_zkbench.rs
 ```
+
+## `verifier.py` vs `verify_*` runnables
+
+Two artifact kinds share the "verif" prefix; they are different things:
+
+- **`verifier.py`** (in a stage module) — product code: the stage's protocol
+  verifier dual. It checks a *proof* — transcript replay plus oracle checks —
+  and mirrors SP1's reference verifier.
+- **`verify_*` py_binary runnables** (`verify_prove_shard`, `verify_zerocheck`,
+  `verify_gkr_prove`, `verify_first_layer`) — dev harnesses: rsp byte-match of
+  the *prover* against an external SP1 reference dump (`--shard_dir`), for
+  full-shard dumps too large to vendor. Their cold-path units
+  (`verify_*_test`) test the harness, not the protocol.
+
+Name new files accordingly: a protocol dual is `verifier.py`; a dump-diff
+harness gets the `verify_` prefix.
