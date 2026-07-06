@@ -28,7 +28,7 @@ from jax import Array, lax
 from rw_constraints import Chip
 from zk_dtypes import efinfo
 
-from sp1_zorch.commit.region import JaggedRegion
+from zorch.pcs.jagged.region import JaggedRegion
 from sp1_zorch.logup_gkr.circuit import (
     GkrChip,
     _chip_view,

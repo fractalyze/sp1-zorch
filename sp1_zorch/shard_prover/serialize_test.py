@@ -18,9 +18,10 @@ from zorch.logup_gkr.circuit import LogUpGkrOutput
 from zorch.logup_gkr.jagged_prover import JaggedLayerProof
 from zorch.sumcheck.prover import RoundMsg
 
-from sp1_zorch.commit.region import JaggedRegion
-from sp1_zorch.jagged.open import StackedOpenProof, StackedRound
-from sp1_zorch.jagged.prover import JaggedEvalMsg
+from zorch.pcs.jagged.region import JaggedRegion
+from zorch.pcs.jagged.prover import JaggedEvalMsg
+
+from zorch.pcs.jagged.open import StackedOpenProof, StackedRound
 from sp1_zorch.logup_gkr.prover import ChipEvaluation, LogupGkrProof
 from sp1_zorch.shard_prover.prove_shard import ShardCarry, ShardJaggedEvalProof
 from sp1_zorch.shard_prover.serialize import (
@@ -441,10 +442,9 @@ class EncodeEvaluationProofTest(absltest.TestCase):
 
 def _stacked_round(root_base: int) -> StackedRound:
     # Only digest_layers matters to the assembly (the raw root lives at the
-    # root layer's single row); mle/codeword are carried witnesses.
+    # root layer's single row); mle is the carried witness.
     return StackedRound(
         mle=jnp.zeros((4, 1), dtype=F),
-        codeword=jnp.zeros((8, 1), dtype=F),
         digest_layers=[
             jnp.zeros((2, 8), dtype=F),
             jnp.arange(root_base, root_base + 8, dtype=F).reshape(1, 8),

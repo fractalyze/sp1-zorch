@@ -24,7 +24,7 @@ bazel_dep(name = "zorch", version = "0.0.0")
 git_override(
     module_name = "zorch",
     remote = "https://github.com/fractalyze/zorch.git",
-    commit = "e410c08750111e6c11db596a6553ac01070d6e4a",
+    commit = "b990be4834dab9016a966e04833cd2f576c75e61",
 )
 
 python = use_extension("@rules_python//python/extensions:python.bzl", "python")

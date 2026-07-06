@@ -25,7 +25,7 @@ from zk_dtypes import koalabear_mont, koalabearx4_mont
 
 from zorch.testkit.transcript import cheap_transcript
 
-from sp1_zorch.commit.region import JaggedRegion
+from zorch.pcs.jagged.region import JaggedRegion
 from sp1_zorch.logup_gkr.prover import ChipEvaluation, _open_chip
 from sp1_zorch.zerocheck.stage import prove_shard_zerocheck
 from sp1_zorch.zerocheck.verifier import verify_shard_zerocheck

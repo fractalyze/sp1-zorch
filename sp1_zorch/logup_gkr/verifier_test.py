@@ -21,7 +21,7 @@ from rw_constraints import Interaction, VirtualPairCol
 from zk_dtypes import koalabear_mont as F
 from zk_dtypes import koalabearx4_mont as EF
 
-from sp1_zorch.commit.region import JaggedRegion
+from zorch.pcs.jagged.region import JaggedRegion
 from sp1_zorch.logup_gkr.circuit import GkrChip
 from sp1_zorch.logup_gkr.prover import ChipEvaluation, prove_logup_gkr
 from sp1_zorch.logup_gkr.verifier import verify_logup_gkr, virtual_padding_geq

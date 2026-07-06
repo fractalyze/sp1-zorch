@@ -26,8 +26,9 @@ from sp1_zorch.shard_prover.types import ChipOpenedValues, MachineVerifyingKey
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from sp1_zorch.jagged.open import Opening, StackedOpenProof
-    from sp1_zorch.jagged.prover import JaggedEvalMsg
+    from zorch.pcs.jagged.prover import JaggedEvalMsg
+
+    from zorch.pcs.jagged.open import Opening, StackedOpenProof
     from sp1_zorch.logup_gkr.prover import LogupGkrProof
     from sp1_zorch.shard_prover.prove_shard import ShardCarry, ShardJaggedEvalProof
     from sp1_zorch.zerocheck.stage import ZerocheckProof

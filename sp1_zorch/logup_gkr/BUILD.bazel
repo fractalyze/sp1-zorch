@@ -16,7 +16,7 @@ py_library(
     ],
     visibility = ["//visibility:public"],
     deps = [
-        "//sp1_zorch/commit:region",
+        "@zorch//zorch/pcs/jagged:region",
         "@zorch//zorch:round",
         "@zorch//zorch:transcript",
         "@zorch//zorch/logup_gkr",
@@ -34,7 +34,7 @@ py_test(
     srcs = ["circuit_test.py"],
     deps = [
         ":logup_gkr",
-        "//sp1_zorch/commit:region",
+        "@zorch//zorch/pcs/jagged:region",
         "//sp1_zorch/shard_prover",
         requirement("absl_py"),
         requirement("jax"),
@@ -66,7 +66,7 @@ py_test(
     srcs = ["prover_test.py"],
     deps = [
         ":logup_gkr",
-        "//sp1_zorch/commit:region",
+        "@zorch//zorch/pcs/jagged:region",
         "//sp1_zorch/shard_prover",
         "@zorch//zorch:round",
         "@zorch//zorch/logup_gkr",
@@ -99,7 +99,7 @@ py_test(
     srcs = ["verifier_test.py"],
     deps = [
         ":logup_gkr",
-        "//sp1_zorch/commit:region",
+        "@zorch//zorch/pcs/jagged:region",
         "@zorch//zorch/logup_gkr",
         "@zorch//zorch/poly",
         "@zorch//zorch/testkit:transcript",
@@ -119,7 +119,7 @@ py_binary(
     srcs = ["verify_first_layer.py"],
     deps = [
         ":logup_gkr",
-        "//sp1_zorch/commit:region",
+        "@zorch//zorch/pcs/jagged:region",
         "//sp1_zorch/shard_prover",
         "@zorch//zorch/poly",
         "@zorch//zorch/utils:bits",
