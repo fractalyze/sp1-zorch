@@ -26,8 +26,8 @@ from zorch.hash.sponge import Sponge, SpongeParams
 from zorch.round import ProveChain, VerifyChain
 from zorch.testkit.transcript import cheap_transcript
 
-from sp1_zorch.commit.region import JaggedRegion
-from sp1_zorch.commit.smcs import SingleMatrixCommitmentScheme
+from zorch.pcs.jagged.region import JaggedRegion
+from zorch.commit.smcs import SingleMatrixCommitmentScheme
 from sp1_zorch.logup_gkr.circuit import GkrChip
 from sp1_zorch.poseidon2.koalabear16 import koalabear16_params
 from sp1_zorch.shard_prover.prove_shard import (

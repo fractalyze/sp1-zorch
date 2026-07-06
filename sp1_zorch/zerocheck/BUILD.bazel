@@ -14,7 +14,7 @@ py_library(
     ],
     visibility = ["//visibility:public"],
     deps = [
-        "//sp1_zorch/commit:region",
+        "@zorch//zorch/pcs/jagged:region",
         "//sp1_zorch/logup_gkr",
         "@zorch//zorch:constraint_eval",
         "@zorch//zorch:round",
@@ -92,7 +92,7 @@ py_test(
     data = glob(["testdata/gpu_fibonacci/**"]),
     deps = [
         ":zerocheck",
-        "//sp1_zorch/commit:region",
+        "@zorch//zorch/pcs/jagged:region",
         "//sp1_zorch/shard_prover",
         "@zorch//zorch/poly:poly",
         requirement("absl_py"),
@@ -215,7 +215,7 @@ py_test(
     srcs = ["stage_test.py"],
     deps = [
         ":zerocheck",
-        "//sp1_zorch/commit:region",
+        "@zorch//zorch/pcs/jagged:region",
         "//sp1_zorch/logup_gkr",
         "@zorch//zorch/testkit:transcript",
         requirement("absl_py"),
@@ -234,7 +234,7 @@ py_test(
     srcs = ["verifier_test.py"],
     deps = [
         ":zerocheck",
-        "//sp1_zorch/commit:region",
+        "@zorch//zorch/pcs/jagged:region",
         "//sp1_zorch/logup_gkr",
         "@zorch//zorch/testkit:transcript",
         requirement("absl_py"),

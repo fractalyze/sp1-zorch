@@ -36,7 +36,7 @@ from zk_dtypes import koalabear_mont, koalabearx4_mont
 
 from zorch.poly.eq import eval_eq
 
-from sp1_zorch.commit.region import JaggedRegion
+from zorch.pcs.jagged.region import JaggedRegion
 from sp1_zorch.shard_prover.chip_loader import load_sp1_chips, sp1_name_to_rw
 from sp1_zorch.shard_prover.types import PROOF_MAX_NUM_PVS
 from sp1_zorch.zerocheck.jagged import DEGREE, prove_jagged_zerocheck

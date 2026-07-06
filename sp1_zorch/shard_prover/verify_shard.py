@@ -24,10 +24,10 @@ import jax
 import jax.numpy as jnp
 from jax import Array
 from rw_constraints import Chip
-from sp1_zorch.commit.region import structure_counts
-from sp1_zorch.commit.smcs import SingleMatrixCommitmentScheme
-from sp1_zorch.jagged.prover import assemble_columns, sample_z_col
-from sp1_zorch.jagged.verifier import (
+from zorch.pcs.jagged.region import structure_counts
+from zorch.commit.smcs import SingleMatrixCommitmentScheme
+from zorch.pcs.jagged.prover import assemble_columns, sample_z_col
+from zorch.pcs.jagged.verifier import (
     stacked_basefold_verify,
     verify_jagged_eval_msg,
 )

@@ -51,9 +51,6 @@ gates (a cache shared across toolchains has served wrong executables).
 
 ``--max_stage=N`` runs + byte-checks only the first N stages (1=trace-commit ..
 4=full), a cheaper loop that skips the downstream stages' compile.
-``--drop_main_codeword`` (default on) drops the main codeword at commit and
-re-encodes it at the open (SP1's drop_ldes) so it never pins ~6 GB through GKR +
-zerocheck; pass ``=false`` to keep it resident (small shards / >32 GB cards).
 
 Each stage's golden check runs the instant that stage finishes, so a mismatch
 exits non-zero *before* the later stages pay their compile -- a stage-1 commit
@@ -71,7 +68,7 @@ import jax.numpy as jnp
 from absl import app, flags
 from zk_dtypes import koalabear_mont as F
 
-from sp1_zorch.commit.smcs import SingleMatrixCommitmentScheme
+from zorch.commit.smcs import SingleMatrixCommitmentScheme
 from sp1_zorch.logup_gkr.circuit import build_gkr_chips
 from sp1_zorch.logup_gkr.prover import num_beta_values
 from sp1_zorch.poseidon2.koalabear16 import koalabear16_params
@@ -137,18 +134,6 @@ _MAX_STAGE = flags.DEFINE_integer(
     "stages' multi-minute compile for a cheaper iteration loop; golden checks "
     "for stages beyond N are skipped.",
 )
-_DROP_MAIN_CODEWORD = flags.DEFINE_bool(
-    "drop_main_codeword",
-    True,
-    "Drop the main region's ~6 GB codeword at commit and re-encode it from the "
-    "message MLE at the open (SP1's drop_ldes), so it never stays device-"
-    "resident through GKR + zerocheck -- clears the rsp full-chain >32 GB OOM "
-    "(#55, #124). True matches the production rsp full chain. Set false to keep "
-    "the codeword resident (the small-shard / >32 GB-card path); false on rsp "
-    "shard17 OOMs.",
-)
-
-
 class _TimedRound(Round):
     """Print each stage's wall-clock so the compile-vs-runtime split is
     visible on every run (async dispatch makes unblocked timings lie, so
@@ -227,16 +212,10 @@ def main(argv) -> None:
         open_num_queries=_OPEN_NUM_QUERIES.value,
         open_pow_bits=_OPEN_POW_BITS.value,
         witness=witness,
-        # Required at rsp scale for the commit (see sp1_zorch.commit
-        # .trace_commit). The GKR stage keeps its `zorch.sumcheck` composite via
-        # the rolled marker, independent of this flag.
+        # Required at rsp scale for the commit (see zorch.pcs.jagged.commit).
+        # The GKR stage keeps its `zorch.sumcheck` composite via the rolled
+        # marker, independent of this flag.
         jit=True,
-        # Drop the main codeword at commit and re-encode it at the open (SP1's
-        # drop_ldes), so its ~6 GB never stays device-resident through GKR +
-        # zerocheck -- clears the rsp shard17 full-chain >32 GB OOM (see
-        # prove_shard_chain's docstring / #55, #124). Byte-identical; defaults on
-        # for the rsp path, --drop_main_codeword=false keeps it resident.
-        drop_main_codeword=_DROP_MAIN_CODEWORD.value,
     )
     # Slice to the first N stages (--max_stage) so the downstream stages' compile
     # is skipped for a cheaper loop. ProveChain collects one message per round,

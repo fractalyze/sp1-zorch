@@ -26,9 +26,9 @@ from zorch.hash.poseidon2.poseidon2 import Poseidon2
 from zorch.hash.sponge import Sponge, SpongeParams
 from zorch.testkit.transcript import cheap_transcript
 
-from sp1_zorch.commit.region import JaggedRegion
-from sp1_zorch.commit.smcs import SingleMatrixCommitmentScheme
-from sp1_zorch.commit.trace_commit import commit_region
+from zorch.pcs.jagged.region import JaggedRegion
+from zorch.commit.smcs import SingleMatrixCommitmentScheme
+from zorch.pcs.jagged.commit import commit_region
 from sp1_zorch.logup_gkr.circuit import GkrChip
 from sp1_zorch.logup_gkr.prover import prove_logup_gkr
 from sp1_zorch.poseidon2.koalabear16 import koalabear16_params
@@ -259,8 +259,7 @@ class ProveShardChainTest(absltest.TestCase):
         cls.main_region = main_region
         cls.prep_region = prep_region
         cls.public_values = public_values
-        # Retained so the drop-parity test can rebuild the same chain with
-        # ``drop_main_codeword=True``.
+        # Retained so tests can rebuild the same chain.
         cls.smcs = smcs
         cls.vk = vk
         cls.gkr_chips = gkr_chips
@@ -416,18 +415,15 @@ class ProveShardChainTest(absltest.TestCase):
 
     def test_trace_commit_round_carries_stacked_open_witness(self) -> None:
         """TraceCommitRound retains each region's stacked witness — the
-        ``[S, K]`` message matrix and the committed ``[S*blowup, K]``
-        bit-reversed codeword — on the carry as ``[prep, main]``, so the
-        jagged-eval open stage reproves them without recommitting."""
+        ``[S, K]`` message matrix — on the carry as ``[prep, main]``, so the
+        jagged-eval open stage reproves them without recommitting (the open
+        re-encodes the codeword from the mle)."""
         rounds = self.carry.commit_rounds
         self.assertIsNotNone(rounds)
         self.assertLen(rounds, 2)  # prep, then main
         S = 1 << self.main_region.log_stacking_height
-        blowup = 1 << _LOG_BLOWUP
         for rd in rounds:
             self.assertEqual(rd.mle.shape[0], S)
-            self.assertEqual(rd.codeword.shape[0], S * blowup)
-            self.assertEqual(rd.mle.shape[1], rd.codeword.shape[1])
 
     def test_zerocheck_round_carries_the_eval_point(self) -> None:
         """ShardZerocheckRound threads its sumcheck point onto the carry as the
@@ -463,48 +459,6 @@ class ProveShardChainTest(absltest.TestCase):
         _, got = self.got_transcript.sample(1)
         _, want = self.want_transcript.sample(1)
         _assert_bytes_equal(got, want, "post-chain sample")
-
-    def test_drop_main_codeword_is_byte_identical(self) -> None:
-        """``drop_main_codeword=True`` (SP1's drop_ldes) drops the main region's
-        full-blowup codeword at commit and re-encodes it from the message MLE at
-        the open, instead of holding it device-resident through GKR + zerocheck
-        -- the fractalyze/sp1-zorch#55/#124 GPU-OOM fix. Re-encoding is the same
-        coset DFT, so every stage message -- including the jagged-eval open, the
-        one stage that reads ``commit_rounds`` -- must be byte-identical to the
-        codeword-resident chain. The main round must carry no codeword (so the
-        blow-up never pins device memory) while the prep round keeps its own."""
-        chain = prove_shard_chain(
-            smcs=self.smcs,
-            log_blowup=_LOG_BLOWUP,
-            vk=self.vk,
-            chip_metadata=self.metadata,
-            gkr_chips=self.gkr_chips,
-            chips=self.chips,
-            num_betas=_NUM_BETAS,
-            num_row_variables=_NUM_ROW_VARIABLES,
-            max_log_row_count=_MAX_LOG_ROW_COUNT,
-            open_num_queries=_OPEN_NUM_QUERIES,
-            drop_main_codeword=True,
-            # Eager for the same pv-closure reason as the setUpClass chain.
-            jit=False,
-        )
-        carry = ShardCarry(self.main_region, self.prep_region, self.public_values)
-        transcript = cheap_transcript(BF)
-        got_msgs = []
-        for stage in chain.rounds:
-            carry, transcript, msg = stage(carry, transcript)
-            got_msgs.append(msg)
-
-        for i, (got, want) in enumerate(zip(got_msgs, self.msgs, strict=True)):
-            _assert_proof_byte_equal(got, want, f"stage{i} message")
-
-        # The main round dropped its codeword (carries only mle + digest tree);
-        # the prep round kept its own. [prep, main] order.
-        prep_round, main_round = carry.commit_rounds
-        self.assertIsNone(main_round.codeword)
-        self.assertIsNotNone(prep_round.codeword)
-        self.assertIsNotNone(main_round.mle)
-        self.assertNotEmpty(main_round.digest_layers)
 
     def test_zerocheck_round_rejects_a_chain_without_gkr(self) -> None:
         round_ = ShardZerocheckRound(

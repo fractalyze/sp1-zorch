@@ -25,7 +25,7 @@ import jax.numpy as jnp
 from jax import Array, lax
 from rw_constraints import Chip, Interaction
 
-from sp1_zorch.commit.region import JaggedRegion
+from zorch.pcs.jagged.region import JaggedRegion
 from zorch.logup_gkr.circuit import JaggedGkrLayer
 from zorch.utils.bits import log2_ceil_usize
 
