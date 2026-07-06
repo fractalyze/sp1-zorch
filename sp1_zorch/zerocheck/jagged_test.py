@@ -308,10 +308,11 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
         self.assertEqual((len(calls6), len(bounded6)), (len(calls3), len(bounded3)))
 
     def _tail_dot_count(self, num_vars: int, num_reals) -> int:
-        """``dot_general`` op count in the lowered prove. constraint_eval is a
-        composite (not a dot), so the dots are the per-chip column matmuls
-        (``rows_t @ gkr_powers``, one per t-point on the CPU backend — shape-
-        divergent by design, like constraint_eval) plus the interpolation +
+        """``dot_general`` op count in the lowered prove. The GKR column term
+        rides ``constraint_eval``'s ``column_weights``, so the per-chip dots
+        are the column dot inside each t-point's composite decomposition
+        (each composite call emits its own decomposition func — three per
+        constrained chip, shape-divergent by design) plus the interpolation +
         RLC tail (the Gruen matrix product and the λ-RLC)."""
         nchips = len(num_reals)
         traces = [_witness_trace(i, nr) for i, nr in enumerate(num_reals)]
@@ -343,15 +344,13 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
         return len(re.findall(r"stablehlo\.dot_general", txt))
 
     def test_interp_rlc_tail_batches_across_chips(self) -> None:
-        # The lever from fractalyze/zkx#772: the interpolation + RLC tail is
-        # batched into one [num_chips, ...] matmul each, so its dot_general count
-        # is INDEPENDENT of the chip count. A per-chip unrolled tail scales it
-        # with nchips (~2 dots/chip) — the tiny-launch cluster the batch
-        # collapses. constraint_eval (the genuinely shape-divergent term) stays
-        # per-chip and is a composite, so it does not enter this count.
-        # The per-chip column matmuls grow with nchips by design (3 per
-        # added chip on CPU); the tail must contribute ZERO growth beyond
-        # them.
+        # The interpolation + RLC tail is batched into one [num_chips, ...]
+        # matmul each, so its dot_general count is INDEPENDENT of the chip
+        # count. A per-chip unrolled tail scales it with nchips (~2 dots/chip)
+        # — the tiny-launch cluster the batch collapses. Each added chip
+        # brings only its three t-point composite decompositions, each
+        # carrying the in-body column dot (3 dots per chip, by design); the
+        # tail must contribute ZERO growth beyond them.
         self.assertEqual(
             self._tail_dot_count(3, [5, 2, 3, 4, 1]) - self._tail_dot_count(3, [5, 2]),
             3 * 3,

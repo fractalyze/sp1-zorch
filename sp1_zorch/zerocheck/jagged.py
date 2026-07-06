@@ -77,7 +77,8 @@ References (pinned at the same SP1 commit as ``coeffs.rlc_coeffs``):
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from functools import partial
 from typing import TYPE_CHECKING, ClassVar
 
 import jax
@@ -111,6 +112,54 @@ def _challenge_limbs(dtype) -> int:
         return efinfo(dtype).degree
     except ValueError:
         return 1
+
+
+def _constraint_and_column_term(
+    eval_fn: Callable[[Array], Array],
+    rows_t: Array,
+    alpha: Array,
+    eq: Array,
+    gkr_powers: Array,
+    live_width: Array,
+) -> Array:
+    """A constrained chip's inner sum at one t-point: the alpha-folded
+    constraint evaluation plus the GKR column term, eq-weighted and summed
+    over the pair axis with rows past ``live_width`` masked to zero.
+
+    The per-row column term ``sum_c rows[r,c] * gkr_powers[c]`` rides
+    ``constraint_eval``'s ``column_weights`` operand on every backend: a
+    recognizing emitter adds the dot in-kernel while the row is already
+    loaded (the cross-row reduce stays external, keeping the big round
+    one-thread-per-row), and an unrecognizing backend inlines the
+    decomposition's identical dot."""
+    return jnp.sum(
+        constraint_eval(
+            eval_fn,
+            rows_t,
+            alpha,
+            live_width=live_width,
+            column_weights=gkr_powers,
+        )
+        * eq
+    )
+
+
+def _column_term(
+    rows_t: Array, alpha: Array, eq: Array, gkr_powers: Array, live_width: Array
+) -> Array:
+    """A lookup-only chip's whole inner sum at one t-point: just the
+    eq-weighted GKR column term as a standalone matmul. Such a chip has NO
+    transition constraints — SP1's Byte / Program / Range ship K = 0 in every
+    real shard, so this is a production strategy, not a defensive one
+    (`constraint_eval` rejects an empty alpha)."""
+    del alpha, live_width  # no constraint fold to mask or bound
+    return jnp.sum((rows_t @ gkr_powers) * eq)
+
+
+# A chip's term strategy — `_constraint_and_column_term` with its eval_fn
+# bound, or `_column_term` — chosen once at summand init:
+# (rows_t, alpha, eq, gkr_powers, live_width) -> the inner sum at one t-point.
+_TermFn = Callable[[Array, Array, Array, Array, Array], Array]
 
 
 @dataclass(frozen=True)
@@ -153,6 +202,22 @@ class JaggedZerocheckSummand:
     alphas: Sequence[Array]
     lambdas: Array
     beta: Array
+    # Each chip's term strategy — constraint+column, or column-only for a
+    # lookup-only chip — chosen once here off its alpha's static length, so
+    # `chip_evals` runs the same code for every chip.
+    _term_fns: tuple[_TermFn, ...] = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "_term_fns",
+            tuple(
+                partial(_constraint_and_column_term, fn)
+                if alpha.shape[-1] > 0
+                else _column_term
+                for fn, alpha in zip(self.eval_fns, self.alphas)
+            ),
+        )
 
     @property
     def degree(self) -> int:
@@ -194,8 +259,8 @@ class JaggedZerocheckSummand:
         a chip that starts empty is ever empty): its width-0 buffer and zero
         adjustment collapse every t-point to zero, leaving the claim identity
         alone — without running ``constraint_eval`` on an empty trace."""
-        eval_fn = self.eval_fns[i]
         alpha = self.alphas[i]
+        term = self._term_fns[i]
         ef = last.dtype
         zero = jnp.zeros((), ef)
         two = jnp.array(2, ef)
@@ -204,59 +269,23 @@ class JaggedZerocheckSummand:
         if is_zero:
             return zero, zero, zero
 
-        # A lookup-only chip has NO transition constraints — SP1's Byte /
-        # Program / Range ship K = 0 in every real shard, so this is a
-        # production case, not a defensive one (`constraint_eval` rejects an
-        # empty alpha).
-        has_constraints = alpha.shape[-1] > 0
         num_non_padded = (nr_live + 1) // 2
 
         # The computed evaluation points {0, 2, 4} — SP1's choice of materialized
         # t-points; t = 1 and the eq root come free (claim identity / Gruen zero).
         t_traces = (p0, p0 + two * diff, p0 + four * diff)
 
-        # On GPU the per-row column term `sum_c rows[r,c] * gkr_powers[c]` is
-        # folded INTO `constraint_eval` via its `column_weights` operand (the
-        # emitter adds the dot in-kernel and keeps the cross-row reduce
-        # external, so the big round stays one-thread-per-row — unlike the
-        # dropped #726 reduce-fold). Other backends keep it a SEPARATE
-        # reduction: there the composite inlines, and an inlined masked select
-        # + column matmul in this scan body hits an XLA while-loop lowering
-        # miscompile. Field add is associative, so both are byte-identical.
-        #
         # The t-points run separately (not batched) so the t-point-specific
         # round-0 t=0 constraint drop can be applied by zeroing `alpha`
         # (`sum_k C_k*0 = 0`), leaving the alpha-independent column term
         # intact.
-        fold_column_into_kernel = jax.default_backend() != "cpu"
-
         def inner(rows: Array, *, mask_round0: bool) -> Array:
-            rows_t = rows.T
-            if has_constraints:
-                a = (
-                    jnp.where(is_round0, jnp.zeros_like(alpha), alpha)
-                    if mask_round0
-                    else alpha
-                )
-                if fold_column_into_kernel:
-                    return jnp.sum(
-                        constraint_eval(
-                            eval_fn,
-                            rows_t,
-                            a,
-                            live_width=num_non_padded,
-                            column_weights=gkr_powers,
-                        )
-                        * eq
-                    )
-                c = jnp.sum(
-                    constraint_eval(eval_fn, rows_t, a, live_width=num_non_padded) * eq
-                )
-                return c + jnp.sum((rows_t @ gkr_powers) * eq)
-            # Lookup-only chip (SP1's Byte / Program / Range ship K = 0 in
-            # every real shard; `constraint_eval` rejects an empty alpha):
-            # only the column term, always a standalone matmul.
-            return jnp.sum((rows_t @ gkr_powers) * eq)
+            a = (
+                jnp.where(is_round0, jnp.zeros_like(alpha), alpha)
+                if mask_round0
+                else alpha
+            )
+            return term(rows.T, a, eq, gkr_powers, num_non_padded)
 
         inner_0 = inner(t_traces[0], mask_round0=True)
         inner_2 = inner(t_traces[1], mask_round0=False)
