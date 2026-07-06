@@ -126,31 +126,22 @@ def _constraint_and_column_term(
     constraint evaluation plus the GKR column term, eq-weighted and summed
     over the pair axis with rows past ``live_width`` masked to zero.
 
-    The column term's placement is this engine's one backend divergence — a
-    compiler workaround, not protocol. On GPU the per-row column term
-    ``sum_c rows[r,c] * gkr_powers[c]`` is folded INTO ``constraint_eval``
-    via its ``column_weights`` operand (the emitter adds the dot in-kernel
-    and keeps the cross-row reduce external, so the big round stays
-    one-thread-per-row — unlike the dropped fractalyze/zkx#726 reduce-fold).
-    Other backends keep it a SEPARATE reduction: there the composite
-    inlines, and an inlined masked select + column matmul in the round scan
-    body hits an XLA while-loop lowering miscompile. Field add is
-    associative, so both placements are byte-identical. Deleting the
-    divergence outright belongs to the round-composite track
-    (fractalyze/zorch#394)."""
-    if jax.default_backend() != "cpu":
-        return jnp.sum(
-            constraint_eval(
-                eval_fn,
-                rows_t,
-                alpha,
-                live_width=live_width,
-                column_weights=gkr_powers,
-            )
-            * eq
+    The per-row column term ``sum_c rows[r,c] * gkr_powers[c]`` rides
+    ``constraint_eval``'s ``column_weights`` operand on every backend: a
+    recognizing emitter adds the dot in-kernel while the row is already
+    loaded (the cross-row reduce stays external, keeping the big round
+    one-thread-per-row), and an unrecognizing backend inlines the
+    decomposition's identical dot."""
+    return jnp.sum(
+        constraint_eval(
+            eval_fn,
+            rows_t,
+            alpha,
+            live_width=live_width,
+            column_weights=gkr_powers,
         )
-    c = jnp.sum(constraint_eval(eval_fn, rows_t, alpha, live_width=live_width) * eq)
-    return c + jnp.sum((rows_t @ gkr_powers) * eq)
+        * eq
+    )
 
 
 def _column_term(
