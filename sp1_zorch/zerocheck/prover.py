@@ -98,12 +98,10 @@ def chip_traces(
             p_start = prep_region.chip_starts[k]
             if pw > 0 and p_h > 0:
                 prep = prep_region.dense[p_start : p_start + p_h * pw].reshape(pw, p_h)
-                if p_h < nr:
-                    prep = jnp.concatenate(
-                        [prep, jnp.zeros((pw, nr - p_h), dtype=prep.dtype)], axis=1
-                    )
-                elif p_h > nr:
+                if p_h > nr:
                     prep = prep[:, :nr]
+                else:
+                    prep = jnp.pad(prep, ((0, 0), (0, nr - p_h)))
             else:
                 prep = jnp.zeros((pw, nr), dtype=bf)
             if pw > 0:
