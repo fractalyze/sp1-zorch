@@ -78,7 +78,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 import jax
 import jax.numpy as jnp
@@ -88,12 +88,18 @@ from zk_dtypes import efinfo
 from zorch.constraint_eval import constraint_eval
 from zorch.poly.eq import contract_hypercube_step, eq_factor, expand_eq_to_hypercube
 from zorch.poly.geq import VirtualGeq
-from zorch.poly.univariate import eval_coeffs
-from zorch.sumcheck.gruen import interp_matrix, round_coeffs_from_matrix
+from zorch.sumcheck.gruen import (
+    fold_round_scalars,
+    interp_matrix,
+    round_coeffs_from_matrix,
+)
 from zorch.sumcheck.prover import RoundMsg, split_pairs, zero_extend
 from zorch.transcript import Transcript, sample_challenge
 
 from sp1_zorch.zerocheck.prover import gkr_powers
+
+if TYPE_CHECKING:
+    from zorch.sumcheck.gruen import GruenSummand
 
 
 def _challenge_limbs(dtype) -> int:
@@ -289,6 +295,12 @@ class JaggedZerocheckSummand:
 # polys off the summand's degree.
 DEGREE = JaggedZerocheckSummand.DEGREE
 
+if TYPE_CHECKING:
+    # Seam conformance pin (zorch docs/conventions.md "Seam conformance
+    # pins"): any type-checker pass over this module fails if the summand
+    # drifts off the GruenSummand vocabulary the Gruen assembly reads.
+    _gruen_summand: type[GruenSummand] = JaggedZerocheckSummand
+
 
 def prove_jagged_zerocheck(
     summand: JaggedZerocheckSummand,
@@ -478,9 +490,9 @@ def prove_jagged_zerocheck(
         # The Gruen assembly + RLC tail is uniform-shape across chips, so the
         # chip evaluations ride its batch axis — one matrix product for all
         # chips instead of num_chips tiny per-chip launches — transposed to
-        # keep coefficients on the last axis for `eval_coeffs`; the summand
-        # takes the cross-chip RLC. Field ops are exact, so the reassociation
-        # gives byte-identical round polys.
+        # keep coefficients on the last axis for the post-round
+        # `fold_round_scalars`; the summand takes the cross-chip RLC. Field ops
+        # are exact, so the reassociation gives byte-identical round polys.
         y0 = jnp.stack(y0s)
         y2 = jnp.stack(y2s)
         y4 = jnp.stack(y4s)
@@ -495,8 +507,7 @@ def prove_jagged_zerocheck(
         bufs = [zero_extend(p0s[i] + r * diffs[i], widths[i]) for i in range(num_chips)]
         vgeqs = [vg.fix_last_variable(r) for vg in vgeqs]
         nrs_live = [(nr + 1) // 2 for nr in nrs_live]
-        chip_claims = eval_coeffs(polys, r)
-        eq_adj = eq_adj * eq_factor(r, last)
+        chip_claims, eq_adj = fold_round_scalars(polys, r, eq_adj, last)
 
         carry = (
             bufs,
