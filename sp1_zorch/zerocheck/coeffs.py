@@ -1,6 +1,5 @@
 # Copyright 2026 The sp1-zorch Authors. SPDX-License-Identifier: Apache-2.0
-"""SP1 zerocheck: a chip's K constraints folded under one challenge as a single
-`zorch.constraint_eval` composite.
+"""SP1 zerocheck's batching-coefficient layouts, and the marked constraint fold.
 
 Zerocheck = constraint evaluation + sumcheck reduction. This module owns the
 SP1-specific coefficient layouts — the constraint-fold RLC and the GKR
@@ -13,7 +12,9 @@ this module's scope.
 
 The RLC coefficients are descending powers of the challenge because that is the
 order SP1's reference prover folds constraints in (`shifted_powers(1, alpha,
-K)[::-1]`); the layout is SP1's, so it lives here rather than in zorch.
+K)[::-1]`); the layout is SP1's, so it lives here rather than in zorch — the
+generic ascending power chain is zorch's `poly.univariate.powers`, which both
+layouts reorder.
 """
 
 from __future__ import annotations
@@ -24,17 +25,7 @@ import jax.numpy as jnp
 from jax import Array
 
 from zorch.constraint_eval import constraint_eval
-
-
-def _shifted_powers(shift: Array, generator: Array, size: int) -> Array:
-    """``[shift, shift*generator, ..., shift*generator**(size-1)]`` — SP1's
-    ``shifted_powers``. One cumprod rather than a per-power traced multiply:
-    wide chips put hundreds of columns through this, and field multiplication
-    reassociates exactly."""
-    powers = jnp.full((size,), generator)
-    if size == 0:
-        return powers
-    return jnp.cumprod(powers.at[0].set(shift))
+from zorch.poly.univariate import powers
 
 
 # Reference: SP1's `chip_powers_of_alpha` constraint-fold coefficients —
@@ -44,19 +35,19 @@ def rlc_coeffs(alpha: Array, num_constraints: int) -> Array:
     powers of `alpha`, ``[alpha**(K-1), ..., alpha, 1]``. Empty for ``K = 0``
     — a lookup-only chip (SP1's Byte / Program / Range) has no transition
     constraints and folds to nothing."""
-    if num_constraints < 0:
-        raise ValueError("num_constraints must be >= 0")
-    return _shifted_powers(jnp.ones_like(alpha), alpha, num_constraints)[::-1]
+    if num_constraints == 0:
+        return jnp.zeros((0,), alpha.dtype)
+    return powers(alpha, num_constraints)[::-1]
 
 
 # Reference: SP1's GKR opening-batch weights, column j carrying beta**(j+1)
 # (`gkr_opening_batch_randomness.powers().skip(1)`) —
 # https://github.com/fractalyze/sp1/blob/640d8b80c/crates/hypercube/src/prover/shard.rs#L541-L549
 def gkr_powers(beta: Array, num_cols: int) -> Array:
-    """SP1's GKR column-batching weights ``[beta, beta**2, ..., beta**num_cols]``."""
-    if num_cols < 1:
-        raise ValueError("num_cols must be >= 1")
-    return _shifted_powers(beta, beta, num_cols)
+    """SP1's GKR column-batching weights ``[beta, beta**2, ..., beta**num_cols]``
+    — zorch's ascending chain shifted by one; empty for a zero-column batch,
+    mirroring ``rlc_coeffs``' ``K = 0``."""
+    return powers(beta, num_cols + 1)[1:]
 
 
 def constraint_rlc(

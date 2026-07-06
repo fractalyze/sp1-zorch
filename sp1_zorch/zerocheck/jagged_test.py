@@ -41,7 +41,7 @@ from sp1_zorch.zerocheck.jagged import (
     JaggedZerocheckSummand,
     prove_jagged_zerocheck,
 )
-from sp1_zorch.zerocheck.prover import rlc_coeffs
+from sp1_zorch.zerocheck.coeffs import rlc_coeffs
 
 # Witness chip: columns [a, b, c] with a == 1 on every real row, so both
 # constraints vanish there while C(0_row) = [1, 0] keeps the padded-row

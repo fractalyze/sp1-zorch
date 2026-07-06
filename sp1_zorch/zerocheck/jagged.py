@@ -67,7 +67,7 @@ Variable order: zorch's ``expand_eq_to_hypercube`` indexes the hypercube with
 — SP1's back-to-front order (its ``jagged_point`` is the challenge list
 reversed; the reversal is the consumer's).
 
-References (pinned at the same SP1 commit as ``prover.rlc_coeffs``):
+References (pinned at the same SP1 commit as ``coeffs.rlc_coeffs``):
 - round-poly trick — ``sum_as_poly_in_last_variable``,
   https://github.com/fractalyze/sp1/blob/640d8b80c/slop/crates/sumcheck/src/poly.rs
 - column-height schedule — ``next_start_indices_and_column_heights``,
@@ -96,7 +96,7 @@ from zorch.sumcheck.gruen import (
 from zorch.sumcheck.prover import RoundMsg, split_pairs, zero_extend
 from zorch.transcript import Transcript, sample_challenge
 
-from sp1_zorch.zerocheck.prover import gkr_powers
+from sp1_zorch.zerocheck.coeffs import gkr_powers
 
 if TYPE_CHECKING:
     from zorch.sumcheck.gruen import GruenSummand
@@ -124,7 +124,7 @@ class JaggedZerocheckSummand:
 
     and the round polynomial is the ``lambdas``-RLC across chips — three
     batchings under three challenges: ``alphas[c]`` folds chip ``c``'s K
-    constraints (descending powers, ``prover.rlc_coeffs``; empty for a
+    constraints (descending powers, ``coeffs.rlc_coeffs``; empty for a
     lookup-only chip — SP1's Byte / Program / Range ship K = 0 in every
     real shard), ``beta`` batches its columns (the GKR opening term), and
     ``lambdas`` batches across chips. Chips are RLC'd anew every round,

@@ -31,7 +31,7 @@ from sp1_zorch.zerocheck.jagged import (
     JaggedZerocheckSummand,
     prove_jagged_zerocheck,
 )
-from sp1_zorch.zerocheck.prover import gkr_powers, rlc_coeffs
+from sp1_zorch.zerocheck.coeffs import gkr_powers, rlc_coeffs
 from sp1_zorch.zerocheck.stage import (
     OpenedValuesRound,
     prove_shard_zerocheck,

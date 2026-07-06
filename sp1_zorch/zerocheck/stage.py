@@ -38,7 +38,7 @@ from sp1_zorch.zerocheck.jagged import (
     JaggedZerocheckSummand,
     prove_jagged_zerocheck,
 )
-from sp1_zorch.zerocheck.prover import gkr_powers, rlc_coeffs
+from sp1_zorch.zerocheck.coeffs import gkr_powers, rlc_coeffs
 from zorch.round import Round
 from zorch.sumcheck.prover import RoundMsg
 from zorch.transcript import Transcript, sample_challenge
@@ -135,8 +135,8 @@ def sample_stage_challenges(
 ) -> tuple[Transcript, Array, Array, Array]:
     """The three zerocheck stage challenges in SP1's order, one per batching
     dimension: ``batching`` is alpha — one RLC across a chip's K constraints
-    (``prover.rlc_coeffs``); ``gkr_batch`` is beta — across a chip's columns
-    (``prover.gkr_powers``); ``lambda_`` batches across chips (the jagged
+    (``coeffs.rlc_coeffs``); ``gkr_batch`` is beta — across a chip's columns
+    (``coeffs.gkr_powers``); ``lambda_`` batches across chips (the jagged
     engine re-applies it every round; a chip index is a batch axis, not a
     sumcheck variable). Sampled inside zerocheck, after the GKR stage. One
     definition driven by the prover and the verifier dual, so the sampling

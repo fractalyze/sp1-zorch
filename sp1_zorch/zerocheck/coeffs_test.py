@@ -1,12 +1,12 @@
 # Copyright 2026 The sp1-zorch Authors. SPDX-License-Identifier: Apache-2.0
-"""zerocheck constraint RLC: descending-power coeffs, and a fold byte-equal to
-the plain dot it marks."""
+"""zerocheck coefficient layouts: descending-power RLC coeffs, shifted GKR
+column weights, and a fold byte-equal to the plain dot it marks."""
 
 import jax.numpy as jnp
 from absl.testing import absltest
 from zk_dtypes import koalabear_mont as F
 
-from sp1_zorch.zerocheck.prover import constraint_rlc, rlc_coeffs
+from sp1_zorch.zerocheck.coeffs import constraint_rlc, gkr_powers, rlc_coeffs
 
 
 def _eval_fn(rows: jnp.ndarray) -> jnp.ndarray:
@@ -46,6 +46,14 @@ class ConstraintRlcTest(absltest.TestCase):
         self.assertEqual(rlc_coeffs(_ALPHA, 0).shape, (0,))
         with self.assertRaises(ValueError):
             rlc_coeffs(_ALPHA, -1)
+
+    def test_gkr_powers_start_at_beta(self) -> None:
+        # Column j carries beta**(j+1) — SP1's skip(1): [beta, beta^2, beta^3].
+        want = jnp.stack([_ALPHA, _ALPHA * _ALPHA, _ALPHA * _ALPHA * _ALPHA])
+        got = gkr_powers(_ALPHA, 3)
+        self.assertTrue(bool(jnp.array_equal(got, want)), (got, want))
+        # An empty column batch folds to nothing, mirroring rlc_coeffs' K=0.
+        self.assertEqual(gkr_powers(_ALPHA, 0).shape, (0,))
 
     def test_folds_byte_equal_to_plain_dot(self) -> None:
         # The composite must inline to the identical result as the plain
