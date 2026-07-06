@@ -157,7 +157,7 @@ class TraceCommitRound(Round):
         log_blowup: int,
         vk: MachineVerifyingKey,
         chip_metadata: Array,
-        jit: bool = False,
+        jit: bool = True,
         drop_main_codeword: bool = False,
     ) -> None:
         self._smcs = smcs
@@ -239,7 +239,7 @@ class LogupGkrRound(Round):
         num_row_variables: int,
         pow_bits: int = 0,
         witness: Array | None = None,
-        jit: bool = False,
+        jit: bool = True,
     ) -> None:
         self._gkr_chips = tuple(gkr_chips)
         self._num_betas = num_betas
@@ -369,7 +369,7 @@ class ShardZerocheckRound(Round):
         chips: Mapping[str, Chip],
         *,
         max_log_row_count: int,
-        jit: bool = False,
+        jit: bool = True,
     ) -> None:
         self._chips = chips
         self._max_log_row_count = max_log_row_count
@@ -509,7 +509,7 @@ class ShardJaggedEvalRound(Round):
         log_blowup: int,
         num_queries: int,
         pow_bits: int,
-        jit: bool = False,
+        jit: bool = True,
     ) -> None:
         self._smcs = smcs
         self._log_blowup = log_blowup
@@ -714,7 +714,7 @@ def prove_shard_chain(
     open_pow_bits: int = 0,
     pow_bits: int = 0,
     witness: Array | None = None,
-    jit: bool = False,
+    jit: bool = True,
     drop_main_codeword: bool = False,
 ) -> ProveChain:
     """The SP1 shard chain. One definition for the stage wiring so the

@@ -141,7 +141,7 @@ def commit_region(
     smcs: SingleMatrixCommitmentScheme,
     *,
     log_blowup: int,
-    jit: bool = False,
+    jit: bool = True,
     drop_codeword: bool = False,
 ) -> tuple[Array, TraceCommitData]:
     """Commit a packed region; returns ``(bound_commitment, prover_data)``.

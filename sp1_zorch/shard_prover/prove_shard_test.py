@@ -208,6 +208,11 @@ class ProveShardChainTest(absltest.TestCase):
         cls.want_zc = zc_proof
         cls.want_transcript = t
 
+        # Eager chain: this machine's constraint circuit reads public_values,
+        # which the jitted zerocheck body threads as a tracer -- and the
+        # `zorch.constraint_eval` composite rejects closure tracers. Eager
+        # execution keeps pv a concrete array (and doubles as the eager dual
+        # the jit twin below is byte-checked against).
         chain = prove_shard_chain(
             smcs=smcs,
             log_blowup=_LOG_BLOWUP,
@@ -219,6 +224,7 @@ class ProveShardChainTest(absltest.TestCase):
             num_row_variables=_NUM_ROW_VARIABLES,
             max_log_row_count=_MAX_LOG_ROW_COUNT,
             open_num_queries=_OPEN_NUM_QUERIES,
+            jit=False,
         )
         # A jit=True twin for the lowering smoke (sp1-zorch#119): same wiring,
         # the LogUp-GKR body staged under one outer @jit.
@@ -479,6 +485,8 @@ class ProveShardChainTest(absltest.TestCase):
             max_log_row_count=_MAX_LOG_ROW_COUNT,
             open_num_queries=_OPEN_NUM_QUERIES,
             drop_main_codeword=True,
+            # Eager for the same pv-closure reason as the setUpClass chain.
+            jit=False,
         )
         carry = ShardCarry(self.main_region, self.prep_region, self.public_values)
         transcript = cheap_transcript(BF)
