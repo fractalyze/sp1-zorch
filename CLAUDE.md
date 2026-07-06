@@ -3,6 +3,7 @@
 - **Overview & quick start:** [`README.md`](README.md)
 - **Conventions:** [`docs/conventions.md`](docs/conventions.md) — comments (why-not-what), external SP1 references (pinned permalinks).
 - **Pipeline & terminology:** [`docs/shard-pipeline.md`](docs/shard-pipeline.md) — stages as Round compositions, SP1 dump "phase" vocabulary mapping.
+- **Zerocheck protocol:** [`docs/zerocheck-protocol.md`](docs/zerocheck-protocol.md) — the joint claim, the three batchings, the round schedule, the point accounting.
 - **Testing:** [`docs/testing.md`](docs/testing.md) — running tests, `size` vs `timeout` conventions, fixtures.
 - **SP1 baseline:** [`docs/sp1-baseline.md`](docs/sp1-baseline.md) — reproducible SP1-vs-sp1-zorch per-stage wall-clock comparison (`shard_prover:verify_prove_shard` + SP1 `sp1_shard_prover`).
 - **Current work:** [fractalyze/zorch#37](https://github.com/fractalyze/zorch/issues/37) — bootstrap + SMCS on zorch merkle blocks.
