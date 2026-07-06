@@ -170,6 +170,7 @@ py_library(
         "@zorch//zorch:transcript",
         "@zorch//zorch/coding:reed_solomon",
         "@zorch//zorch/pcs/basefold",
+        "@zorch//zorch/pcs/jagged:open",
         "@zorch//zorch/poly",
         "@zorch//zorch/utils:bits",
         requirement("jax"),

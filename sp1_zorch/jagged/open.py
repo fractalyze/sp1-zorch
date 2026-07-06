@@ -47,6 +47,9 @@ from sp1_zorch.commit.smcs import SingleMatrixCommitmentScheme
 from sp1_zorch.commit.trace_commit import committed_codeword
 from zorch.coding.reed_solomon import BitReversedReedSolomon
 from zorch.pcs.basefold.batching import batch_staggered, partial_lagrange
+
+# A registered pytree — the proof must cross prove_shard's stage-level @jit.
+from zorch.pcs.jagged.open import StackedOpenProof
 from zorch.poly.multilinear import eval_mle, mle_fold
 from zorch.transcript import GrindingTranscript, sample_challenge
 from zorch.utils.bits import log2_ceil_usize, log2_strict_usize
@@ -112,41 +115,6 @@ def sample_query_positions(
     transcript, raw = transcript.sample(num_queries)
     mask = jnp.uint32((1 << log2_strict_usize(block_len)) - 1)
     return transcript, (raw.astype(jnp.uint32) & mask).astype(jnp.int32)
-
-
-@dataclass(frozen=True)
-class StackedOpenProof:
-    """The stacked BaseFold open proof, byte-matched field-for-field against the
-    SP1 reference dump.
-
-    component_commitments: per round, the shape-bound SMCS root of the
-        committed codeword — SP1's ``merkle_tree_commitments``, the roots the
-        verifier checks the component openings against; the structure rebind
-        ties each to the statement's (preamble-observed) commitment.
-    fri_raw_roots / fri_commitments: per fold layer, the raw Merkle root and the
-        SP1 separator-bound root (the transcript observes the bound one).
-    univariate_messages: per fold round, the ``(s(0), s(1))`` sumcheck message
-        pair, ``(num_vars, 2)``. The transcript observes them and the shard
-        wire serializes them, so the open retains them rather than making the
-        serializer replay the fold.
-    final_poly: the folded codeword's first element (the residual constant).
-    pow_witness: the FRI query-phase proof-of-work witness.
-    batch_evals: per round, the ``(K,)`` column evaluations at ``stack_point``.
-    component_openings: per round, the codeword rows + paths at the query
-        positions.
-    query_openings: per fold layer, the pair-leaf rows + paths at the halved
-        query positions.
-    """
-
-    component_commitments: list[Array]
-    fri_raw_roots: Array
-    fri_commitments: Array
-    univariate_messages: Array
-    final_poly: Array
-    pow_witness: Array
-    batch_evals: list[Array]
-    component_openings: list[Opening]
-    query_openings: list[Opening]
 
 
 def stacked_basefold_open(
