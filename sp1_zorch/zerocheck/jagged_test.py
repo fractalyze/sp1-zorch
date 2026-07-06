@@ -32,12 +32,12 @@ from zk_dtypes import koalabearx4_mont as EF
 
 from zorch.poly.eq import expand_eq_to_hypercube
 from zorch.poly.univariate import compute_inv_vandermonde, eval_coeffs
+from zorch.sumcheck.prover import zero_extend
 from zorch.testkit.transcript import cheap_transcript
 from zorch.transcript import sample_challenge
 
 from sp1_zorch.zerocheck.jagged import (
     DEGREE,
-    _zero_extend_cols,
     prove_jagged_zerocheck,
 )
 from sp1_zorch.zerocheck.prover import rlc_coeffs
@@ -117,7 +117,7 @@ def _naive_round_polys(
     one = jnp.ones((), KB)
     inv_vand = compute_inv_vandermonde(DEGREE, KB)
 
-    cols = [_zero_extend_cols(t, width) for t in traces]
+    cols = [zero_extend(t, width) for t in traces]
     geqs = [
         jnp.concatenate([jnp.zeros(nr, dtype=KB), jnp.ones(width - nr, dtype=KB)])
         for nr in num_reals
@@ -157,7 +157,7 @@ def _gkr_inputs(beta, traces, zeta):
         pows.append(pows[-1] * beta)
     gkr = jnp.stack(pows)
     e = expand_eq_to_hypercube(zeta, jnp.ones((), KB))
-    claims = [gkr @ (_zero_extend_cols(t, width) @ e) for t in traces]
+    claims = [gkr @ (zero_extend(t, width) @ e) for t in traces]
     return [gkr] * len(traces), claims
 
 
@@ -420,7 +420,7 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
         # traces at the transcript's challenges.
         width = 1 << num_vars
         for i in range(nchips):
-            v = _zero_extend_cols(traces[i], width)
+            v = zero_extend(traces[i], width)
             for r in range(num_vars):
                 v = _lift(v, msgs.challenge[r])
             if finals[i].shape[1] > 0:
