@@ -34,8 +34,7 @@ drops one variable) rather than being recomputed per round. The per-chip loop
 stays Python-unrolled inside the body — chips differ in fixed width — so the
 graph is O(num_chips), never O(num_chips * num_vars). The round-poly trick
 below is SP1's rather than the product summand the ``zorch.sumcheck`` marker
-carries. The ``num_real``-bounded GPU fusion for equal-height chips stays in
-``round.py``.
+carries.
 
 Round polys mirror SP1's ``sum_as_poly_in_last_variable``: the degree-4 poly
 is pinned by evaluations at t in {0, 2, 4}, the claim identity
@@ -44,7 +43,7 @@ factor scaling every term — the Gruen compression, assembled by
 ``zorch.sumcheck.gruen`` (this engine's extra points are {2, 4}; the {0, 2, 4}
 choice is SP1's). Polys travel in COEFFICIENT form (lambda-RLC across chips)
 through the transcript — SP1's encoding, intentionally different from the
-equal-height path's evaluation-form messages.
+evaluation-form messages of zorch's dense sumcheck driver.
 
 Variable order: zorch's ``expand_eq_to_hypercube`` indexes the hypercube with
 ``zeta[n-1]`` at the LSB, so the even/odd row pairing fixes ``zeta[n-1-round]``
