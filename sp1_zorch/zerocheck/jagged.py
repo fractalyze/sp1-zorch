@@ -364,6 +364,7 @@ def prove_jagged_zerocheck(
     transcript: Transcript,
     *,
     claims: Sequence[Array],
+    width_caps: Sequence[int] | None = None,
 ) -> tuple[list[Array], Transcript, RoundMsg]:
     """Run the SP1-schedule jagged multi-chip zerocheck sumcheck.
 
@@ -381,6 +382,16 @@ def prove_jagged_zerocheck(
     ``claims[c]`` — chip ``c``'s GKR opening at ``zeta`` — seeds its
     ``p(1) = claim - p(0)`` identity; the matching column term rides
     ``summand.beta``.
+
+    ``width_caps`` (optional) pins chip ``c``'s fixed buffer width to
+    ``width_caps[c]`` instead of the default exact pin
+    ``((num_reals[c] + 3) // 4) * 4``. Passing the same caps across shards
+    keeps every buffer shape shard-invariant, so proves whose shapes differ
+    only in live row counts share one compile (the cap-class contract of
+    sp1-zorch#230). Byte-transparent: a cap only adds dead zero width past
+    the exact pin — live rows, the vgeq bound, and the eq prefix terms are
+    untouched. Each cap must be a multiple of 4, at least the chip's exact
+    pin, and at most ``2**len(zeta)``.
 
     Returns the final per-chip ``(num_cols_c, h)`` folded traces
     (``h in {0, 2}``; position 0 holds the column's evaluation at the
@@ -456,6 +467,26 @@ def prove_jagged_zerocheck(
     # folds against an extension-field challenge, which a fixed-shape carry
     # forbids (the embedding is exact, so the round polys are unchanged).
     widths = [((nr + 3) // 4) * 4 for nr in nrs]
+    if width_caps is not None:
+        if len(width_caps) != num_chips:
+            raise ValueError(
+                f"width_caps must give one cap per chip: got {len(width_caps)} "
+                f"for {num_chips} chips"
+            )
+        for i, (cap, pin) in enumerate(zip(width_caps, widths, strict=True)):
+            cap = int(cap)
+            if cap % 4:
+                raise ValueError(f"width_caps[{i}] must be a multiple of 4, got {cap}")
+            if cap < pin:
+                raise ValueError(
+                    f"width_caps[{i}] = {cap} is below its exact pin {pin} "
+                    f"(num_reals[{i}] = {nrs[i]})"
+                )
+            if cap > width:
+                raise ValueError(
+                    f"width_caps[{i}] = {cap} exceeds the virtual row space {width}"
+                )
+        widths = [int(cap) for cap in width_caps]
     bufs = [zero_extend(traces[i], widths[i]).astype(ef) for i in range(num_chips)]
     # int32 threshold from the start: as a scan carry it must keep the same
     # leaf type fix_last_variable produces (it folds to a traced int32).

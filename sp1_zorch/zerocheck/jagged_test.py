@@ -239,6 +239,86 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
         # chip's pair width.
         self._check_against_reference(num_vars=4, num_reals=[9, 16, 2, 0, 5])
 
+    def test_width_caps_are_byte_transparent(self) -> None:
+        # A shard-invariant width cap only adds dead zero width past the
+        # exact pin: the live rows, the vgeq bound, and the summand terms
+        # are untouched, so round polys and folded finals must be
+        # byte-identical to the exact-width prove. Caps stress all three
+        # regimes: full-hypercube width (chip 0), a cap on a zero-height
+        # chip (chip 1), and a non-pow2 cap (chip 2).
+        num_vars, num_reals = 4, [5, 0, 3]
+        nchips = len(num_reals)
+        traces = [_witness_trace(i, nr) for i, nr in enumerate(num_reals)]
+        alphas = [rlc_coeffs(_rand(99 + i, ()), _K) for i in range(nchips)]
+        lambdas = _rand(55, (nchips,))
+        zeta = _rand(7, (num_vars,))
+        challenges = [_rand(1000 + r, ()) for r in range(num_vars)]
+        beta = _rand(77, ())
+        _, claims = _gkr_inputs(beta, traces, zeta)
+
+        def run(width_caps):  # type: ignore[no-untyped-def]
+            return prove_jagged_zerocheck(
+                JaggedZerocheckSummand(
+                    eval_fns=[_eval_fn] * nchips,
+                    alphas=alphas,
+                    lambdas=lambdas,
+                    beta=beta,
+                ),
+                traces,
+                num_reals,
+                zeta,
+                _ScriptedTranscript.replaying(challenges),
+                claims=claims,
+                width_caps=width_caps,
+            )
+
+        finals, _, msgs = run(None)
+        finals_capped, _, msgs_capped = run([16, 8, 12])
+
+        self.assertTrue(bool(jnp.all(msgs.round_poly == msgs_capped.round_poly)))
+        self.assertTrue(bool(jnp.all(msgs.challenge == msgs_capped.challenge)))
+        for i in range(nchips):
+            # A capped zero-height chip widens its (num_cols, 0) final to
+            # (num_cols, 2) dead zeros; values are unchanged either way.
+            self.assertTrue(
+                bool(jnp.all(zero_extend(finals[i], 2) == finals_capped[i])),
+                msg=f"chip {i}",
+            )
+
+    def test_width_caps_reject_underruns_and_misalignment(self) -> None:
+        num_vars, num_reals = 3, [5, 3]
+        traces = [_witness_trace(i, nr) for i, nr in enumerate(num_reals)]
+        alphas = [rlc_coeffs(_rand(99 + i, ()), _K) for i in range(2)]
+        beta = _rand(77, ())
+        _, claims = _gkr_inputs(beta, traces, _rand(7, (num_vars,)))
+
+        def run(width_caps):  # type: ignore[no-untyped-def]
+            return prove_jagged_zerocheck(
+                JaggedZerocheckSummand(
+                    eval_fns=[_eval_fn] * 2,
+                    alphas=alphas,
+                    lambdas=_rand(55, (2,)),
+                    beta=beta,
+                ),
+                traces,
+                num_reals,
+                _rand(7, (num_vars,)),
+                _ScriptedTranscript.replaying(
+                    [_rand(1000 + r, ()) for r in range(num_vars)]
+                ),
+                claims=claims,
+                width_caps=width_caps,
+            )
+
+        with self.assertRaisesRegex(ValueError, "one cap per chip"):
+            run([8])
+        with self.assertRaisesRegex(ValueError, "multiple of 4"):
+            run([10, 4])
+        with self.assertRaisesRegex(ValueError, "below its exact pin"):
+            run([4, 4])
+        with self.assertRaisesRegex(ValueError, "virtual row space"):
+            run([16, 4])
+
     def _constraint_markers(self, num_vars: int, num_reals):
         nchips = len(num_reals)
         traces = [_witness_trace(i, nr) for i, nr in enumerate(num_reals)]
