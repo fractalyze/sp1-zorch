@@ -75,12 +75,6 @@ def _load_region(name: str, dense: jnp.ndarray) -> JaggedRegion:
     )
 
 
-def _chip_eval_fn(chip, public_values):
-    """Bind the padded public-values vector; ``eval_constraints`` ignores it
-    for constraints that declare no ``pv_arg``."""
-    return lambda trace: chip.eval_constraints(trace, public_values)
-
-
 @partial(
     jax.tree_util.register_dataclass, data_fields=["challenges", "pos"], meta_fields=[]
 )
@@ -155,14 +149,17 @@ class JaggedZerocheckByteMatchTest(absltest.TestCase):
                 jnp.zeros((PROOF_MAX_NUM_PVS - public_values.shape[0],), dtype=BF),
             ]
         )
-        eval_fns = [_chip_eval_fn(c, pv) for c in chips]
+        # The chip's 2-ary ``eval_constraints`` is the eval_fn; the padded
+        # statement is threaded to the summand as a declared operand, not
+        # closed over.
+        eval_fns = [c.eval_constraints for c in chips]
 
         # Constraint-RLC vector per chip: descending powers of the dumped
         # batching challenge, one per constraint. The count comes from a
         # one-row probe — a chip's constraint functions may emit several
         # columns each, so it is not readable off the manifest.
         alphas = [
-            rlc_coeffs(alpha, fn(jnp.zeros((1, t.shape[0]), dtype=EF)).shape[-1])
+            rlc_coeffs(alpha, fn(jnp.zeros((1, t.shape[0]), dtype=EF), pv).shape[-1])
             for fn, t in zip(eval_fns, traces)
         ]
 
@@ -187,7 +184,11 @@ class JaggedZerocheckByteMatchTest(absltest.TestCase):
         # ``jagged_point`` order); un-reverse to feed rounds in order.
         cls.finals, _, cls.msgs = prove_jagged_zerocheck(
             JaggedZerocheckSummand(
-                eval_fns=eval_fns, alphas=alphas, lambdas=lambdas, beta=beta
+                eval_fns=eval_fns,
+                alphas=alphas,
+                lambdas=lambdas,
+                beta=beta,
+                public_values=pv,
             ),
             traces,
             num_reals,

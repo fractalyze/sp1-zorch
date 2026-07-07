@@ -343,13 +343,12 @@ class ShardZerocheckRound(Round):
     wire's ShardOpenedValues.
 
     With ``jit=True`` the stage body runs under one cached outer ``@jit``.
-    Eagerly, every prove rebuilds the per-chip ``bind_pv`` constraint closures
-    and the sumcheck engine's ``lax.scan`` bodies, and JAX's compile cache
-    (keyed on function identity) misses -- every warm prove re-pays the stage
-    compile. Byte-identical either way. ``jit=False`` remains for constraint
-    circuits that read ``public_values``: the ``bind_pv`` closure would carry
-    the traced pv into the ``zorch.constraint_eval`` composite, and
-    ``lax.composite`` rejects closure tracers."""
+    Eagerly, every prove rebuilds the sumcheck engine's ``lax.scan`` bodies,
+    and JAX's compile cache (keyed on function identity) misses -- every warm
+    prove re-pays the stage compile. Byte-identical either way. ``jit=False``
+    stays as a debugging aid; pv-reading constraint circuits are legal under
+    ``jit=True`` because the statement rides ``constraint_eval``'s declared
+    ``aux_operands`` operand rather than a closure the composite would reject."""
 
     def __init__(
         self,

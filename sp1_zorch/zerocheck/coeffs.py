@@ -51,13 +51,22 @@ def gkr_powers(beta: Array, num_cols: int) -> Array:
 
 
 def constraint_rlc(
-    eval_fn: Callable[[Array], Array],
+    eval_fn: Callable[[Array, Array], Array],
     rows: Array,
     alpha: Array,
     num_constraints: int,
+    public_values: Array,
 ) -> Array:
     """Fold a chip's K constraints over `rows` under `alpha` as one
-    `zorch.constraint_eval`. `eval_fn(rows)` produces `[..., K]`; the result
-    drops the K axis. Equivalent to ``eval_fn(rows) @ rlc_coeffs(alpha, K)``,
-    but marked so the recognizing emitter lowers it to one kernel."""
-    return constraint_eval(eval_fn, rows, rlc_coeffs(alpha, num_constraints))
+    `zorch.constraint_eval`. `eval_fn(rows, public_values)` produces `[..., K]`;
+    the result drops the K axis. Equivalent to
+    ``eval_fn(rows, public_values) @ rlc_coeffs(alpha, K)``, but marked so the
+    recognizing emitter lowers it to one kernel. `public_values` rides as a
+    declared `aux_operands` operand so the 2-ary eval reads the statement
+    without closing over it."""
+    return constraint_eval(
+        eval_fn,
+        rows,
+        rlc_coeffs(alpha, num_constraints),
+        aux_operands=(public_values,),
+    )

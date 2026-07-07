@@ -157,16 +157,22 @@ class ProveZerocheckTest(absltest.TestCase):
             axis=0,
         )
         traces = [alpha_trace, lookup_main.T]
+        # The chips' 2-ary ``eval_constraints`` are the eval_fns; the statement
+        # is threaded to the summand as a declared operand, not closed over.
         eval_fns = [
-            lambda tr: chips["alpha"].eval_constraints(tr, public_values),
-            lambda tr: chips["lookup"].eval_constraints(tr, public_values),
+            chips["alpha"].eval_constraints,
+            chips["lookup"].eval_constraints,
         ]
         alphas = [rlc_coeffs(alpha, 2), rlc_coeffs(alpha, 0)]
         lambdas = rlc_coeffs(lambda_, 2)
 
         want_finals, t, want_msgs = prove_jagged_zerocheck(
             JaggedZerocheckSummand(
-                eval_fns=eval_fns, alphas=alphas, lambdas=lambdas, beta=beta
+                eval_fns=eval_fns,
+                alphas=alphas,
+                lambdas=lambdas,
+                beta=beta,
+                public_values=public_values,
             ),
             traces,
             [5, 3],

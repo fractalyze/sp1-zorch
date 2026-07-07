@@ -47,7 +47,6 @@ from sp1_zorch.zerocheck.coeffs import constraint_rlc, rlc_coeffs
 from sp1_zorch.zerocheck.prover import (
     OpenedValuesRound,
     ZerocheckProof,
-    bind_pv,
     gkr_opening_claims,
     probe_num_constraints,
     sample_stage_challenges,
@@ -141,8 +140,10 @@ def verify_shard_zerocheck(
     terms = []
     for name, opened_row in zip(chip_names, opened_rows):
         geq = geq_by_height[chip_heights[name]]
-        eval_fn = bind_pv(chips[name], public_values)
-        num_constraints = probe_num_constraints(eval_fn, opened_row.shape[0], ef)
+        eval_fn = chips[name].eval_constraints
+        num_constraints = probe_num_constraints(
+            eval_fn, opened_row.shape[0], ef, public_values
+        )
         if num_constraints:
             # Row 0 is the opening, row 1 a zero row: one batched fold yields
             # the opened evaluation and the padded-row adjustment together
@@ -155,6 +156,7 @@ def verify_shard_zerocheck(
                 jnp.stack([opened_row, jnp.zeros_like(opened_row)]),
                 batching,
                 num_constraints,
+                public_values,
             )
             constraint_term, padded_row_adj = both[0], both[1]
         else:
