@@ -180,7 +180,7 @@ class JaggedZerocheckSummand:
     never folded — a chip index is a batch axis, not a sumcheck variable,
     so the reduction is single-phase.
 
-    Evaluation points: ``{0, 2, 4}`` are computed (`chip_evals`); t = 1 and
+    Evaluation points: ``{0, 2, 4}`` are computed (`chip_raw_evals`); t = 1 and
     the bound eq factor's root come free (the claim identity and the Gruen
     zero, assembled by the driver through ``zorch.sumcheck.gruen`` — this
     class satisfies its ``GruenSummand`` seam: ``degree - 2`` extra points
@@ -189,7 +189,7 @@ class JaggedZerocheckSummand:
     never the column term, which does not vanish there. The
     ``C(0_row) * geq`` subtraction is this summand's padding correction
     (every jagged summand has one; LogUp's dual is the neutral-fraction
-    virtual mass in ``zorch.logup_gkr.jagged_prover``): rows past a chip's
+    virtual mass, ``zorch.logup_gkr.prover.LogupSummand.correct``): rows past a chip's
     real height read as the MLE's canonical zero-extension, whose constant
     constraint value would otherwise leak into the sum. SP1's trace-internal
     padding is a different thing and needs no correction — those rows sit
@@ -208,7 +208,7 @@ class JaggedZerocheckSummand:
     beta: Array
     # Each chip's term strategy — constraint+column, or column-only for a
     # lookup-only chip — chosen once here off its alpha's static length, so
-    # `chip_evals` runs the same code for every chip.
+    # `chip_raw_evals` runs the same code for every chip.
     _term_fns: tuple[_TermFn, ...] = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -233,39 +233,37 @@ class JaggedZerocheckSummand:
         {0, 2, 4} choice is SP1's ``sum_as_poly_in_last_variable``."""
         return (jnp.array(2, dtype), jnp.array(4, dtype))
 
-    def chip_evals(
+    def chip_raw_evals(
         self,
         i: int,
         p0: Array,
         diff: Array,
         eq: Array,
         gkr_powers: Array,
-        padded_row_adj: Array,
-        last: Array,
-        eq_adj: Array,
         nr_live: Array,
-        vgeq: VirtualGeq,
         *,
         is_zero: bool,
         is_round0: Array,
     ) -> tuple[Array, Array, Array]:
-        """Chip ``i``'s computed ``(y0, y2, y4)`` round-poly evaluations —
-        SP1's ``sum_as_poly_in_last_variable``: inner sums over the chip's
-        fixed pair width with rows past the live bound masked to zero
-        (byte-equal to SP1's truncated sums), and the virtual-geq padded-row
-        correction per t-point. ``eq`` is the round's eq table sliced to this
-        chip's pair width; ``gkr_powers``/``padded_row_adj`` are the driver's
-        per-chip expansions of ``beta`` and the ``C(0_row)`` probe.
-        ``nr_live`` is the chip's live height this round (a traced ``int32``
-        — the live-width bound and the eq gather index).
+        """Chip ``i``'s uncorrected inner sums at the computed points
+        {0, 2, 4} — the GruenSummand evals slot, SP1's
+        ``sum_as_poly_in_last_variable``: sums over the chip's fixed pair
+        width with rows past the live bound masked to zero (byte-equal to
+        SP1's truncated sums). ``eq`` is the round's eq table sliced to this
+        chip's pair width; ``gkr_powers`` is the driver's per-chip expansion
+        of ``beta``; ``nr_live`` is the chip's live height this round (a
+        traced ``int32`` — the live-width bound). The t-points run
+        separately (not batched) exactly so round 0's t = 0 constraint drop
+        fits: zeroing ``alpha`` (``sum_k C_k*0 = 0``) drops the constraint
+        term while the alpha-independent column term stays.
 
         ``is_zero`` is STATIC (``ceil(nr/2)`` fixes any ``nr >= 1``, so only
-        a chip that starts empty is ever empty): its width-0 buffer and zero
-        adjustment collapse every t-point to zero, leaving the claim identity
-        alone — without running ``constraint_eval`` on an empty trace."""
+        a chip that starts empty is ever empty): its width-0 buffer collapses
+        every t-point to zero without running ``constraint_eval`` on an
+        empty trace; `correct` short-circuits the same way."""
         alpha = self.alphas[i]
         term = self._term_fns[i]
-        ef = last.dtype
+        ef = p0.dtype
         zero = jnp.zeros((), ef)
         two = jnp.array(2, ef)
         four = jnp.array(4, ef)
@@ -279,10 +277,6 @@ class JaggedZerocheckSummand:
         # t-points; t = 1 and the eq root come free (claim identity / Gruen zero).
         t_traces = (p0, p0 + two * diff, p0 + four * diff)
 
-        # The t-points run separately (not batched) so the t-point-specific
-        # round-0 t=0 constraint drop can be applied by zeroing `alpha`
-        # (`sum_k C_k*0 = 0`), leaving the alpha-independent column term
-        # intact.
         def inner(rows: Array, *, mask_round0: bool) -> Array:
             a = (
                 jnp.where(is_round0, jnp.zeros_like(alpha), alpha)
@@ -291,32 +285,59 @@ class JaggedZerocheckSummand:
             )
             return term(rows.T, a, eq, gkr_powers, num_non_padded)
 
-        inner_0 = inner(t_traces[0], mask_round0=True)
-        inner_2 = inner(t_traces[1], mask_round0=False)
-        inner_4 = inner(t_traces[2], mask_round0=False)
+        return (
+            inner(t_traces[0], mask_round0=True),
+            inner(t_traces[1], mask_round0=False),
+            inner(t_traces[2], mask_round0=False),
+        )
 
-        # A live chip keeps nr_live >= 1, so threshold_half is in [0, eq.shape[0]):
-        # an in-bounds dynamic gather, the same element a static index would read.
-        threshold_half = num_non_padded - 1
+    def correct(
+        self,
+        raws: tuple[Array, Array, Array],
+        eq: Array,
+        last: Array,
+        eq_adj: Array,
+        padded_row_adj: Array,
+        nr_live: Array,
+        vgeq: VirtualGeq,
+        *,
+        is_zero: bool,
+    ) -> tuple[Array, Array, Array]:
+        """The padding correction — the GruenSummand correction slot
+        (LogUp's dual is `LogupSummand.correct`, the neutral-fraction
+        virtual mass): scale each computed point by the bound eq factor and
+        subtract the zero-extension leak — rows past the live prefix read
+        as the MLE's canonical zero-extension, whose constant constraint
+        value (``padded_row_adj = C_alpha(0_row)``, the driver's per-chip
+        probe) enters the inner sum; the virtual geq's closed form removes
+        that mass without materializing the 2**num_vars indicator.
+
+        A live chip keeps ``nr_live >= 1``, so the straddle index is in
+        ``[0, eq.shape[0])`` — an in-bounds dynamic gather, the same
+        element a static index would read. An ``is_zero`` chip
+        short-circuits with its `chip_raw_evals`: zero evals and zero
+        adjustment leave the claim identity alone."""
+        ef = last.dtype
+        zero = jnp.zeros((), ef)
+        two = jnp.array(2, ef)
+        four = jnp.array(4, ef)
+
+        if is_zero:
+            return zero, zero, zero
+
+        threshold_half = (nr_live + 1) // 2 - 1
         msb_lagrange = eq_adj * eq[threshold_half]
 
-        def correct(y: Array, t_val: Array) -> Array:
-            # The padding correction (the jagged summands' shared concept —
-            # LogUp's dual is the neutral-fraction virtual mass in
-            # zorch.logup_gkr.jagged_prover): scale by the bound eq factor and
-            # subtract the zero-extension leak — rows past the live prefix
-            # read as the MLE's canonical zero-extension, whose constant
-            # constraint value (padded_row_adj = C_alpha(0_row)) enters the
-            # inner sum; the virtual geq's closed form removes that mass
-            # without materializing the 2**num_vars indicator.
+        def one_point(y: Array, t_val: Array) -> Array:
             eq_last = eq_factor(t_val, last)
             vg = vgeq.fix_last_variable(t_val).eval_at(threshold_half)
             return eq_last * (y * eq_adj - padded_row_adj * vg * msb_lagrange)
 
-        y_0 = correct(inner_0, zero)
-        y_2 = correct(inner_2, two)
-        y_4 = correct(inner_4, four)
-        return y_0, y_2, y_4
+        return (
+            one_point(raws[0], zero),
+            one_point(raws[1], two),
+            one_point(raws[2], four),
+        )
 
     def combine_chips(self, polys: Array) -> Array:
         """The cross-chip lambda-RLC of the per-chip coefficient polys —
@@ -446,7 +467,7 @@ def prove_jagged_zerocheck(
     gkr_all = gkr_powers(beta, max_cols) if max_cols else jnp.zeros(0, ef)
     chip_gkr = [gkr_all[: t.shape[0]] for t in traces]
     eq_adj = one
-    # Only a chip that starts empty is ever empty (see `chip_evals`); the
+    # Only a chip that starts empty is ever empty (see `chip_raw_evals`); the
     # rest carry their live height as a traced int32 round carry. Zero-height
     # chips are production, not defensive: an SP1 shard carries its shape's
     # FULL chip set, and chips the program never exercised ship zero rows
@@ -491,9 +512,11 @@ def prove_jagged_zerocheck(
         bufs, vgeqs, chip_claims, eq_adj, nrs_live, eq_buf, transcript = carry
         last, interp, is_round0 = xs
 
-        # Only constraint_eval (inside `chip_evals`) is shape-divergent, so
-        # the chip loop runs it unrolled and collects the (y0, y2, y4)
-        # round-poly evaluations as scalars.
+        # Only constraint_eval (inside `chip_raw_evals`) is shape-divergent,
+        # so the chip loop runs the summand slots unrolled — evaluate at the
+        # computed points, then the padding correction (the same sequence as
+        # LogUp's `_round_poly`; `GruenSummand` names the slots) — and
+        # collects the (y0, y2, y4) evaluations as scalars.
         y0s, y2s, y4s = [], [], []
         p0s = []
         diffs = []
@@ -502,19 +525,26 @@ def prove_jagged_zerocheck(
             diff = p1 - p0
             p0s.append(p0)
             diffs.append(diff)
-            y_0, y_2, y_4 = summand.chip_evals(
+            eq = eq_buf[: widths[i] // 2]
+            raws = summand.chip_raw_evals(
                 i,
                 p0,
                 diff,
-                eq_buf[: widths[i] // 2],
+                eq,
                 chip_gkr[i],
-                adjs[i],
+                nrs_live[i],
+                is_zero=is_zero_chip[i],
+                is_round0=is_round0,
+            )
+            y_0, y_2, y_4 = summand.correct(
+                raws,
+                eq,
                 last,
                 eq_adj,
+                adjs[i],
                 nrs_live[i],
                 vgeqs[i],
                 is_zero=is_zero_chip[i],
-                is_round0=is_round0,
             )
             y0s.append(y_0)
             y2s.append(y_2)
