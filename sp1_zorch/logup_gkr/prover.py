@@ -402,8 +402,14 @@ def prove_logup_gkr_body(
         eq_row=1 << num_row_variables,
         interaction=max(4, len(first.row_counts)),
     )
+    # Whole-layer jit zone: one executable per layer. The per-round eager
+    # path pays a fixed host cost per executable execution, which dominated
+    # the warm GKR wall while the GPU sat idle; under the zone XLA fuses the
+    # inter-round glue and the host dispatches once per layer. The caps
+    # pre-lay in zorch's `_jagged_round_via_zone` keys the compile per
+    # nrv class, so shards share every layer program.
     chain = ProveChain(
-        JaggedGkrLayerRound(layers.pop(), EF_LIMBS, caps=caps)
+        JaggedGkrLayerRound(layers.pop(), EF_LIMBS, jit=True, caps=caps)
         for _ in range(len(layers))
     )
     (_, _, eval_point), transcript, round_proofs = chain(carry, transcript)
