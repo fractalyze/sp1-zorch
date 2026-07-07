@@ -86,15 +86,10 @@ an ELF + stdin) the tool uses `CpuShardProver`: useful as the injection-validity
 | zerocheck | **156.9 ms** | **218 ms** | **1.39×** | byte-match |
 | jagged eval (PCS open) | 41.1 ms | | | byte-match |
 
-The SP1 GPU column is from `no-exec-gpu-dump --gpu` above (warm, byte-matched).
-The sp1-zorch zerocheck is the eq-fold-OFF baseline via
-`//sp1_zorch/zerocheck:bench_sp1_zerocheck` (218 ms wall / 166.6 ms
-`cuda_gpu_kern_sum`); fill the other sp1-zorch rows from a paired warm
-`verify_prove_shard` run. The PCS opening proof IS in scope, so every stage is on
-equal footing — same shard, same per-stage scope, byte-identical output, and now
-**same hardware (GPU both sides)**. The 1.39× zerocheck gap is real and on-GPU:
-sp1-zorch runs ~41 de-fused kernels/round vs SP1's one fused multi-block
-`jaggedConstraintPolyEval`.
+The two wall-clock columns are warm, byte-matched runs of the two tools above.
+The 1.39× zerocheck gap is on-GPU, not dispatch — sp1-zorch runs ~41 de-fused
+kernels/round vs SP1's one fused multi-block `jaggedConstraintPolyEval`
+(166.6 ms GPU kernel-time sum behind the 218 ms wall).
 
 ## Measure shipped code
 
