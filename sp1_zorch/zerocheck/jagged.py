@@ -43,15 +43,18 @@ Round loop is one ``jax.lax.scan``, so the traced graph is O(1) in
 ``num_vars`` (one round body, not ``num_vars`` copies): the fixed-width
 buffers make every per-chip operand shape round-invariant, so the round carry
 holds a fixed shape and each chip's constraint circuit compiles to ONE kernel
-the scan reuses across all rounds. The carry is ``(buffers, virtual-geqs,
-chip claims, eq adjustment, live heights, eq table, transcript)``; the live
-heights ride as traced ``int32`` (the ``constraint_eval`` live-width bound and
-the eq gather index), and the eq table folds in-carry (summing adjacent pairs
-drops one variable) rather than being recomputed per round. The per-chip loop
-stays Python-unrolled inside the body — chips differ in fixed width — so the
-graph is O(num_chips), never O(num_chips * num_vars). The round-poly trick
-below is SP1's rather than the product summand the ``zorch.sumcheck`` marker
-carries.
+the scan reuses across all rounds. The carry is ``(dense segment buffer,
+virtual-geqs, chip claims, eq adjustment, live heights, eq table,
+transcript)``; the per-chip fixed-width buffers ride stacked in ONE dense
+segment buffer (the jagged dense layout — the fused round composite's
+operand shape, fractalyze/zorch#394), each chip's ops reading a static
+slice-and-reshape view; the live heights ride as traced ``int32`` (the
+``constraint_eval`` live-width bound and the eq gather index), and the eq
+table folds in-carry (summing adjacent pairs drops one variable) rather than
+being recomputed per round. The per-chip loop stays Python-unrolled inside
+the body — chips differ in fixed width — so the graph is O(num_chips), never
+O(num_chips * num_vars). The round-poly trick below is SP1's rather than the
+product summand the ``zorch.sumcheck`` marker carries.
 
 Round polys mirror SP1's ``sum_as_poly_in_last_variable``: the degree-4 poly
 is pinned by evaluations at t in {0, 2, 4}, the claim identity
@@ -514,6 +517,26 @@ def prove_jagged_zerocheck(
         # All heights are static here (traced entries required caps above).
         widths = [((int(nr) + 3) // 4) * 4 for nr in num_reals]
     bufs = [zero_extend(traces[i], widths[i]).astype(ef) for i in range(num_chips)]
+    # The buffers ride the carry as ONE dense-stacked segment buffer — the
+    # jagged dense layout (chip segments concatenated, each column's rows
+    # contiguous), which is the round composite's operand shape
+    # (fractalyze/zorch#394: dense segments + traced live heights, sub-issue
+    # #242): the carry's static unit is the total stacked area, not a
+    # per-chip tensor list. Segment offsets are host constants derived from
+    # the static capacities; each chip's ops below read a static
+    # slice-and-reshape view. Widths are multiples of 4, so the stride-2
+    # pair fold never crosses a column run or a segment boundary, and a
+    # fold + re-extend of every view writes back to the same static layout.
+    seg_shapes = [(traces[i].shape[0], widths[i]) for i in range(num_chips)]
+    seg_starts = [0]
+    for nc, w in seg_shapes:
+        seg_starts.append(seg_starts[-1] + nc * w)
+
+    def seg_view(dense: Array, i: int) -> Array:
+        nc, w = seg_shapes[i]
+        return dense[seg_starts[i] : seg_starts[i] + nc * w].reshape(nc, w)
+
+    dense_buf = jnp.concatenate([b.reshape(-1) for b in bufs])
     # int32 threshold from the start: as a scan carry it must keep the same
     # leaf type fix_last_variable produces (it folds to a traced int32).
     vgeqs = [VirtualGeq(jnp.asarray(nr, jnp.int32), one, zero) for nr in num_reals]
@@ -568,7 +591,7 @@ def prove_jagged_zerocheck(
         return zero_extend(contract_hypercube_step(buf), eq_width)
 
     def round_step(carry, xs):
-        bufs, vgeqs, chip_claims, eq_adj, nrs_live, eq_buf, transcript = carry
+        dense_buf, vgeqs, chip_claims, eq_adj, nrs_live, eq_buf, transcript = carry
         last, interp, is_round0 = xs
 
         # Only constraint_eval (inside `chip_raw_evals`) is shape-divergent,
@@ -580,7 +603,7 @@ def prove_jagged_zerocheck(
         p0s = []
         diffs = []
         for i in range(num_chips):
-            p0, p1 = split_pairs(bufs[i])
+            p0, p1 = split_pairs(seg_view(dense_buf, i))
             diff = p1 - p0
             p0s.append(p0)
             diffs.append(diff)
@@ -626,13 +649,18 @@ def prove_jagged_zerocheck(
         transcript = transcript.observe(rlc)
         transcript, r = sample_challenge(transcript, ef, ef_limbs)
 
-        bufs = [zero_extend(p0s[i] + r * diffs[i], widths[i]) for i in range(num_chips)]
+        dense_buf = jnp.concatenate(
+            [
+                zero_extend(p0s[i] + r * diffs[i], widths[i]).reshape(-1)
+                for i in range(num_chips)
+            ]
+        )
         vgeqs = [vg.fix_last_variable(r) for vg in vgeqs]
         nrs_live = [(nr + 1) // 2 for nr in nrs_live]
         chip_claims, eq_adj = fold_round_scalars(polys, r, eq_adj, last)
 
         carry = (
-            bufs,
+            dense_buf,
             vgeqs,
             chip_claims,
             eq_adj,
@@ -642,11 +670,11 @@ def prove_jagged_zerocheck(
         )
         return carry, RoundMsg(round_poly=rlc, challenge=r)
 
-    init = (bufs, vgeqs, chip_claims, eq_adj, nrs_live, eq_buf, transcript)
-    (bufs, *_, transcript), msgs = lax.scan(
+    init = (dense_buf, vgeqs, chip_claims, eq_adj, nrs_live, eq_buf, transcript)
+    (dense_buf, *_, transcript), msgs = lax.scan(
         round_step, init, (last_xs, interp_xs, is_round0_xs)
     )
 
-    # The first pair of each buffer is the whole fold result; the rest of the
-    # fixed width is dead zeros.
-    return [b[:, :2] for b in bufs], transcript, msgs
+    # The first pair of each segment is the whole fold result; the rest of
+    # the fixed width is dead zeros.
+    return [seg_view(dense_buf, i)[:, :2] for i in range(num_chips)], transcript, msgs
