@@ -134,16 +134,6 @@ _MAX_STAGE = flags.DEFINE_integer(
     "stages' multi-minute compile for a cheaper iteration loop; golden checks "
     "for stages beyond N are skipped.",
 )
-_GKR_JIT = flags.DEFINE_bool(
-    "gkr_jit",
-    None,
-    "Stage the LogUp-GKR body under jax.jit (True) or run it eagerly (False). "
-    "Unset (default) size-gates on the shard width: rsp scale runs eager. Eager "
-    "lets zorch's per-round jax.export host-loop release each round's buffers, "
-    "bounding peak host RAM -- the fix for rsp shard17's >46 GB host-RAM OOM "
-    "(fractalyze/zorch#327, #362). The trace-commit stage keeps jit=True "
-    "regardless. Byte-identical.",
-)
 
 
 class _TimedRound(Round):
@@ -224,14 +214,11 @@ def main(argv) -> None:
         open_num_queries=_OPEN_NUM_QUERIES.value,
         open_pow_bits=_OPEN_POW_BITS.value,
         witness=witness,
-        # Required at rsp scale for the commit (see zorch.pcs.jagged.commit).
-        # The GKR stage keeps its `zorch.sumcheck` composite via the rolled
-        # marker, independent of this flag.
+        # Required at rsp scale for the commit (see zorch.pcs.jagged.commit); the
+        # GKR stage runs its shard-invariant whole-layer jit zone under the same
+        # flag -- the caps make it memory-bounded, so no size-gate (zorch#327,
+        # #362).
         jit=True,
-        # ...but run the LogUp-GKR stage eagerly when --gkr_jit=false, so its
-        # per-round jax.export host-loop bounds peak host RAM on wide shards
-        # (zorch#327, #362). Independent of the commit's jit above.
-        gkr_jit=_GKR_JIT.value,
     )
     # Slice to the first N stages (--max_stage) so the downstream stages' compile
     # is skipped for a cheaper loop. ProveChain collects one message per round,
