@@ -80,6 +80,38 @@ def sp1_name_to_rw(sp1_name: str) -> str:
     return SP1_NAME_TO_RW.get(sp1_name, sp1_name.lower())
 
 
+_RW_NAME_TO_SP1 = {rw: sp1 for sp1, rw in SP1_NAME_TO_RW.items()}
+
+
+def rw_name_to_sp1(rw_name: str) -> str:
+    """Inverse of :func:`sp1_name_to_rw`, for producer-named trace inputs
+    (a co-located riscv-witness trace-gen hands rw-named chip dicts, while
+    every downstream stage — chip_order, the preamble's Fiat-Shamir chip
+    metadata — speaks SP1 names).
+
+    Live bundles name chips with riscv-witness's per-zkVM registry prefix
+    (``"sp1_add"``); the prefix is namespacing, not part of the chip name,
+    so it is stripped before mapping.
+
+    Outside the irregular table the forward map is ``.lower()``, whose
+    inverse is well-defined only for single-token PascalCase names
+    (``"add"`` -> ``"Add"``). A snake_case name missing from the table is
+    therefore uninvertible — fail loudly rather than fabricate an SP1 name
+    the transcript preamble would absorb.
+    """
+    rw_name = rw_name.removeprefix("sp1_")
+    sp1 = _RW_NAME_TO_SP1.get(rw_name)
+    if sp1 is not None:
+        return sp1
+    if "_" in rw_name or not rw_name.islower():
+        raise ValueError(
+            f"unknown rw chip name {rw_name!r}: not in SP1_NAME_TO_RW and not "
+            "a single-token lowercase name, so its SP1 spelling cannot be "
+            "derived; add the pair to chip_loader.SP1_NAME_TO_RW"
+        )
+    return rw_name.capitalize()
+
+
 def rw_names_for_chips(sp1_names) -> list[str]:
     """Bulk :func:`sp1_name_to_rw`, order-preserving and de-duplicated."""
     return list(dict.fromkeys(sp1_name_to_rw(n) for n in sp1_names))

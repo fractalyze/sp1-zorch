@@ -62,11 +62,7 @@ def _parse_kv_lines(text: str, *, skip_unkeyed: bool = False) -> dict[str, str]:
         if not stripped:
             continue
         if "=" not in line:
-            if (
-                skip_unkeyed
-                and stripped.startswith("---")
-                and stripped.endswith("---")
-            ):
+            if skip_unkeyed and stripped.startswith("---") and stripped.endswith("---"):
                 continue
             raise ValueError(f"malformed dump line: {line!r}")
         key, value = line.split("=", 1)
@@ -185,39 +181,45 @@ def read_dump(fixture_dir: Path, trace_subdir: Optional[str] = None) -> DumpData
     )
 
 
-def load_fixture_shard(
-    fixture_dir: Path, trace_subdir: Optional[str] = None
-) -> ShardData:
-    """Build a :class:`ShardData` from a GPU-dump directory.
+def resolve_chips(traces: dict[str, Array], preprocessed: dict[str, Array]):
+    """rw chip definitions for SP1-named trace matrices.
 
     A chip gets its rw constraints only when the manifest width agrees with
-    the dumped trace (manifest ``num_cols`` counts prep + main columns);
-    otherwise it stays in the shard as a constraint-less stub so chip
-    indexing and trace layout survive the mismatch.
+    the trace (manifest ``num_cols`` counts prep + main columns); otherwise
+    it stays a constraint-less stub so chip indexing and trace layout survive
+    the mismatch. One definition for both trace sources — the dump loader and
+    the producer ingest — so the two paths cannot diverge on which chips
+    carry constraints.
     """
-    dump = read_dump(fixture_dir, trace_subdir)
-
-    # dump.traces already iterates name-sorted (the reader walks sorted
-    # .meta files), which fixes chip_order for every downstream stage.
-    rw_chips = load_sp1_chips(chip_names=rw_names_for_chips(dump.traces))
+    rw_chips = load_sp1_chips(chip_names=rw_names_for_chips(traces))
     chips = {}
-    for name, trace in dump.traces.items():
+    for name, trace in traces.items():
         main_width = trace.shape[1]
-        prep_width = (
-            dump.preprocessed[name].shape[1] if name in dump.preprocessed else 0
-        )
+        prep_width = preprocessed[name].shape[1] if name in preprocessed else 0
         rw_chip = rw_chips.get(sp1_name_to_rw(name))
         if rw_chip is not None and rw_chip.num_cols == main_width + prep_width:
             chips[name] = rw_chip
         else:
             chips[name] = make_chip_stub(name, main_width)
+    return chips
 
+
+def load_fixture_shard(
+    fixture_dir: Path, trace_subdir: Optional[str] = None
+) -> ShardData:
+    """Build a :class:`ShardData` from a GPU-dump directory; chips attach
+    per :func:`resolve_chips` (constraints on a manifest width match, stubs
+    otherwise)."""
+    dump = read_dump(fixture_dir, trace_subdir)
+
+    # dump.traces already iterates name-sorted (the reader walks sorted
+    # .meta files), which fixes chip_order for every downstream stage.
     return ShardData(
         vk=dump.vk,
         preprocessed_traces=dump.preprocessed,
         main_trace_data=MainTraceData(
             traces=Traces.from_arrays(dump.traces, dump.num_reals),
             public_values=dump.public_values,
-            chips=chips,
+            chips=resolve_chips(dump.traces, dump.preprocessed),
         ),
     )
