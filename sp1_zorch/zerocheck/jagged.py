@@ -191,7 +191,11 @@ class JaggedZerocheckSummand:
     (every jagged summand has one; LogUp's dual is the neutral-fraction
     virtual mass in ``zorch.logup_gkr.jagged_prover``): rows past a chip's
     real height read as the MLE's canonical zero-extension, whose constant
-    constraint value would otherwise leak into the sum."""
+    constraint value would otherwise leak into the sum. SP1's trace-internal
+    padding is a different thing and needs no correction — those rows sit
+    below ``num_real``, are built constraint-satisfying by trace-gen, and
+    are summed as real rows; only the shared-hypercube zero-extension is
+    corrected."""
 
     # SP1's zerocheck round-poly degree: constraint degree <= 3 plus the eq
     # factor; the constraint-degree bound is the caller's contract (not
