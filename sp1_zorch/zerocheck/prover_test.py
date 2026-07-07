@@ -35,6 +35,7 @@ from sp1_zorch.zerocheck.coeffs import gkr_powers, rlc_coeffs
 from sp1_zorch.zerocheck.prover import (
     OpenedValuesRound,
     prove_shard_zerocheck,
+    repack_region_to_caps,
     split_opened_values,
 )
 
@@ -316,6 +317,128 @@ class SplitOpenedValuesTest(absltest.TestCase):
 
         _assert_bytes_equal(opened["alpha"].main, finals[0][:, 0], "alpha main")
         self.assertIsNone(opened["alpha"].preprocessed)
+
+
+class CapClassJitTest(absltest.TestCase):
+    """The cap-class contract at the stage level: shards that differ only in
+    real heights share ONE jitted stage compile and byte-match their
+    exact-heights proves — including the prep seam, where the cap slice pulls
+    real preprocessed rows past a shard's live height and the runtime mask
+    must zero them."""
+
+    def test_capped_stage_matches_exact_and_shares_one_compile(self) -> None:
+        caps = (8, 4)
+        chips = {"alpha": _WitnessChip(), "lookup": _LookupChip()}
+        chip_openings = {
+            "alpha": ChipEvaluation(
+                main=_rand_ef(4, (3,)), preprocessed=_rand_ef(5, (2,))
+            ),
+            "lookup": ChipEvaluation(main=_rand_ef(6, (1,)), preprocessed=None),
+        }
+        public_values = _rand_bf(7, (8,))
+        eval_point = _rand_ef(8, (5,))
+        # 6 prep rows > either shard's alpha height, so the exact path
+        # truncates real prep rows and the capped path must mask them.
+        prep_region = JaggedRegion.from_chips(
+            [_rand_bf(2, (6, 2))],
+            log_stacking_height=4,
+            max_log_row_count=_MAX_LOG_ROW_COUNT,
+            chip_names=("alpha",),
+        )
+
+        def shard(seed: int, alpha_rows: int, lookup_rows: int) -> JaggedRegion:
+            alpha_main = jnp.concatenate(
+                [jnp.ones((alpha_rows, 1), dtype=BF), _rand_bf(seed, (alpha_rows, 2))],
+                axis=1,
+            )
+            return JaggedRegion.from_chips(
+                [alpha_main, _rand_bf(seed + 1, (lookup_rows, 1))],
+                log_stacking_height=4,
+                max_log_row_count=_MAX_LOG_ROW_COUNT,
+                chip_names=("alpha", "lookup"),
+            )
+
+        @jax.jit
+        def capped_prove(capped_main, nrs):  # type: ignore[no-untyped-def]
+            transcript, proof = prove_shard_zerocheck(
+                chips,
+                capped_main,
+                prep_region,
+                public_values,
+                eval_point,
+                chip_openings,
+                cheap_transcript(BF),
+                max_log_row_count=_MAX_LOG_ROW_COUNT,
+                num_reals=[nrs[i] for i in range(len(caps))],
+                width_caps=caps,
+            )
+            # ZerocheckProof is not a registered pytree; return its
+            # pytree-crossable fields (the ShardZerocheckRound convention).
+            return (
+                proof.zeta,
+                proof.claimed_sum,
+                proof.finals,
+                proof.opened_values,
+                proof.msgs,
+            )
+
+        for seed, alpha_rows, lookup_rows in ((10, 5, 3), (20, 7, 2)):
+            main_region = shard(seed, alpha_rows, lookup_rows)
+            _, want = prove_shard_zerocheck(
+                chips,
+                main_region,
+                prep_region,
+                public_values,
+                eval_point,
+                chip_openings,
+                cheap_transcript(BF),
+                max_log_row_count=_MAX_LOG_ROW_COUNT,
+                width_caps=caps,
+            )
+            capped = repack_region_to_caps(
+                main_region, caps, max_log_row_count=_MAX_LOG_ROW_COUNT
+            )
+            nrs = jnp.asarray((alpha_rows, lookup_rows), jnp.int32)
+            zeta, claimed_sum, finals, opened, msgs = capped_prove(capped, nrs)
+
+            label = f"shard ({alpha_rows}, {lookup_rows})"
+            _assert_bytes_equal(zeta, want.zeta, f"{label} zeta")
+            _assert_bytes_equal(claimed_sum, want.claimed_sum, f"{label} sum")
+            _assert_bytes_equal(msgs.round_poly, want.msgs.round_poly, label)
+            _assert_bytes_equal(msgs.challenge, want.msgs.challenge, label)
+            for i, (got_f, want_f) in enumerate(zip(finals, want.finals, strict=True)):
+                _assert_bytes_equal(got_f, want_f, f"{label} finals[{i}]")
+            for name in ("alpha", "lookup"):
+                _assert_bytes_equal(
+                    opened[name].main, want.opened_values[name].main, f"{label} {name}"
+                )
+            _assert_bytes_equal(
+                opened["alpha"].preprocessed,
+                want.opened_values["alpha"].preprocessed,
+                f"{label} alpha prep",
+            )
+        self.assertEqual(capped_prove._cache_size(), 1)
+
+    def test_runtime_heights_reject_a_non_repacked_region(self) -> None:
+        main_region = JaggedRegion.from_chips(
+            [_rand_bf(1, (5, 2))],
+            log_stacking_height=4,
+            max_log_row_count=_MAX_LOG_ROW_COUNT,
+            chip_names=("alpha",),
+        )
+        with self.assertRaisesRegex(ValueError, "cap-repacked"):
+            prove_shard_zerocheck(
+                {"alpha": _WitnessChip()},
+                main_region,
+                None,
+                _rand_bf(7, (8,)),
+                _rand_ef(8, (5,)),
+                {"alpha": ChipEvaluation(main=_rand_ef(4, (2,)), preprocessed=None)},
+                cheap_transcript(BF),
+                max_log_row_count=_MAX_LOG_ROW_COUNT,
+                num_reals=[jnp.asarray(5, jnp.int32)],
+                width_caps=(8,),
+            )
 
 
 if __name__ == "__main__":
