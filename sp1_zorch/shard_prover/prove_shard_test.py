@@ -42,6 +42,7 @@ from sp1_zorch.shard_prover.prove_shard import (
 from sp1_zorch.shard_prover.replay import JitPermutation
 from sp1_zorch.shard_prover.types import MachineVerifyingKey
 from sp1_zorch.zerocheck.prover import prove_shard_zerocheck
+from zorch.utils.bits import log2_ceil_usize
 
 
 BF = koalabear_mont
@@ -269,6 +270,22 @@ class ProveShardChainTest(absltest.TestCase):
 
     def test_chain_emits_one_message_per_stage(self) -> None:
         self.assertLen(self.msgs, 4)  # commit, LogUp-GKR, zerocheck, jagged eval
+
+    def test_dense_eval_folds_the_full_committed_dense(self) -> None:
+        # dense_eval = D(z_final) must fold the FULL stacking-aligned dense (the
+        # same D the stacked open reconstructs), not region.dense[:raw_size]:
+        # dropping a region's pad shortens and misaligns D, so both the point and
+        # the eval differ. Both regions here carry a real internal pad.
+        self.assertGreater(self.prep_region.dense.shape[0], self.prep_region.raw_size)
+        self.assertGreater(self.main_region.dense.shape[0], self.main_region.raw_size)
+
+        regions = [r for r in (self.prep_region, self.main_region) if r is not None]
+        d = jnp.concatenate([r.dense for r in regions])
+        d = jnp.pad(d, (0, (1 << log2_ceil_usize(d.shape[0])) - d.shape[0]))
+        # Fold LSB-first by the round-order challenges (the point is reversed).
+        for alpha in self.jagged.eval.outer_sumcheck_point[::-1]:
+            d = d[0::2] + alpha * (d[1::2] - d[0::2])
+        _assert_bytes_equal(self.jagged.eval.dense_eval, d[0], "dense_eval")
 
     def test_jagged_eval_stage_opens_each_committed_round(self) -> None:
         """The fourth stage runs the outer/inner jagged sumcheck to D(z_final)

@@ -385,6 +385,9 @@ class EncodeEvaluationProofTest(absltest.TestCase):
     def test_field_order_final_evals_and_derived_log_m(self) -> None:
         open_proof = _open_proof()
         component_raw_roots = [jnp.arange(100, 108, dtype=F)]
+        # original_commitments are the SMCS commitments, distinct from the raw
+        # roots the batch openings reconstruct.
+        component_commitments = [jnp.arange(200, 208, dtype=F)]
         eval_msg = _eval_msg()
         rc = [[(2, 3), (4, 5)], [(6, 7)]]
         expected = (
@@ -421,9 +424,9 @@ class EncodeEvaluationProofTest(absltest.TestCase):
             + _u64(1)
             + _u64(6)
             + _u64(7)
-            # original commitments = the raw component roots
+            # original commitments = the SMCS commitments (not the raw roots)
             + _u64(1)
-            + struct.pack("<8I", *range(100, 108))
+            + struct.pack("<8I", *range(200, 208))
             + struct.pack("<I", 20)
             + _u64(22)  # max_log_row_count
             + _u64(1)  # log_m, read off the outer round count
@@ -433,6 +436,7 @@ class EncodeEvaluationProofTest(absltest.TestCase):
                 eval_msg,
                 open_proof,
                 component_raw_roots,
+                component_commitments,
                 rc,
                 max_log_row_count=22,
             ),
@@ -476,6 +480,11 @@ def _carry() -> ShardCarry:
         prep_region=prep_region,
         public_values=jnp.arange(1, 6, dtype=F),
         commit_rounds=(_stacked_round(100), _stacked_round(400)),
+        # SMCS commitments (original_commitments), distinct from the raw roots.
+        commit_commitments=(
+            jnp.arange(200, 208, dtype=F),
+            jnp.arange(500, 508, dtype=F),
+        ),
         zc_opened_values=_opened_values(),
     )
 
@@ -582,6 +591,8 @@ class EncodeShardProofTest(absltest.TestCase):
                 jagged.open,
                 # Raw roots off the carry's stacked witnesses, [prep, main].
                 [jnp.arange(100, 108, dtype=F), jnp.arange(400, 408, dtype=F)],
+                # original_commitments = the carry's SMCS commitments, [prep, main].
+                [jnp.arange(200, 208, dtype=F), jnp.arange(500, 508, dtype=F)],
                 # Region layouts with the stacking dummies included.
                 [[(3, 1), (4, 1), (1, 1)], [(3, 2), (2, 1), (4, 1), (1, 1)]],
                 max_log_row_count=3,
