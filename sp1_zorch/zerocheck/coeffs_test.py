@@ -9,9 +9,12 @@ from zk_dtypes import koalabear_mont as F
 from sp1_zorch.zerocheck.coeffs import constraint_rlc, gkr_powers, rlc_coeffs
 
 
-def _eval_fn(rows: jnp.ndarray) -> jnp.ndarray:
+def _eval_fn(rows: jnp.ndarray, public_values: jnp.ndarray) -> jnp.ndarray:
     """A chip-eval stand-in: rows [N, num_cols] -> K=3 straight-line
-    constraints [N, 3]. Self-contained so the test anchors on its own golden."""
+    constraints [N, 3]. Self-contained so the test anchors on its own golden.
+    Ignores ``public_values`` — a constraint that declares no pv_arg still
+    takes the statement as a declared operand."""
+    del public_values
     c0 = rows[:, 0] * rows[:, 1]
     c1 = rows[:, 1] + rows[:, 2]
     c2 = rows[:, 0] * rows[:, 2] + rows[:, 1]
@@ -32,6 +35,7 @@ _ROWS = jnp.array(
     dtype=F,
 )
 _ALPHA = jnp.array(3, dtype=F)
+_PV = jnp.zeros((8,), dtype=F)
 
 
 class ConstraintRlcTest(absltest.TestCase):
@@ -59,8 +63,8 @@ class ConstraintRlcTest(absltest.TestCase):
         # The composite must inline to the identical result as the plain
         # `eval_fn(rows) @ alpha_slice` the SP1 reference computes.
         coeffs = rlc_coeffs(_ALPHA, 3)
-        golden = _eval_fn(_ROWS) @ coeffs
-        got = constraint_rlc(_eval_fn, _ROWS, _ALPHA, 3)
+        golden = _eval_fn(_ROWS, _PV) @ coeffs
+        got = constraint_rlc(_eval_fn, _ROWS, _ALPHA, 3, _PV)
         self.assertTrue(bool(jnp.array_equal(got, golden)), (got, golden))
 
 

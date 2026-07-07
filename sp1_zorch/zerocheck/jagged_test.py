@@ -50,16 +50,24 @@ _NUM_COLS = 3
 _K = 2
 
 
-def _eval_fn(trace: jnp.ndarray) -> jnp.ndarray:
+def _eval_fn(trace: jnp.ndarray, public_values: jnp.ndarray) -> jnp.ndarray:
+    del public_values
     a, b, c = trace[:, 0], trace[:, 1], trace[:, 2]
     one = jnp.ones((), trace.dtype)
     return jnp.stack([(a - one) * (c - one), (a - one) * b * c], axis=-1)
 
 
-def _eval_fn_empty(trace: jnp.ndarray) -> jnp.ndarray:
+def _eval_fn_empty(trace: jnp.ndarray, public_values: jnp.ndarray) -> jnp.ndarray:
     """Lookup-only chip: no transition constraints (SP1's Byte / Program /
     Range shape) — ``(N, 0)``, so only the GKR column term contributes."""
+    del public_values
     return jnp.zeros((trace.shape[0], 0), dtype=trace.dtype)
+
+
+# The eval_fns above ignore the statement (no constraint declares a pv_arg),
+# but it still rides as a declared `constraint_eval` operand — so the summand
+# and the reference thread a (dummy) pv through the 2-ary signature.
+_PV = jnp.zeros((8,), dtype=KB)
 
 
 def _rand(seed: int, shape) -> jnp.ndarray:
@@ -124,7 +132,8 @@ def _naive_round_polys(
         for nr in num_reals
     ]
     adjs = [
-        f(jnp.zeros((1, _NUM_COLS), dtype=KB))[0] @ a for f, a in zip(eval_fns, alphas)
+        f(jnp.zeros((1, _NUM_COLS), dtype=KB), _PV)[0] @ a
+        for f, a in zip(eval_fns, alphas)
     ]
     e = expand_eq_to_hypercube(zeta, one)
 
@@ -137,7 +146,7 @@ def _naive_round_polys(
             tot = jnp.zeros_like(et)
             for i in range(len(cols)):
                 ct = _lift(cols[i], tv)
-                cv = eval_fns[i](ct.T) @ alphas[i]
+                cv = eval_fns[i](ct.T, _PV) @ alphas[i]
                 cv = cv + ct.T @ gkr_powers[i]
                 tot = tot + lambdas[i] * (cv - adjs[i] * _lift(geqs[i], tv))
             evals.append(jnp.sum(et * tot))
@@ -197,7 +206,11 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
 
         _, _, msgs = prove_jagged_zerocheck(
             JaggedZerocheckSummand(
-                eval_fns=eval_fns, alphas=alphas, lambdas=lambdas, beta=beta
+                eval_fns=eval_fns,
+                alphas=alphas,
+                lambdas=lambdas,
+                beta=beta,
+                public_values=_PV,
             ),
             traces,
             num_reals,
@@ -254,6 +267,7 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
                     alphas=alphas,
                     lambdas=lambdas,
                     beta=beta,
+                    public_values=_PV,
                 ),
                 traces,
                 num_reals,
@@ -328,6 +342,7 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
                     alphas=alphas,
                     lambdas=lambdas,
                     beta=beta,
+                    public_values=_PV,
                 ),
                 traces,
                 num_reals,
@@ -370,7 +385,11 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
 
         _, _, msgs = prove_jagged_zerocheck(
             JaggedZerocheckSummand(
-                eval_fns=[_eval_fn] * nchips, alphas=alphas, lambdas=lambdas, beta=beta
+                eval_fns=[_eval_fn] * nchips,
+                alphas=alphas,
+                lambdas=lambdas,
+                beta=beta,
+                public_values=_PV,
             ),
             traces,
             num_reals,
@@ -400,6 +419,7 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
                 alphas=alphas,
                 lambdas=lambdas,
                 beta=beta,
+                public_values=_PV,
             ),
             traces,
             num_reals,
@@ -442,7 +462,11 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
         _, claims = _gkr_inputs(beta, traces, zeta)
         _, _, msgs = prove_jagged_zerocheck(
             JaggedZerocheckSummand(
-                eval_fns=[_eval_fn], alphas=alphas, lambdas=lambdas, beta=beta
+                eval_fns=[_eval_fn],
+                alphas=alphas,
+                lambdas=lambdas,
+                beta=beta,
+                public_values=_PV,
             ),
             traces,
             [nr],
@@ -469,6 +493,7 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
                     alphas=[rlc_coeffs(_rand(99, ()), _K)],
                     lambdas=_rand(55, (1,)),
                     beta=_rand(77, ()),
+                    public_values=_PV,
                 ),
                 [trace],
                 [5],
@@ -485,6 +510,7 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
                     alphas=[rlc_coeffs(_rand(99, ()), _K)],
                     lambdas=_rand(55, (1,)),
                     beta=_rand(77, ()),
+                    public_values=_PV,
                 ),
                 [_witness_trace(0, 4)],
                 [4],

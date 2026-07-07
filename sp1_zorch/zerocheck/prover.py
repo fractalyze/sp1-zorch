@@ -110,22 +110,18 @@ def chip_traces(
     return traces
 
 
-def bind_pv(chip: Chip, public_values: Array) -> Callable[[Array], Array]:
-    """Bind the public-values vector; ``eval_constraints`` ignores it for
-    constraints that declare no ``pv_arg``. Shared by the stage and its
-    verifier dual — the one definition of how a chip's constraint circuit
-    sees the statement."""
-    return lambda trace: chip.eval_constraints(trace, public_values)
-
-
 def probe_num_constraints(
-    eval_fn: Callable[[Array], Array], width: int, ef: Any
+    eval_fn: Callable[[Array, Array], Array],
+    width: int,
+    ef: Any,
+    public_values: Array,
 ) -> int:
     """A chip's constraint count, from a one-row zero probe — the constraint
     functions may emit several columns each, so the count is not readable
     off the manifest. One definition: it sizes the constraint-RLC fold on
-    both the prover and the verifier dual."""
-    return eval_fn(jnp.zeros((1, width), dtype=ef)).shape[-1]
+    both the prover and the verifier dual. ``eval_fn`` is the chip's 2-ary
+    ``eval_constraints``; the statement is threaded, not closed over."""
+    return eval_fn(jnp.zeros((1, width), dtype=ef), public_values).shape[-1]
 
 
 def sample_stage_challenges(
@@ -263,19 +259,30 @@ def prove_shard_zerocheck(
     chip_names = main_region.chip_names
     num_reals = list(main_region.chip_heights)
     traces = chip_traces(chip_names, num_reals, main_region, prep_region)
-    eval_fns = [bind_pv(chips[name], public_values) for name in chip_names]
+    # The chip's 2-ary ``eval_constraints`` is the eval_fn; the statement is
+    # threaded through ``constraint_eval``'s ``aux_operands`` at the fold sites,
+    # not closed over — a closure would carry a tracer into the composite under
+    # the jitted stage body.
+    eval_fns = [chips[name].eval_constraints for name in chip_names]
 
     claims = gkr_opening_claims([chip_openings[name] for name in chip_names], gkr_batch)
 
     alphas = [
-        rlc_coeffs(batching_challenge, probe_num_constraints(fn, t.shape[0], ef))
+        rlc_coeffs(
+            batching_challenge,
+            probe_num_constraints(fn, t.shape[0], ef, public_values),
+        )
         for fn, t in zip(eval_fns, traces)
     ]
     lambdas = rlc_coeffs(lambda_, len(chip_names))
 
     finals, transcript, msgs = prove_jagged_zerocheck(
         JaggedZerocheckSummand(
-            eval_fns=eval_fns, alphas=alphas, lambdas=lambdas, beta=gkr_batch
+            eval_fns=eval_fns,
+            alphas=alphas,
+            lambdas=lambdas,
+            beta=gkr_batch,
+            public_values=public_values,
         ),
         traces,
         num_reals,

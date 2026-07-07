@@ -115,7 +115,8 @@ def _challenge_limbs(dtype) -> int:
 
 
 def _constraint_and_column_term(
-    eval_fn: Callable[[Array], Array],
+    eval_fn: Callable[[Array, Array], Array],
+    public_values: Array,
     rows_t: Array,
     alpha: Array,
     eq: Array,
@@ -125,6 +126,11 @@ def _constraint_and_column_term(
     """A constrained chip's inner sum at one t-point: the alpha-folded
     constraint evaluation plus the GKR column term, eq-weighted and summed
     over the pair axis with rows past ``live_width`` masked to zero.
+
+    ``public_values`` rides ``constraint_eval``'s ``aux_operands`` so the 2-ary
+    ``eval_fn(rows, pv)`` reads the statement as a declared operand — not a
+    closure, which would carry a tracer into the composite under the jitted
+    stage body.
 
     The per-row column term ``sum_c rows[r,c] * gkr_powers[c]`` rides
     ``constraint_eval``'s ``column_weights`` operand on every backend: a
@@ -139,6 +145,7 @@ def _constraint_and_column_term(
             alpha,
             live_width=live_width,
             column_weights=gkr_powers,
+            aux_operands=(public_values,),
         )
         * eq
     )
@@ -202,10 +209,15 @@ class JaggedZerocheckSummand:
     # probeable).
     DEGREE: ClassVar[int] = 4
 
-    eval_fns: Sequence[Callable[[Array], Array]]
+    # 2-ary ``eval_fn(rows, public_values)``: the statement rides as a declared
+    # ``constraint_eval`` operand (see ``_constraint_and_column_term``), not a
+    # closure that would carry a tracer into the composite under the jitted
+    # stage body.
+    eval_fns: Sequence[Callable[[Array, Array], Array]]
     alphas: Sequence[Array]
     lambdas: Array
     beta: Array
+    public_values: Array
     # Each chip's term strategy — constraint+column, or column-only for a
     # lookup-only chip — chosen once here off its alpha's static length, so
     # `chip_raw_evals` runs the same code for every chip.
@@ -216,7 +228,7 @@ class JaggedZerocheckSummand:
             self,
             "_term_fns",
             tuple(
-                partial(_constraint_and_column_term, fn)
+                partial(_constraint_and_column_term, fn, self.public_values)
                 if alpha.shape[-1] > 0
                 else _column_term
                 for fn, alpha in zip(self.eval_fns, self.alphas)
@@ -390,6 +402,7 @@ def prove_jagged_zerocheck(
     alphas = summand.alphas
     lambdas = summand.lambdas
     beta = summand.beta
+    public_values = summand.public_values
     num_chips = len(traces)
     if num_chips == 0:
         raise ValueError("at least one chip is required")
@@ -444,6 +457,7 @@ def prove_jagged_zerocheck(
             jnp.zeros((1, traces[i].shape[0]), dtype=ef),
             alphas[i],
             live_width=1,
+            aux_operands=(public_values,),
         )[0]
         for i in range(num_chips)
     ]

@@ -208,11 +208,12 @@ class ProveShardChainTest(absltest.TestCase):
         cls.want_zc = zc_proof
         cls.want_transcript = t
 
-        # Eager chain: this machine's constraint circuit reads public_values,
-        # which the jitted zerocheck body threads as a tracer -- and the
-        # `zorch.constraint_eval` composite rejects closure tracers. Eager
-        # execution keeps pv a concrete array (and doubles as the eager dual
-        # the jit twin below is byte-checked against).
+        # This machine's constraint circuit reads public_values. That is now
+        # jit-legal — the statement rides `zorch.constraint_eval`'s aux_operands
+        # operand, not a closure the composite would reject (the lowering smokes
+        # below exercise it). This executed reference stays eager because CPU
+        # cannot execute the jitted field dots (fractalyze/jax#168); the jitted
+        # prove is GPU's, byte-checked there.
         chain = prove_shard_chain(
             smcs=smcs,
             log_blowup=_LOG_BLOWUP,
@@ -326,25 +327,11 @@ class ProveShardChainTest(absltest.TestCase):
         )
         self.assertIn("func", lowered.as_text())
 
-    @absltest.skip(
-        "fractalyze/zorch#352: with the composite engaged, constraint_eval's "
-        "decomposition closes over eval_fn's traced captures (public_values / "
-        "carried shard state), so lax.composite raises UnexpectedTracerError and "
-        "the chain cannot lower under a single jit. Re-enable when that frontend "
-        "fix lands."
-    )
     def test_chain_lowers_under_single_jit(self) -> None:
         """The whole chain traces as one ``@jit`` region: no stage forces a host
         sync that would split it."""
         self._assert_chain_lowers(self.chain)
 
-    @absltest.skip(
-        "fractalyze/zorch#352: with the composite engaged, constraint_eval's "
-        "decomposition closes over eval_fn's traced captures (public_values / "
-        "carried shard state), so lax.composite raises UnexpectedTracerError and "
-        "the chain cannot lower under a single jit. Re-enable when that frontend "
-        "fix lands."
-    )
     def test_jit_chain_lowers_with_logup_gkr_staged(self) -> None:
         """``prove_shard_chain(jit=True)`` stages the grind-free LogUp-GKR body
         under one outer ``@jit`` (sp1-zorch#119): the body traces cleanly with no
@@ -379,13 +366,6 @@ class ProveShardChainTest(absltest.TestCase):
             ],
         )
 
-    @absltest.skip(
-        "fractalyze/zorch#352: with the composite engaged, constraint_eval's "
-        "decomposition closes over eval_fn's traced captures (public_values / "
-        "carried shard state), so lax.composite raises UnexpectedTracerError and "
-        "the chain cannot lower under a donated-argument jit. Re-enable when that "
-        "frontend fix lands."
-    )
     def test_carry_crosses_jit_as_a_donated_argument(self) -> None:
         """With ShardCarry a pytree, the chain runs under a single ``@jit``
         that takes the carry as a *donated* argument (vs the closed-over carry
