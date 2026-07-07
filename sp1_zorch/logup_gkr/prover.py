@@ -315,16 +315,34 @@ def resolve_witness_and_grind(
     return transcript, witness
 
 
-# Machine-constant row cap for the fixed-width round buffers (xla#179):
-# covers the largest observed rsp floor layout (16.92M slots, shard18 --
-# per-INTERACTION reservations of 2*sp1_col_h(height), so several times the
-# raw height sum) with ~11% headroom. Shard-invariant BY DESIGN -- see the
-# caps comment in prove_logup_gkr_body. A multiple of 4 (the boundary
-# handoff's two stride-2 halvings need row % 4 == 0). Deliberately NOT a
-# power of two: 2^25 doubled the plane buffers (~2.1 GB EF) and OOM'd the
-# widest shard next to its own resident traces; the cap is device-buffer
-# width only (compute stays O(live)), so it should hug the machine maximum.
-_ROW_CAP = 18 * (1 << 20)
+# Row-cap size classes for the fixed-width round buffers (xla#179). The cap pins
+# ONE round-buffer width so the FS-less round kernels compile once per class --
+# the per-layer lay-in then pads each layer to it. A single machine constant
+# sized for the widest shard (18M, shard18's ~16.9M floor) made every narrower
+# shard pay shard18's padding: the loop_pad_fusion lay-ins materialize the full
+# cap width, so shard17 (floor ~3M) padding ~6x oversize was ~half the warm GKR
+# stage (80 -> 43 ms once right-sized). A small ladder keeps the compile-once
+# property WITHIN a class (a bounded set of classes, NOT per-shard height) while
+# a narrow shard pays only its own class. Rungs are multiples of 4 (the boundary
+# handoff's two stride-2 halvings need row % 4 == 0) and NOT powers of two (2^25
+# doubled the plane buffers ~2.1 GB EF and OOM'd the widest shard).
+_M = 1 << 20
+_ROW_CAP_LADDER = (4 * _M, 8 * _M, 18 * _M)
+
+
+def _row_cap(floor_padded: int) -> int:
+    """Smallest row-cap class that fits this shard's even-padded round-0 layout.
+    Shards in the same class share the round-kernel compile; overflowing the
+    widest class means shard sizing grew -- extend the ladder deliberately."""
+    for cap in _ROW_CAP_LADDER:
+        if floor_padded <= cap:
+            return cap
+    raise ValueError(
+        f"floor layer's even-padded round-0 layout ({floor_padded}) exceeds the "
+        f"widest row-cap class {_ROW_CAP_LADDER[-1]}; add a larger class to "
+        "_ROW_CAP_LADDER (costs only device-buffer headroom) after checking "
+        "shard sizing"
+    )
 
 
 def prove_logup_gkr_body(
@@ -376,29 +394,18 @@ def prove_logup_gkr_body(
     # gated by the SP1 reference (verify_gkr_prove) and a captured CPU golden.
     #
     # Fixed-width round buffers (fractalyze/xla#179): the caps pin ONE operand
-    # shape per round phase across every round, layer, AND shard, so the
-    # FS-less round kernels compile once per interaction class instead of once
-    # per width. The row cap is a MACHINE CONSTANT, not a function of this
-    # shard's heights: rsp shards carry raw execution heights (measured
-    # 0.98M/1.23M/3.14M padded-sum across three shards of one run), so a
-    # height-derived cap would recompile the round kernels per shard. The
-    # remaining compile key is {2^niv (interaction count class -- an SP1
-    # protocol value that fixes the round count, so it cannot be padded away),
-    # dtype}; shards sharing a chip configuration share every compile. The
-    # constant bounds the widest layer's even-padded round-0 layout; SP1's
-    # shard splitting bounds total trace area, so overflow means shard sizing
-    # changed -- fail loud and raise the constant deliberately (the cap is
-    # device-buffer width only: post-marker-v2 compute and uploads are
-    # O(live), so headroom costs one layer's plane/eq_row buffers, not time).
+    # shape per round phase across every round and layer, so the FS-less round
+    # kernels compile once per {row-cap class, 2^niv interaction class, dtype}
+    # instead of once per width. `_row_cap` picks the smallest size class that
+    # fits this shard's floor -- shards in a class share every round-kernel
+    # compile, and a narrow shard pays only its class's padding (the per-layer
+    # lay-in materializes the cap width, so an oversized cap is real GPU time,
+    # not free headroom -- rsp shards measured 0.98M/1.23M/3.14M padded-sum
+    # floors, all in the 4M class). 2^niv is an SP1 protocol value that fixes
+    # the round count, so it cannot be padded away.
     floor_padded = sum(rc + rc % 2 for rc in first.row_counts)
-    if floor_padded > _ROW_CAP:
-        raise ValueError(
-            f"floor layer's even-padded round-0 layout ({floor_padded}) "
-            f"exceeds the machine row cap {_ROW_CAP}; raise _ROW_CAP "
-            "(costs only device-buffer headroom) after checking shard sizing"
-        )
     caps = RoundWidthCaps(
-        row=_ROW_CAP,
+        row=_row_cap(floor_padded),
         eq_row=1 << num_row_variables,
         interaction=max(4, len(first.row_counts)),
     )
