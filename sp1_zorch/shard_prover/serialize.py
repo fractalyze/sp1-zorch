@@ -268,6 +268,7 @@ def _encode_evaluation_proof(
     eval_msg: JaggedEvalMsg,
     open_proof: StackedOpenProof,
     component_raw_roots: Sequence[Array],
+    component_commitments: Sequence[Array],
     row_counts_and_column_counts: Sequence[Sequence[tuple[int, int]]],
     max_log_row_count: int,
 ) -> bytes:
@@ -275,8 +276,12 @@ def _encode_evaluation_proof(
 
     ``row_counts_and_column_counts`` is the per-committed-round ``(row_count,
     column_count)`` chip layout (``JaggedRegion`` order, stacking dummies
-    included). ``component_raw_roots`` doubles as the wire's
-    ``original_commitments`` — both are the rounds' pre-binding Merkle roots.
+    included). ``component_raw_roots`` are the rounds' pre-binding raw Merkle
+    roots the batch openings reconstruct from their sibling paths.
+    ``component_commitments`` are the SMCS commitments (``smcs.commit()`` output,
+    before structure binding) the wire's ``original_commitments`` carries — SP1's
+    recursion applies ``bind_structure`` to each and checks it against the vk
+    (round 0 is the preprocessed commit), so a raw root here fails that check.
     ``log_m`` is the outer sumcheck's round count, read off the proof.
     """
     parts = [_encode_basefold_proof(open_proof, component_raw_roots)]
@@ -310,9 +315,9 @@ def _encode_evaluation_proof(
             parts.append(_usize(row_count))
             parts.append(_usize(column_count))
 
-    parts.append(_vec_prefix(len(component_raw_roots)))
-    for root in component_raw_roots:
-        parts.append(_encode_digest(root))
+    parts.append(_vec_prefix(len(component_commitments)))
+    for commitment in component_commitments:
+        parts.append(_encode_digest(commitment))
 
     parts.append(_field_bytes(eval_msg.dense_eval))
     parts.append(_usize(max_log_row_count))
@@ -416,6 +421,9 @@ def encode_shard_proof(
     component_raw_roots = [
         stacked.digest_layers[-1][0] for stacked in carry.commit_rounds
     ]
+    # original_commitments = the SMCS commitment (pre-structure-binding), retained
+    # off the commit stage in the same [prep, main] order as commit_rounds.
+    component_commitments = list(carry.commit_commitments)
     row_column_counts = [
         list(zip(region.row_counts, region.column_counts, strict=True))
         for region in regions
@@ -425,6 +433,7 @@ def encode_shard_proof(
             jagged_proof.eval,
             jagged_proof.open,
             component_raw_roots,
+            component_commitments,
             row_column_counts,
             max_log_row_count=max_log_row_count,
         )

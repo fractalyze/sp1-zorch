@@ -65,6 +65,7 @@ from zorch.utils.bits import log2_ceil_usize
         "prep_region",
         "public_values",
         "commit_rounds",
+        "commit_commitments",
         "gkr_eval_point",
         "gkr_chip_openings",
         "zc_sumcheck_point",
@@ -84,6 +85,10 @@ class ShardCarry:
     # Written by TraceCommitRound; read by the jagged-eval open stage. [prep,
     # main] order, matching SP1's round_evaluation_claims.
     commit_rounds: tuple[StackedRound, ...] | None = None
+    # Written by TraceCommitRound; read by proof assembly as the jagged proof's
+    # original_commitments -- each round's SMCS commitment (pre-structure-binding),
+    # [prep, main] order.
+    commit_commitments: tuple[Array, ...] | None = None
     # Written by LogupGkrRound; read by ShardZerocheckRound.
     gkr_eval_point: Array | None = None
     gkr_chip_openings: Mapping[str, ChipEvaluation] | None = None
@@ -202,7 +207,14 @@ class TraceCommitRound(Round):
         commit_rounds = tuple(
             StackedRound(d.mle, d.digest_layers) for d in commit_data
         )
-        carry = replace(carry, commit_rounds=commit_rounds)
+        # Per-round SMCS commitment for the jagged proof's original_commitments;
+        # StackedRound retains only the open witness, so keep it separately.
+        commit_commitments = tuple(d.smcs_commitment for d in commit_data)
+        carry = replace(
+            carry,
+            commit_rounds=commit_rounds,
+            commit_commitments=commit_commitments,
+        )
         return carry, transcript, bound
 
 
@@ -621,7 +633,7 @@ def _jagged_eval_body(
     # Per-round (row/column counts, real per-column claims) in [prep, main]
     # order — each chip's opened-values field at the zerocheck point is its
     # columns' claims (SP1's round_evaluation_claims) — plus each region's
-    # raw (unpadded) dense for the combined committed D.
+    # stacking-aligned dense for the combined committed D.
     rc_rounds: list[Sequence[int]] = []
     cc_rounds: list[Sequence[int]] = []
     claims_rounds: list[Array] = []
@@ -638,7 +650,11 @@ def _jagged_eval_body(
                 [getattr(openings[n], claim_field) for n in region.chip_names]
             )
         )
-        denses.append(region.dense[: region.raw_size])
+        # Full region buffer, stacking pad included: col_heights counts each
+        # region's pad pair, so the indicator J̃ (and the stacked open) place the
+        # next region at the padded offset -- region.dense[:raw_size] would
+        # misalign it against J̃.
+        denses.append(region.dense)
 
     col_heights, all_claims = assemble_columns(
         rc_rounds, cc_rounds, claims_rounds, dtype=ef
