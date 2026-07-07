@@ -7,6 +7,7 @@ py_library(
     name = "zerocheck",
     srcs = [
         "__init__.py",
+        "_round_composite.py",
         "coeffs.py",
         "jagged.py",
         "prover.py",
@@ -142,6 +143,21 @@ py_test(
         "//sp1_zorch/shard_prover:replay",
         "@zorch//zorch/poly:poly",
         "@zorch//zorch:transcript",
+        requirement("absl_py"),
+        requirement("jax"),
+        requirement("numpy"),
+        requirement("zk_dtypes"),
+    ],
+)
+
+py_test(
+    name = "_round_composite_test",
+    size = "small",
+    srcs = ["_round_composite_test.py"],
+    deps = [
+        ":zerocheck",
+        "@zorch//zorch/poly:poly",
+        "@zorch//zorch/sumcheck",
         requirement("absl_py"),
         requirement("jax"),
         requirement("numpy"),

@@ -31,17 +31,21 @@ from zk_dtypes import koalabear_mont as KB
 from zk_dtypes import koalabearx4_mont as EF
 
 from zorch.poly.eq import expand_eq_to_hypercube
+from zorch.poly.geq import VirtualGeq
 from zorch.poly.univariate import compute_inv_vandermonde, eval_coeffs
-from zorch.sumcheck.prover import zero_extend
+from zorch.sumcheck.gruen import interp_matrix, round_coeffs_from_matrix
+from zorch.sumcheck.prover import split_pairs, zero_extend
 from zorch.testkit.transcript import cheap_transcript
 from zorch.transcript import sample_challenge
 
 from sp1_zorch.zerocheck.jagged import (
     DEGREE,
     JaggedZerocheckSummand,
+    _reduce_and_assemble,
+    _summand_values,
     prove_jagged_zerocheck,
 )
-from sp1_zorch.zerocheck.coeffs import rlc_coeffs
+from sp1_zorch.zerocheck.coeffs import gkr_powers, rlc_coeffs
 
 # Witness chip: columns [a, b, c] with a == 1 on every real row, so both
 # constraints vanish there while C(0_row) = [1, 0] keeps the padded-row
@@ -77,6 +81,16 @@ def _rand(seed: int, shape) -> jnp.ndarray:
 
 def _rand_ef(seed: int, shape) -> jnp.ndarray:
     return jax.lax.bitcast_convert_type(_rand(seed, (*shape, 4)), EF)
+
+
+def _u32(a) -> np.ndarray:
+    return np.asarray(jax.lax.bitcast_convert_type(a, jnp.uint32)).reshape(-1)
+
+
+def _assert_bytes_equal(got, want, label: str = "") -> None:
+    """Montgomery-form ``u32`` comparison — the repo's byte-exact convention
+    (no float tolerance applies to field elements)."""
+    np.testing.assert_array_equal(_u32(got), _u32(want), err_msg=label)
 
 
 def _witness_trace(seed: int, nr: int) -> jnp.ndarray:
@@ -252,6 +266,52 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
         # chip's pair width.
         self._check_against_reference(num_vars=4, num_reals=[9, 16, 2, 0, 5])
 
+    def test_reduce_and_assemble_matches_summand_slots(self) -> None:
+        # `_reduce_and_assemble` fed by `_summand_values` is the same seam as
+        # `chip_raw_evals` + `correct` + `round_coeffs_from_matrix`
+        # (Task 2's refactor delegates the latter into the former) — one
+        # constrained chip, one round, live prefix at the buffer's full pair
+        # width (nr = 4, so no truncation muddies the comparison).
+        nr = 4
+        trace = _witness_trace(0, nr)
+        alpha = rlc_coeffs(_rand(99, ()), _K)
+        beta = _rand(77, ())
+        summand = JaggedZerocheckSummand(
+            eval_fns=[_eval_fn],
+            alphas=[alpha],
+            lambdas=_rand(55, (1,)),
+            beta=beta,
+            public_values=_PV,
+        )
+
+        gkr = gkr_powers(beta, _NUM_COLS)
+        p0, p1 = split_pairs(trace)
+        diff = p1 - p0
+        eq = _rand(3, (nr // 2,))
+        nr_live = jnp.asarray(nr, jnp.int32)
+        claim = _rand(9, ())
+        last = _rand(11, ())
+        eq_adj = _rand(13, ())
+        padded_row_adj = _eval_fn(jnp.zeros((1, _NUM_COLS), dtype=KB), _PV)[0] @ alpha
+        vgeq = VirtualGeq(nr_live, jnp.ones((), KB), jnp.zeros((), KB))
+        interp = interp_matrix((jnp.array(2, KB), jnp.array(4, KB)), last)
+        is_round0 = jnp.array(False)
+
+        term, alpha0 = summand._term_fns[0], summand.alphas[0]
+        vals = _summand_values(term, alpha0, p0, diff, gkr, nr_live, is_round0)
+        got = _reduce_and_assemble(
+            vals, eq, interp, claim, last, eq_adj, padded_row_adj, nr_live, vgeq
+        )
+
+        raws = summand.chip_raw_evals(
+            0, p0, diff, eq, gkr, nr_live, is_zero=False, is_round0=is_round0
+        )
+        y0, y2, y4 = summand.correct(
+            raws, eq, last, eq_adj, padded_row_adj, nr_live, vgeq, is_zero=False
+        )
+        want = round_coeffs_from_matrix(interp, y0, claim, (y2, y4))
+        _assert_bytes_equal(got, want)
+
     def _constraint_markers(self, num_vars: int, num_reals):
         nchips = len(num_reals)
         traces = [_witness_trace(i, nr) for i, nr in enumerate(num_reals)]
@@ -326,8 +386,12 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
         rides ``constraint_eval``'s ``column_weights``, so the per-chip dots
         are the column dot inside each t-point's composite decomposition
         (each composite call emits its own decomposition func — three per
-        constrained chip, shape-divergent by design) plus the interpolation +
-        RLC tail (the Gruen matrix product and the λ-RLC)."""
+        constrained chip, shape-divergent by design) plus, since the
+        ``variant=zerocheck`` round marker (sp1-zorch#242), the per-chip
+        Gruen interpolation dot inside each live chip's own
+        `zerocheck_round_poly` decomposition (one more per constrained
+        chip) — the cross-chip λ-RLC (`combine_chips`) stays a single batched
+        dot regardless of chip count."""
         nchips = len(num_reals)
         traces = [_witness_trace(i, nr) for i, nr in enumerate(num_reals)]
         alphas = [rlc_coeffs(_rand(99 + i, ()), _K) for i in range(nchips)]
@@ -358,17 +422,21 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
         )
         return len(re.findall(r"stablehlo\.dot_general", txt))
 
-    def test_interp_rlc_tail_batches_across_chips(self) -> None:
-        # The interpolation + RLC tail is batched into one [num_chips, ...]
-        # matmul each, so its dot_general count is INDEPENDENT of the chip
-        # count. A per-chip unrolled tail scales it with nchips (~2 dots/chip)
-        # — the tiny-launch cluster the batch collapses. Each added chip
-        # brings only its three t-point composite decompositions, each
-        # carrying the in-body column dot (3 dots per chip, by design); the
-        # tail must contribute ZERO growth beyond them.
+    def test_interp_rlc_tail_scales_per_chip_marker(self) -> None:
+        # Since the `variant=zerocheck` round marker (sp1-zorch#242) the
+        # Gruen interpolation assembly is de-batched: it runs INSIDE each
+        # live chip's own `zerocheck_round_poly` decomposition, not one
+        # shared [num_chips, ...] matmul — required so the round reduce has
+        # a per-chip marker boundary (`jagged.py`'s `round_step`). Each added
+        # constrained chip therefore brings its three t-point composite
+        # decompositions (the in-body column dot, 3 dots/chip, by design)
+        # PLUS one Gruen dot inside its own round marker: 4 dots/chip, always
+        # growing linearly with the chip count (never O(1), unlike the old
+        # batched tail this replaces). The cross-chip λ-RLC stays a single
+        # dot regardless of chip count, contributing zero extra growth.
         self.assertEqual(
             self._tail_dot_count(3, [5, 2, 3, 4, 1]) - self._tail_dot_count(3, [5, 2]),
-            3 * 3,
+            4 * 3,
         )
 
     def test_gkr_claim_threading(self) -> None:

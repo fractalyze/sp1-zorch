@@ -97,6 +97,7 @@ from zorch.sumcheck.gruen import (
 from zorch.sumcheck.prover import RoundMsg, split_pairs, zero_extend
 from zorch.transcript import Transcript, sample_challenge
 
+from sp1_zorch.zerocheck._round_composite import zerocheck_round_poly
 from sp1_zorch.zerocheck.coeffs import gkr_powers
 
 if TYPE_CHECKING:
@@ -119,13 +120,14 @@ def _constraint_and_column_term(
     public_values: Array,
     rows_t: Array,
     alpha: Array,
-    eq: Array,
     gkr_powers: Array,
     live_width: Array,
 ) -> Array:
-    """A constrained chip's inner sum at one t-point: the alpha-folded
-    constraint evaluation plus the GKR column term, eq-weighted and summed
-    over the pair axis with rows past ``live_width`` masked to zero.
+    """A constrained chip's PER-ROW summand value at one t-point: the
+    alpha-folded constraint evaluation plus the GKR column term, eq-unweighted
+    (the cross-row eq-weighted reduce is the caller's — `_reduce_and_assemble`
+    — this is the round marker's future decomposition-body operand) with rows
+    past ``live_width`` masked to zero.
 
     ``public_values`` rides ``constraint_eval``'s ``aux_operands`` so the 2-ary
     ``eval_fn(rows, pv)`` reads the statement as a declared operand — not a
@@ -138,35 +140,34 @@ def _constraint_and_column_term(
     loaded (the cross-row reduce stays external, keeping the big round
     one-thread-per-row), and an unrecognizing backend inlines the
     decomposition's identical dot."""
-    return jnp.sum(
-        constraint_eval(
-            eval_fn,
-            rows_t,
-            alpha,
-            live_width=live_width,
-            column_weights=gkr_powers,
-            aux_operands=(public_values,),
-        )
-        * eq
+    return constraint_eval(
+        eval_fn,
+        rows_t,
+        alpha,
+        live_width=live_width,
+        column_weights=gkr_powers,
+        aux_operands=(public_values,),
     )
 
 
 def _column_term(
-    rows_t: Array, alpha: Array, eq: Array, gkr_powers: Array, live_width: Array
+    rows_t: Array, alpha: Array, gkr_powers: Array, live_width: Array
 ) -> Array:
-    """A lookup-only chip's whole inner sum at one t-point: just the
-    eq-weighted GKR column term as a standalone matmul. Such a chip has NO
-    transition constraints — SP1's Byte / Program / Range ship K = 0 in every
-    real shard, so this is a production strategy, not a defensive one
+    """A lookup-only chip's whole PER-ROW summand value at one t-point: just
+    the GKR column term as a standalone matmul, eq-unweighted. Such a chip has
+    NO transition constraints — SP1's Byte / Program / Range ship K = 0 in
+    every real shard, so this is a production strategy, not a defensive one
     (`constraint_eval` rejects an empty alpha)."""
     del alpha, live_width  # no constraint fold to mask or bound
-    return jnp.sum((rows_t @ gkr_powers) * eq)
+    return rows_t @ gkr_powers
 
 
 # A chip's term strategy — `_constraint_and_column_term` with its eval_fn
 # bound, or `_column_term` — chosen once at summand init:
-# (rows_t, alpha, eq, gkr_powers, live_width) -> the inner sum at one t-point.
-_TermFn = Callable[[Array, Array, Array, Array, Array], Array]
+# (rows_t, alpha, gkr_powers, live_width) -> the per-row summand value at one
+# t-point, eq-unweighted (the cross-row reduce lives in `_summand_values`'s
+# caller).
+_TermFn = Callable[[Array, Array, Array, Array], Array]
 
 
 @dataclass(frozen=True)
@@ -257,8 +258,15 @@ class JaggedZerocheckSummand:
         is_zero: bool,
         is_round0: Array,
     ) -> tuple[Array, Array, Array]:
-        """Chip ``i``'s uncorrected inner sums at the computed points
-        {0, 2, 4} — the GruenSummand evals slot, SP1's
+        """Chip ``i``'s uncorrected inner sums at the computed points {0, 2, 4}.
+
+        Off the driver path since round_step moved to the ``zorch.sumcheck.round``
+        marker (fractalyze/zorch#394): retained as the pre-refactor byte oracle
+        that ``jagged_test.test_reduce_and_assemble_matches_summand_slots`` checks
+        the ``_summand_values`` + ``_reduce_and_assemble`` seam against. Delegates
+        to ``_summand_values`` so the two cannot drift. Removal tracked in #242.
+
+        The GruenSummand evals slot, SP1's
         ``sum_as_poly_in_last_variable``: sums over the chip's fixed pair
         width with rows past the live bound masked to zero (byte-equal to
         SP1's truncated sums). ``eq`` is the round's eq table sliced to this
@@ -272,36 +280,17 @@ class JaggedZerocheckSummand:
         ``is_zero`` is STATIC (``ceil(nr/2)`` fixes any ``nr >= 1``, so only
         a chip that starts empty is ever empty): its width-0 buffer collapses
         every t-point to zero without running ``constraint_eval`` on an
-        empty trace; `correct` short-circuits the same way."""
-        alpha = self.alphas[i]
-        term = self._term_fns[i]
-        ef = p0.dtype
-        zero = jnp.zeros((), ef)
-        two = jnp.array(2, ef)
-        four = jnp.array(4, ef)
+        empty trace; `correct` short-circuits the same way.
 
+        Delegates to `_summand_values` for the per-row values and reduces them
+        here — keeping this method's summed-tuple return byte-identical while
+        the per-row seam stays reusable outside the `GruenSummand` slot."""
         if is_zero:
+            zero = jnp.zeros((), p0.dtype)
             return zero, zero, zero
-
-        num_non_padded = (nr_live + 1) // 2
-
-        # The computed evaluation points {0, 2, 4} — SP1's choice of materialized
-        # t-points; t = 1 and the eq root come free (claim identity / Gruen zero).
-        t_traces = (p0, p0 + two * diff, p0 + four * diff)
-
-        def inner(rows: Array, *, mask_round0: bool) -> Array:
-            a = (
-                jnp.where(is_round0, jnp.zeros_like(alpha), alpha)
-                if mask_round0
-                else alpha
-            )
-            return term(rows.T, a, eq, gkr_powers, num_non_padded)
-
-        return (
-            inner(t_traces[0], mask_round0=True),
-            inner(t_traces[1], mask_round0=False),
-            inner(t_traces[2], mask_round0=False),
-        )
+        v0, v2, v4 = _summand_values(self._term_fns[i], self.alphas[i], p0, diff,
+                                     gkr_powers, nr_live, is_round0)
+        return jnp.sum(v0 * eq), jnp.sum(v2 * eq), jnp.sum(v4 * eq)
 
     def correct(
         self,
@@ -315,7 +304,12 @@ class JaggedZerocheckSummand:
         *,
         is_zero: bool,
     ) -> tuple[Array, Array, Array]:
-        """The padding correction — the GruenSummand correction slot
+        """The padding correction — the GruenSummand correction slot.
+
+        Off the driver path (round_step uses the marker); retained with
+        `chip_raw_evals` as the pre-refactor byte oracle for the seam test.
+        Removal tracked in #242.
+
         (LogUp's dual is `LogupSummand.correct`, the neutral-fraction
         virtual mass): scale each computed point by the bound eq factor and
         subtract the zero-extension leak — rows past the live prefix read
@@ -366,6 +360,53 @@ if TYPE_CHECKING:
     # pins"): any type-checker pass over this module fails if the summand
     # drifts off the GruenSummand vocabulary the Gruen assembly reads.
     _gruen_summand: type[GruenSummand] = JaggedZerocheckSummand
+
+
+def _summand_values(term, alpha, p0, diff, gkr_powers, nr_live, is_round0):
+    """Per-t (t=0,2,4) per-row summand values (constraint+column via `term`;
+    round-0 drops the constraint at t=0 by zeroing alpha). The marker's
+    summand-value operand — `constraint_eval` stays external, eq-unweighted."""
+    ef = p0.dtype
+    two, four = jnp.array(2, ef), jnp.array(4, ef)
+    num_non_padded = (nr_live + 1) // 2
+    t_traces = (p0, p0 + two * diff, p0 + four * diff)
+
+    def one(rows, *, mask_round0):
+        a = jnp.where(is_round0, jnp.zeros_like(alpha), alpha) if mask_round0 else alpha
+        return term(rows.T, a, gkr_powers, num_non_padded)  # per-row, eq-unweighted
+
+    return (one(t_traces[0], mask_round0=True),
+            one(t_traces[1], mask_round0=False),
+            one(t_traces[2], mask_round0=False))
+
+
+def _zero_chip_poly(interp, claim, ef):
+    """A statically-empty chip's round poly: nothing sums, so every computed
+    point is zero and only the claim identity survives — the trivial
+    claim-identity Gruen poly, no reduce or correction."""
+    z = jnp.zeros((), ef)
+    return round_coeffs_from_matrix(interp, z, claim, (z, z))
+
+
+def _reduce_and_assemble(vals, eq, interp, claim, last, eq_adj, padded_row_adj,
+                         nr_live, vgeq):
+    """A live chip's round poly: eq-weighted reduce of the per-t summand values
+    + geq zero-extension correction + Gruen degree-4 assembly. Byte-identical to
+    chip_raw_evals+correct+round_coeffs_from_matrix; also the marker's
+    decomposition body (`_round_composite._decomp` mirrors it)."""
+    ef = last.dtype
+    y_raw = tuple(jnp.sum(v * eq) for v in vals)
+    threshold_half = (nr_live + 1) // 2 - 1
+    msb_lagrange = eq_adj * eq[threshold_half]
+
+    def corr(y, t_val):
+        eq_last = eq_factor(t_val, last)
+        vg = vgeq.fix_last_variable(t_val).eval_at(threshold_half)
+        return eq_last * (y * eq_adj - padded_row_adj * vg * msb_lagrange)
+
+    zero, two, four = jnp.zeros((), ef), jnp.array(2, ef), jnp.array(4, ef)
+    y0, y2, y4 = corr(y_raw[0], zero), corr(y_raw[1], two), corr(y_raw[2], four)
+    return round_coeffs_from_matrix(interp, y0, claim, (y2, y4))
 
 
 def prove_jagged_zerocheck(
@@ -526,12 +567,13 @@ def prove_jagged_zerocheck(
         bufs, vgeqs, chip_claims, eq_adj, nrs_live, eq_buf, transcript = carry
         last, interp, is_round0 = xs
 
-        # Only constraint_eval (inside `chip_raw_evals`) is shape-divergent,
-        # so the chip loop runs the summand slots unrolled — evaluate at the
-        # computed points, then the padding correction (the same sequence as
-        # LogUp's `_round_poly`; `GruenSummand` names the slots) — and
-        # collects the (y0, y2, y4) evaluations as scalars.
-        y0s, y2s, y4s = [], [], []
+        # Only constraint_eval (inside `_summand_values`) is shape-divergent,
+        # so the chip loop runs the summand slots unrolled: live chips reduce
+        # through the `zorch.sumcheck.round` marker (variant=zerocheck) —
+        # `zerocheck_round_poly`, byte-transparent on an unclaimed marker
+        # (fractalyze/zorch#394 / sp1-zorch#242) — and zero chips (no rows to
+        # reduce) bypass it for `_zero_chip_poly`'s trivial claim-identity poly.
+        polys_list = []
         p0s = []
         diffs = []
         for i in range(num_chips):
@@ -540,40 +582,27 @@ def prove_jagged_zerocheck(
             p0s.append(p0)
             diffs.append(diff)
             eq = eq_buf[: widths[i] // 2]
-            raws = summand.chip_raw_evals(
-                i,
-                p0,
-                diff,
-                eq,
-                chip_gkr[i],
-                nrs_live[i],
-                is_zero=is_zero_chip[i],
-                is_round0=is_round0,
-            )
-            y_0, y_2, y_4 = summand.correct(
-                raws,
-                eq,
-                last,
-                eq_adj,
-                adjs[i],
-                nrs_live[i],
-                vgeqs[i],
-                is_zero=is_zero_chip[i],
-            )
-            y0s.append(y_0)
-            y2s.append(y_2)
-            y4s.append(y_4)
+            if is_zero_chip[i]:
+                poly_i = _zero_chip_poly(interp, chip_claims[i], ef)
+            else:
+                vals = _summand_values(
+                    summand._term_fns[i], summand.alphas[i], p0, diff,
+                    chip_gkr[i], nrs_live[i], is_round0,
+                )
+                poly_i = zerocheck_round_poly(
+                    vals, eq, interp, chip_claims[i], last, eq_adj, adjs[i],
+                    nrs_live[i], vgeqs[i],
+                )
+            polys_list.append(poly_i)
 
-        # The Gruen assembly + RLC tail is uniform-shape across chips, so the
-        # chip evaluations ride its batch axis — one matrix product for all
-        # chips instead of num_chips tiny per-chip launches — transposed to
-        # keep coefficients on the last axis for the post-round
-        # `fold_round_scalars`; the summand takes the cross-chip RLC. Field ops
-        # are exact, so the reassociation gives byte-identical round polys.
-        y0 = jnp.stack(y0s)
-        y2 = jnp.stack(y2s)
-        y4 = jnp.stack(y4s)
-        polys = round_coeffs_from_matrix(interp, y0, chip_claims, (y2, y4)).T
+        # De-batched (per chip, not a batched Gruen matmul over the stacked
+        # chip evals): required by the per-chip marker boundary above — same
+        # `interp`, same field arithmetic, just not batched, so byte-identical
+        # (field ops are exact, and the reassociation gives the same round
+        # polys). `polys` keeps the same (num_chips, DEGREE+1) shape the
+        # former batched-then-transposed form produced, so the RLC + the
+        # post-round `fold_round_scalars` below are unchanged.
+        polys = jnp.stack(polys_list)  # (num_chips, DEGREE+1)
         rlc = summand.combine_chips(polys)
 
         # SP1 binds each variable with one extension element (its
