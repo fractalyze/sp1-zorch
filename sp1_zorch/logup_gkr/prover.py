@@ -395,14 +395,9 @@ def prove_logup_gkr_body(
     #
     # Fixed-width round buffers (fractalyze/xla#179): the caps pin ONE operand
     # shape per round phase across every round and layer, so the FS-less round
-    # kernels compile once per {row-cap class, 2^niv interaction class, dtype}
-    # instead of once per width. `_row_cap` picks the smallest size class that
-    # fits this shard's floor -- shards in a class share every round-kernel
-    # compile, and a narrow shard pays only its class's padding (the per-layer
-    # lay-in materializes the cap width, so an oversized cap is real GPU time,
-    # not free headroom -- rsp shards measured 0.98M/1.23M/3.14M padded-sum
-    # floors, all in the 4M class). 2^niv is an SP1 protocol value that fixes
-    # the round count, so it cannot be padded away.
+    # kernels compile once per {row-cap class (see `_row_cap`), 2^niv interaction
+    # class, dtype} instead of once per width. 2^niv is an SP1 protocol value that
+    # fixes the round count, so it cannot be padded away.
     floor_padded = sum(rc + rc % 2 for rc in first.row_counts)
     caps = RoundWidthCaps(
         row=_row_cap(floor_padded),
