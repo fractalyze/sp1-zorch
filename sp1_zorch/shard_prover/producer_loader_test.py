@@ -79,11 +79,15 @@ class RegionsFromProducerParityTest(absltest.TestCase):
         self.f_main, self.f_prep = shard_regions(self.fixture_shard)
 
         # The producer bundle for the same shard: rw-named uint32 device
-        # arrays in sorted rw-name order (chips_to_jax's contract), built
+        # arrays in sorted rw-name order, carrying riscv-witness's per-zkVM
+        # registry prefix exactly as a live bundle does ("sp1_add"), built
         # from the dump writer's raw bits, independent of the loader's
         # arrays — so bit-parity below compares two ingests, not one array
         # with itself.
-        producer = {sp1_name_to_rw(name): jnp.array(raw) for name, raw in raws.items()}
+        producer = {
+            "sp1_" + sp1_name_to_rw(name): jnp.array(raw)
+            for name, raw in raws.items()
+        }
         self.producer_order = tuple(sorted(producer))
         self.producer_chips = {n: producer[n] for n in self.producer_order}
         num_reals = {n: int(a.shape[0]) for n, a in producer.items()}
@@ -196,6 +200,10 @@ class RwNameToSp1Test(absltest.TestCase):
     def test_single_token_names_invert_lower(self):
         self.assertEqual(rw_name_to_sp1("add"), "Add")
         self.assertEqual(rw_name_to_sp1("poseidon2"), "Poseidon2")
+
+    def test_registry_prefix_is_stripped(self):
+        self.assertEqual(rw_name_to_sp1("sp1_add"), "Add")
+        self.assertEqual(rw_name_to_sp1("sp1_memory_global_final"), "MemoryGlobalFinalize")
 
     def test_round_trip_through_forward_map(self):
         for rw in ("add", "byte_lookup", "utype", "uint256_mul", "divrem"):

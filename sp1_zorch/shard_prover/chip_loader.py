@@ -89,12 +89,17 @@ def rw_name_to_sp1(rw_name: str) -> str:
     every downstream stage — chip_order, the preamble's Fiat-Shamir chip
     metadata — speaks SP1 names).
 
+    Live bundles name chips with riscv-witness's per-zkVM registry prefix
+    (``"sp1_add"``); the prefix is namespacing, not part of the chip name,
+    so it is stripped before mapping.
+
     Outside the irregular table the forward map is ``.lower()``, whose
     inverse is well-defined only for single-token PascalCase names
     (``"add"`` -> ``"Add"``). A snake_case name missing from the table is
     therefore uninvertible — fail loudly rather than fabricate an SP1 name
     the transcript preamble would absorb.
     """
+    rw_name = rw_name.removeprefix("sp1_")
     sp1 = _RW_NAME_TO_SP1.get(rw_name)
     if sp1 is not None:
         return sp1
