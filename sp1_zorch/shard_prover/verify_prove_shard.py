@@ -300,6 +300,11 @@ def main(argv) -> None:
             flush=True,
         )
         t0 = time.monotonic()
+        # Release the prior pass's device buffers before this pass allocates. The
+        # carry pins the shard's trace regions plus the GKR openings; holding a
+        # spent pass resident while the next re-allocates the pyramid intermediate
+        # is what tips a wide shard over the card on --runs>=2.
+        carry = msgs = None
         carry, _, msgs = chain(
             ShardCarry(main_region, prep_region, main.public_values),
             fresh_transcript(),
