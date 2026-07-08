@@ -51,6 +51,7 @@ from zorch.logup_gkr.circuit import (
 from zorch.logup_gkr.jagged_prover import (
     JaggedGkrLayerRound,
     JaggedLayerProof,
+    RoundWidthCaps,
 )
 from zorch.round import ProveChain, Round
 from zorch.transcript import GrindingTranscript, Transcript
@@ -314,6 +315,42 @@ def resolve_witness_and_grind(
     return transcript, witness
 
 
+# Right-size the fixed-width round buffer (xla#179) to a shared compile class.
+# The cap pins ONE round-buffer width so the FS-less round kernels compile once
+# per class -- the per-layer lay-in pads each layer to it. It must span the FULL
+# shard range: every shard the driver hands us, from a tiny shard 0 (or a CPU
+# test fixture) up to an arbitrarily wide one, gets a cap that tracks its own
+# floor, never a fixed machine constant that would over-allocate a small shard
+# (a 4M floor OOMs a 32-row layout) or cap out a big one.
+#
+# The class is the smallest multiple of the stacking height (2^21) that holds the
+# shard's even-padded round-0 layout. 2^21 is SP1's CORE_LOG_STACKING_HEIGHT --
+# the granularity its jagged commit stacks the trace at -- so the classes line up
+# with SP1's own sizing (shard17 ~3M -> 4M, shard18 ~16.9M -> 18M, both exact
+# multiples) and over-allocation stays below one stacking height (~2M), avoiding
+# the 2^25 = 32M power of two that doubled the EF plane buffers to ~2.1 GB and
+# OOM'd the widest shard. Below one stacking height, snapping up would grossly
+# over-allocate a tiny shard, so there the class is the next power of two instead
+# (still a multiple of 4, as the boundary handoff's two stride-2 halvings need
+# row % 4 == 0).
+_LOG_STACKING_HEIGHT = 21
+_STACKING_HEIGHT = 1 << _LOG_STACKING_HEIGHT
+
+
+def _row_cap(floor_padded: int) -> int:
+    """The shard's round-buffer class: the smallest multiple of the stacking
+    height (2^21) holding its even-padded round-0 layout, or -- below one
+    stacking height -- the next power of two. Shards in the same class share the
+    round-kernel compile; a bigger shard lands in a higher class and proves at
+    its own size, so there is no fixed ceiling to OOM against."""
+    if floor_padded < _STACKING_HEIGHT:
+        cap = 4
+        while cap < floor_padded:
+            cap <<= 1
+        return cap
+    return -(-floor_padded // _STACKING_HEIGHT) * _STACKING_HEIGHT
+
+
 def prove_logup_gkr_body(
     gkr_chips: Sequence[GkrChip],
     main_region: JaggedRegion,
@@ -354,11 +391,33 @@ def prove_logup_gkr_body(
     # JaggedGkrLayerRound. zorch retired the device-FS rolled `prove_jagged_pyramid`
     # (Fiat-Shamir now runs on the host between kernel launches); the unrolled
     # chain is byte-identical and the production path. Each layer traces once per
-    # shape, and the generator releases a proved layer before building the next so
-    # at most one big-witness layer stays live. Byte-match is gated by the SP1
-    # reference (verify_gkr_prove) and a captured CPU golden.
-    proved = [layers.pop() for _ in range(len(layers))]
-    chain = ProveChain(JaggedGkrLayerRound(layer, EF_LIMBS) for layer in proved)
+    # shape. Pop the layers into their rounds through a lazy generator (floor
+    # first via `layers.pop()` per yield, NOT a materialized `proved` list): only
+    # then does ProveChain's lazy consume release each proved layer before
+    # building the next, so at most one big-witness layer stays live. A resident
+    # list would pin the whole pyramid and defeat that invariant -- the runtime
+    # host-RAM half of zorch#362 (the builder is the other half). Byte-match is
+    # gated by the SP1 reference (verify_gkr_prove) and a captured CPU golden.
+    #
+    # Fixed-width round buffers (fractalyze/xla#179): the caps pin ONE operand
+    # shape per round phase across every round and layer, so the FS-less round
+    # kernels compile once per {row-cap class (see `_row_cap`), 2^niv interaction
+    # class, dtype} instead of once per width. 2^niv is an SP1 protocol value that
+    # fixes the round count, so it cannot be padded away.
+    floor_padded = sum(rc + rc % 2 for rc in first.row_counts)
+    caps = RoundWidthCaps(
+        elements=_row_cap(floor_padded),
+        eq_row=1 << num_row_variables,
+        interaction=max(4, len(first.row_counts)),
+    )
+    # Each layer proves through the whole-layer jit zone (one executable per
+    # layer): the caps pre-lay in zorch's `_jagged_round_via_zone` keys the
+    # compile per nrv class, so shards share every layer program and XLA fuses
+    # the inter-round glue instead of the host dispatching per round.
+    chain = ProveChain(
+        JaggedGkrLayerRound(layers.pop(), EF_LIMBS, caps=caps)
+        for _ in range(len(layers))
+    )
     (_, _, eval_point), transcript, round_proofs = chain(carry, transcript)
 
     transcript, chip_openings = open_traces(

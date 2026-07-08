@@ -24,9 +24,20 @@ jagged eval) on the **same** rsp shard, and the outputs are byte-identical
 
 ```bash
 JAX_PLATFORMS=cuda \
+  XLA_FLAGS="--xla_gpu_enable_command_buffer=FUSION,CUSTOM_CALL" \
   bazel run //sp1_zorch/shard_prover:verify_prove_shard -- \
     --shard_dir=/data/sp1_dumps/rsp_21740136_sp1/shard17 --ffi_verify --runs=2
 ```
+
+The `--xla_gpu_enable_command_buffer=...` flag captures each fused region (the
+whole-layer LogUp-GKR zone, the trace-commit tail) as a CUDA graph so the warm
+pass isn't host-dispatch-bound. **Do NOT add `--xla_gpu_graph_min_graph_size=1`.**
+It additionally captures every 1-op region (the ~4.3k `wrapped_*` pyramid-transition
+ops) as its own resident CUDA graph; their cross-pass buffer residency
+double-allocates the pyramid intermediate on the warm pass and OOMs a wide shard —
+`shard18 --runs≥2` dies with `RESOURCE_EXHAUSTED: allocate 3.77 GiB` on pass 2,
+while a fresh single-pass prove succeeds. It also gives no speedup (shard17 warm
+GKR 43 ms with it, ~41 ms without), since the zone is already one big graph.
 
 This runs the GPU plugin bundled in the pinned `jax_cuda12_pjrt` wheel. The
 new-jax 0.10 loader has no plugin-path env var; to measure a *locally built* zkx
