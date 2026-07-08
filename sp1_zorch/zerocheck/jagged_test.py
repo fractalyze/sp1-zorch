@@ -34,7 +34,7 @@ from zorch.poly.eq import expand_eq_to_hypercube
 from zorch.poly.geq import VirtualGeq
 from zorch.poly.univariate import compute_inv_vandermonde, eval_coeffs
 from zorch.sumcheck.gruen import interp_matrix, round_coeffs_from_matrix
-from zorch.sumcheck.prover import split_pairs, zero_extend
+from zorch.sumcheck.prover import split_pairs
 from zorch.testkit.transcript import cheap_transcript
 from zorch.transcript import sample_challenge
 
@@ -46,6 +46,17 @@ from sp1_zorch.zerocheck.jagged import (
     prove_jagged_zerocheck,
 )
 from sp1_zorch.zerocheck.coeffs import gkr_powers, rlc_coeffs
+
+
+def zero_extend(arr, width):
+    """Oracle-local zero-extend of the last axis to `width` (zorch#412 removed
+    `sumcheck.prover.zero_extend`; the engine keeps a private copy). Byte-equal
+    to the old block: the padded rows are exact field zeros."""
+    pad = width - arr.shape[-1]
+    if pad == 0:
+        return arr
+    return jnp.concatenate([arr, jnp.zeros((*arr.shape[:-1], pad), arr.dtype)], axis=-1)
+
 
 # Witness chip: columns [a, b, c] with a == 1 on every real row, so both
 # constraints vanish there while C(0_row) = [1, 0] keeps the padded-row

@@ -94,7 +94,7 @@ from zorch.sumcheck.gruen import (
     interp_matrix,
     round_coeffs_from_matrix,
 )
-from zorch.sumcheck.prover import RoundMsg, split_pairs, zero_extend
+from zorch.sumcheck.prover import RoundMsg, split_pairs
 from zorch.transcript import Transcript, sample_challenge
 
 from sp1_zorch.zerocheck._round_composite import zerocheck_round_poly
@@ -102,6 +102,22 @@ from sp1_zorch.zerocheck.coeffs import gkr_powers
 
 if TYPE_CHECKING:
     from zorch.sumcheck.gruen import GruenSummand
+
+
+def _zero_extend(arr: Array, width: int) -> Array:
+    """Zero-extend the last axis to `width` -- the re-extension the fixed-width
+    round carry pairs with its fold: the live prefix halves each round while the
+    buffer width stays put, and the dead tail stays exactly zero so full-width
+    reductions match live-prefix-truncated ones byte-for-byte (field zero-adds
+    are exact). In-tree because zorch#412 dropped `sumcheck.prover.zero_extend`
+    (internally dead there once its sumcheck family moved to the domain layer);
+    the SP1-schedule fixed-width buffer here still needs the re-extension."""
+    pad = width - arr.shape[-1]
+    if pad < 0:
+        raise ValueError(f"width {width} < last-axis size {arr.shape[-1]}")
+    if pad == 0:
+        return arr
+    return jnp.concatenate([arr, jnp.zeros((*arr.shape[:-1], pad), arr.dtype)], axis=-1)
 
 
 def _challenge_limbs(dtype) -> int:
@@ -511,7 +527,7 @@ def prove_jagged_zerocheck(
     # folds against an extension-field challenge, which a fixed-shape carry
     # forbids (the embedding is exact, so the round polys are unchanged).
     widths = [((nr + 3) // 4) * 4 for nr in nrs]
-    bufs = [zero_extend(traces[i], widths[i]).astype(ef) for i in range(num_chips)]
+    bufs = [_zero_extend(traces[i], widths[i]).astype(ef) for i in range(num_chips)]
     # int32 threshold from the start: as a scan carry it must keep the same
     # leaf type fix_last_variable produces (it folds to a traced int32).
     vgeqs = [VirtualGeq(jnp.asarray(nr, jnp.int32), one, zero) for nr in nrs]
@@ -561,7 +577,7 @@ def prove_jagged_zerocheck(
     def fold_eq(buf: Array) -> Array:
         if eq_width < 2:
             return buf  # single round: no next-round table is needed
-        return zero_extend(contract_hypercube_step(buf), eq_width)
+        return _zero_extend(contract_hypercube_step(buf), eq_width)
 
     def round_step(carry, xs):
         bufs, vgeqs, chip_claims, eq_adj, nrs_live, eq_buf, transcript = carry
@@ -610,7 +626,7 @@ def prove_jagged_zerocheck(
         transcript = transcript.observe(rlc)
         transcript, r = sample_challenge(transcript, ef, ef_limbs)
 
-        bufs = [zero_extend(p0s[i] + r * diffs[i], widths[i]) for i in range(num_chips)]
+        bufs = [_zero_extend(p0s[i] + r * diffs[i], widths[i]) for i in range(num_chips)]
         vgeqs = [vg.fix_last_variable(r) for vg in vgeqs]
         nrs_live = [(nr + 1) // 2 for nr in nrs_live]
         chip_claims, eq_adj = fold_round_scalars(polys, r, eq_adj, last)
