@@ -47,6 +47,7 @@ from sp1_zorch.zerocheck.coeffs import constraint_rlc, rlc_coeffs
 from sp1_zorch.zerocheck.prover import (
     OpenedValuesRound,
     ZerocheckProof,
+    export_order_eval_fn,
     gkr_opening_claims,
     probe_num_constraints,
     sample_stage_challenges,
@@ -140,9 +141,19 @@ def verify_shard_zerocheck(
     terms = []
     for name, opened_row in zip(chip_names, opened_rows):
         geq = geq_by_height[chip_heights[name]]
-        eval_fn = chips[name].eval_constraints
+        # The rotation split comes from the GKR dual's leaf-checked openings
+        # (a trusted input, see the function docstring), never from the
+        # proof's own opened values — a malformed proof must not steer how
+        # its row is reinterpreted. A width that disagrees with the statement
+        # fails the traced evaluation instead of shifting columns.
+        stmt = chip_openings[name]
+        main_width = int(stmt.main.shape[0])
+        num_cols = main_width + (
+            0 if stmt.preprocessed is None else int(stmt.preprocessed.shape[0])
+        )
+        eval_fn = export_order_eval_fn(chips[name], main_width, num_cols)
         num_constraints = probe_num_constraints(
-            eval_fn, opened_row.shape[0], ef, public_values
+            eval_fn, num_cols, ef, public_values
         )
         if num_constraints:
             # Row 0 is the opening, row 1 a zero row: one batched fold yields

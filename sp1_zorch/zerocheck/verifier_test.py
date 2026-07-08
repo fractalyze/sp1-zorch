@@ -43,10 +43,16 @@ class _WitnessChip:
     """Witness-shaped stub (a == 1 on real rows, so constraints vanish there
     while ``C(0_row) != 0`` keeps the padded-row correction live) whose second
     constraint folds in ``public_values[0]`` — the pv-binding seam the dual
-    must thread through its oracle check."""
+    must thread through its oracle check.
+
+    Reads the rw-constraints export layout: flat rows in ``[prep | main]``
+    order (prep width 2, so the 3 main value columns sit at flat indices
+    2..4), while the stage's traces and openings are wire-order
+    ``[main | prep]`` — the ``export_order_eval_fn`` rotation is what lines
+    them up, on the prover and the dual alike."""
 
     def eval_constraints(self, trace, public_values):
-        a, b, c = trace[:, 0], trace[:, 1], trace[:, 2]
+        a, b, c = trace[:, 2], trace[:, 3], trace[:, 4]
         one = jnp.ones((), trace.dtype)
         pv0 = jnp.concatenate([public_values[:1], jnp.zeros((3,), BF)]).view(EF)[0]
         return jnp.stack([(a - one) * (c - one), (a - one) * (b + pv0)], axis=-1)
