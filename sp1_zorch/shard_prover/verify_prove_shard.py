@@ -212,9 +212,6 @@ def main(argv) -> None:
         open_num_queries=_OPEN_NUM_QUERIES.value,
         open_pow_bits=_OPEN_POW_BITS.value,
         witness=witness,
-        # Required at rsp scale for the commit (see zorch.pcs.jagged.commit).
-        # The GKR stage keeps its `zorch.sumcheck` composite via the rolled
-        # marker, independent of this flag.
         jit=True,
     )
     # Slice to the first N stages (--max_stage) so the downstream stages' compile
@@ -297,6 +294,11 @@ def main(argv) -> None:
             flush=True,
         )
         t0 = time.monotonic()
+        # Release the prior pass's device buffers before this pass allocates. The
+        # carry pins the shard's trace regions plus the GKR openings; holding a
+        # spent pass resident while the next re-allocates the pyramid intermediate
+        # is what tips a wide shard over the card on --runs>=2.
+        carry = msgs = None
         carry, _, msgs = chain(
             ShardCarry(main_region, prep_region, main.public_values),
             fresh_transcript(),
