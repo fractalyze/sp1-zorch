@@ -49,10 +49,16 @@ class _WitnessChip:
     """Witness-shaped stub (a == 1 on real rows, so constraints vanish there
     while ``C(0_row) != 0`` keeps the padded-row correction live) whose second
     constraint folds in ``public_values[0]`` — the pv-binding seam the stage
-    must thread through."""
+    must thread through.
+
+    Reads the rw-constraints export layout: flat rows in ``[prep | main]``
+    order (prep width 2, so the 3 main value columns sit at flat indices
+    2..4), while the stage's traces and openings are wire-order
+    ``[main | prep]`` — the ``export_order_eval_fn`` rotation is what lines
+    them up."""
 
     def eval_constraints(self, trace, public_values):
-        a, b, c = trace[:, 0], trace[:, 1], trace[:, 2]
+        a, b, c = trace[:, 2], trace[:, 3], trace[:, 4]
         one = jnp.ones((), trace.dtype)
         pv0 = jnp.concatenate([public_values[:1], jnp.zeros((3,), BF)]).view(EF)[0]
         return jnp.stack([(a - one) * (c - one), (a - one) * (b + pv0)], axis=-1)
@@ -159,8 +165,13 @@ class ProveZerocheckTest(absltest.TestCase):
         traces = [alpha_trace, lookup_main.T]
         # The chips' 2-ary ``eval_constraints`` are the eval_fns; the statement
         # is threaded to the summand as a declared operand, not closed over.
+        # The stage hands the summand export-order rows: [main | prep] trace
+        # rows rotate to the exporter's [prep | main] before the chip sees
+        # them (alpha: main width 3 of 5 columns; lookup is main-only).
         eval_fns = [
-            chips["alpha"].eval_constraints,
+            lambda tr, pv: chips["alpha"].eval_constraints(
+                jnp.concatenate([tr[..., 3:], tr[..., :3]], axis=-1), pv
+            ),
             chips["lookup"].eval_constraints,
         ]
         alphas = [rlc_coeffs(alpha, 2), rlc_coeffs(alpha, 0)]

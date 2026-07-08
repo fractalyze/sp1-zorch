@@ -110,6 +110,34 @@ def chip_traces(
     return traces
 
 
+def export_order_eval_fn(
+    chip: Chip, main_width: int, num_cols: int
+) -> Callable[[Array, Array], Array]:
+    """The chip's 2-ary ``eval_constraints`` accepting ``[main | prep]`` rows.
+
+    rw-constraints exports evaluate a flat trace in the exporter's
+    ``[preprocessed | main]`` column order (the recursion Select constraint
+    reads its 5 main value columns at flat indices 8..12 of 13), while the
+    zerocheck's traces, opened values, and beta column batch all follow SP1's
+    wire order ``[main | prep]``. This seam rotates each row into export
+    order before evaluating — the single place the two conventions meet, for
+    the prover's summand and the verifier dual alike. A main-only chip
+    (``num_cols == main_width``) needs no rotation; the closure carries only
+    static widths, so it is legal under the jitted stage bodies.
+    """
+    fn = chip.eval_constraints
+    if num_cols == main_width:
+        return fn
+
+    def eval_fn(rows: Array, public_values: Array) -> Array:
+        export_rows = jnp.concatenate(
+            [rows[..., main_width:], rows[..., :main_width]], axis=-1
+        )
+        return fn(export_rows, public_values)
+
+    return eval_fn
+
+
 def probe_num_constraints(
     eval_fn: Callable[[Array, Array], Array],
     width: int,
@@ -263,7 +291,10 @@ def prove_shard_zerocheck(
     # threaded through ``constraint_eval``'s ``aux_operands`` at the fold sites,
     # not closed over — a closure would carry a tracer into the composite under
     # the jitted stage body.
-    eval_fns = [chips[name].eval_constraints for name in chip_names]
+    eval_fns = [
+        export_order_eval_fn(chips[name], int(main_region.chip_widths[i]), int(t.shape[0]))
+        for i, (name, t) in enumerate(zip(chip_names, traces))
+    ]
 
     claims = gkr_opening_claims([chip_openings[name] for name in chip_names], gkr_batch)
 
