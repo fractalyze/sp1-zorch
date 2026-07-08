@@ -24,7 +24,7 @@ jagged eval) on the **same** rsp shard, and the outputs are byte-identical
 
 ```bash
 JAX_PLATFORMS=cuda \
-  XLA_FLAGS="--xla_gpu_enable_command_buffer=FUSION,CUBLAS,CUBLASLT,CUDNN,CUSTOM_CALL" \
+  XLA_FLAGS="--xla_gpu_enable_command_buffer=FUSION,CUSTOM_CALL" \
   bazel run //sp1_zorch/shard_prover:verify_prove_shard -- \
     --shard_dir=/data/sp1_dumps/rsp_21740136_sp1/shard17 --ffi_verify --runs=2
 ```

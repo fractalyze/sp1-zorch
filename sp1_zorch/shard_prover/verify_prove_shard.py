@@ -134,8 +134,6 @@ _MAX_STAGE = flags.DEFINE_integer(
     "stages' multi-minute compile for a cheaper iteration loop; golden checks "
     "for stages beyond N are skipped.",
 )
-
-
 class _TimedRound(Round):
     """Print each stage's wall-clock so the compile-vs-runtime split is
     visible on every run (async dispatch makes unblocked timings lie, so
@@ -214,10 +212,6 @@ def main(argv) -> None:
         open_num_queries=_OPEN_NUM_QUERIES.value,
         open_pow_bits=_OPEN_POW_BITS.value,
         witness=witness,
-        # Required at rsp scale for the commit (see zorch.pcs.jagged.commit); the
-        # GKR stage runs its shard-invariant whole-layer jit zone under the same
-        # flag -- the caps make it memory-bounded, so no size-gate (zorch#327,
-        # #362).
         jit=True,
     )
     # Slice to the first N stages (--max_stage) so the downstream stages' compile
