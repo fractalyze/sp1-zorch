@@ -25,7 +25,11 @@ common --override_module=zorch=/abs/path/to/your/zorch/checkout
 ```
 
 Bump the pin when you need newer `zorch` blocks; keep it on `main` commits so CI
-is reproducible.
+is reproducible. **Bump the jax family in `requirements.in` +
+`requirements_lock_3_11.txt` to match zorch's pin in the *same* commit** — zorch
+and sp1-zorch build against a shared jaxlib, so a lagging jax pin ABI-mismatches
+and **segfaults** the GPU tests (`verify_shard_test`), not a clean `ImportError`.
+`sp1-zorch main` is the reference for the matching `(zorch pin, jax)` pair.
 
 ## Development environment
 
