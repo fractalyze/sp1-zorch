@@ -315,34 +315,40 @@ def resolve_witness_and_grind(
     return transcript, witness
 
 
-# Row-cap size classes for the fixed-width round buffers (xla#179). The cap pins
-# ONE round-buffer width so the FS-less round kernels compile once per class --
-# the per-layer lay-in then pads each layer to it. A single machine constant
-# sized for the widest shard (18M, shard18's ~16.9M floor) made every narrower
-# shard pay shard18's padding: the loop_pad_fusion lay-ins materialize the full
-# cap width, so shard17 (floor ~3M) padding ~6x oversize was ~half the warm GKR
-# stage (80 -> 43 ms once right-sized). A small ladder keeps the compile-once
-# property WITHIN a class (a bounded set of classes, NOT per-shard height) while
-# a narrow shard pays only its own class. Rungs are multiples of 4 (the boundary
-# handoff's two stride-2 halvings need row % 4 == 0) and NOT powers of two (2^25
-# doubled the plane buffers ~2.1 GB EF and OOM'd the widest shard).
-_M = 1 << 20
-_ROW_CAP_LADDER = (4 * _M, 8 * _M, 18 * _M)
+# Right-size the fixed-width round buffer (xla#179) to a shared compile class.
+# The cap pins ONE round-buffer width so the FS-less round kernels compile once
+# per class -- the per-layer lay-in pads each layer to it. It must span the FULL
+# shard range: every shard the driver hands us, from a tiny shard 0 (or a CPU
+# test fixture) up to an arbitrarily wide one, gets a cap that tracks its own
+# floor, never a fixed machine constant that would over-allocate a small shard
+# (a 4M floor OOMs a 32-row layout) or cap out a big one.
+#
+# The class is the smallest multiple of the stacking height (2^21) that holds the
+# shard's even-padded round-0 layout. 2^21 is SP1's CORE_LOG_STACKING_HEIGHT --
+# the granularity its jagged commit stacks the trace at -- so the classes line up
+# with SP1's own sizing (shard17 ~3M -> 4M, shard18 ~16.9M -> 18M, both exact
+# multiples) and over-allocation stays below one stacking height (~2M), avoiding
+# the 2^25 = 32M power of two that doubled the EF plane buffers to ~2.1 GB and
+# OOM'd the widest shard. Below one stacking height, snapping up would grossly
+# over-allocate a tiny shard, so there the class is the next power of two instead
+# (still a multiple of 4, as the boundary handoff's two stride-2 halvings need
+# row % 4 == 0).
+_LOG_STACKING_HEIGHT = 21
+_STACKING_HEIGHT = 1 << _LOG_STACKING_HEIGHT
 
 
 def _row_cap(floor_padded: int) -> int:
-    """Smallest row-cap class that fits this shard's even-padded round-0 layout.
-    Shards in the same class share the round-kernel compile; overflowing the
-    widest class means shard sizing grew -- extend the ladder deliberately."""
-    for cap in _ROW_CAP_LADDER:
-        if floor_padded <= cap:
-            return cap
-    raise ValueError(
-        f"floor layer's even-padded round-0 layout ({floor_padded}) exceeds the "
-        f"widest row-cap class {_ROW_CAP_LADDER[-1]}; add a larger class to "
-        "_ROW_CAP_LADDER (costs only device-buffer headroom) after checking "
-        "shard sizing"
-    )
+    """The shard's round-buffer class: the smallest multiple of the stacking
+    height (2^21) holding its even-padded round-0 layout, or -- below one
+    stacking height -- the next power of two. Shards in the same class share the
+    round-kernel compile; a bigger shard lands in a higher class and proves at
+    its own size, so there is no fixed ceiling to OOM against."""
+    if floor_padded < _STACKING_HEIGHT:
+        cap = 4
+        while cap < floor_padded:
+            cap <<= 1
+        return cap
+    return -(-floor_padded // _STACKING_HEIGHT) * _STACKING_HEIGHT
 
 
 def prove_logup_gkr_body(
