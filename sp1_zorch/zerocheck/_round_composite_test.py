@@ -11,7 +11,6 @@ from zk_dtypes import koalabear_mont, koalabearx4_mont
 
 from zorch.poly.geq import VirtualGeq
 from zorch.sumcheck.gruen import interp_matrix
-from zorch.sumcheck.prover import split_pairs
 
 from sp1_zorch.zerocheck._round_composite import zerocheck_round_poly
 from sp1_zorch.zerocheck.coeffs import gkr_powers, rlc_coeffs
@@ -76,7 +75,10 @@ class MarkerByteTransparencyTest(absltest.TestCase):
         )
 
         gkr = gkr_powers(beta, _NUM_COLS)
-        p0, p1 = split_pairs(trace)
+        # Row-major carry (fractalyze/sp1-zorch#242): `[rows, num_cols]` trace,
+        # axis-0 stride-2 pair fold (the dual of the old last-axis split).
+        trace_rm = trace.T
+        p0, p1 = trace_rm[0::2], trace_rm[1::2]
         diff = p1 - p0
         eq = _rand(3, (nr // 2,))
         nr_live = jnp.asarray(nr, jnp.int32)

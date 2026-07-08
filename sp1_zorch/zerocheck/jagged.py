@@ -94,7 +94,7 @@ from zorch.sumcheck.gruen import (
     interp_matrix,
     round_coeffs_from_matrix,
 )
-from zorch.sumcheck.prover import RoundMsg, split_pairs
+from zorch.sumcheck.prover import RoundMsg
 from zorch.transcript import Transcript, sample_challenge
 
 from sp1_zorch.zerocheck._round_composite import zerocheck_round_poly
@@ -120,6 +120,20 @@ def _zero_extend(arr: Array, width: int) -> Array:
     return jnp.concatenate([arr, jnp.zeros((*arr.shape[:-1], pad), arr.dtype)], axis=-1)
 
 
+def _row_zero_extend(arr: Array, height: int) -> Array:
+    """Zero-extend axis 0 (the row axis of the row-major carry) to `height` --
+    the axis-0 dual of `_zero_extend`. The row-major dense carry
+    (fractalyze/sp1-zorch#242) folds the live prefix by halving the ROW axis,
+    so its re-extension pads rows, not columns; the dead tail stays exact field
+    zeros so full-height reductions match live-prefix-truncated ones."""
+    pad = height - arr.shape[0]
+    if pad < 0:
+        raise ValueError(f"height {height} < axis-0 size {arr.shape[0]}")
+    if pad == 0:
+        return arr
+    return jnp.concatenate([arr, jnp.zeros((pad, *arr.shape[1:]), arr.dtype)], axis=0)
+
+
 def _challenge_limbs(dtype) -> int:
     """Transcript squeezes per challenge of ``dtype``: an extension field
     takes ``degree`` base squeezes reinterpreted (SP1's ``sample_ext_element``
@@ -134,7 +148,7 @@ def _challenge_limbs(dtype) -> int:
 def _constraint_and_column_term(
     eval_fn: Callable[[Array, Array], Array],
     public_values: Array,
-    rows_t: Array,
+    rows: Array,
     alpha: Array,
     gkr_powers: Array,
     live_width: Array,
@@ -144,6 +158,13 @@ def _constraint_and_column_term(
     (the cross-row eq-weighted reduce is the caller's — `_reduce_and_assemble`
     — this is the round marker's future decomposition-body operand) with rows
     past ``live_width`` masked to zero.
+
+    ``rows`` is the chip's row-major ``[rows, num_cols]`` trace read directly —
+    the orientation `constraint_eval` already consumes, now the carry's native
+    layout so there is no transpose (fractalyze/sp1-zorch#242). The
+    `start_offset` window that lets a chip read its segment out of a shared
+    class buffer is the follow-on slice — it needs the emitter recognizer that
+    disambiguates a second scalar-s32 operand, which rides the wheel rebuild.
 
     ``public_values`` rides ``constraint_eval``'s ``aux_operands`` so the 2-ary
     ``eval_fn(rows, pv)`` reads the statement as a declared operand — not a
@@ -158,7 +179,7 @@ def _constraint_and_column_term(
     decomposition's identical dot."""
     return constraint_eval(
         eval_fn,
-        rows_t,
+        rows,
         alpha,
         live_width=live_width,
         column_weights=gkr_powers,
@@ -167,22 +188,25 @@ def _constraint_and_column_term(
 
 
 def _column_term(
-    rows_t: Array, alpha: Array, gkr_powers: Array, live_width: Array
+    rows: Array, alpha: Array, gkr_powers: Array, live_width: Array
 ) -> Array:
     """A lookup-only chip's whole PER-ROW summand value at one t-point: just
     the GKR column term as a standalone matmul, eq-unweighted. Such a chip has
     NO transition constraints — SP1's Byte / Program / Range ship K = 0 in
     every real shard, so this is a production strategy, not a defensive one
-    (`constraint_eval` rejects an empty alpha)."""
+    (`constraint_eval` rejects an empty alpha).
+
+    ``rows`` is the chip's row-major ``[rows, num_cols]`` trace, so the dot is
+    the direct ``rows @ gkr_powers`` (no transpose)."""
     del alpha, live_width  # no constraint fold to mask or bound
-    return rows_t @ gkr_powers
+    return rows @ gkr_powers
 
 
 # A chip's term strategy — `_constraint_and_column_term` with its eval_fn
 # bound, or `_column_term` — chosen once at summand init:
-# (rows_t, alpha, gkr_powers, live_width) -> the per-row summand value at one
+# (rows, alpha, gkr_powers, live_width) -> the per-row summand value at one
 # t-point, eq-unweighted (the cross-row reduce lives in `_summand_values`'s
-# caller).
+# caller). ``rows`` is the chip's row-major ``[rows, num_cols]`` trace.
 _TermFn = Callable[[Array, Array, Array, Array], Array]
 
 
@@ -381,7 +405,11 @@ if TYPE_CHECKING:
 def _summand_values(term, alpha, p0, diff, gkr_powers, nr_live, is_round0):
     """Per-t (t=0,2,4) per-row summand values (constraint+column via `term`;
     round-0 drops the constraint at t=0 by zeroing alpha). The marker's
-    summand-value operand — `constraint_eval` stays external, eq-unweighted."""
+    summand-value operand — `constraint_eval` stays external, eq-unweighted.
+
+    ``p0`` / ``diff`` are the row-major ``[rows, num_cols]`` even/odd row halves
+    of the carry, so each t-trace is handed to ``term`` with no transpose
+    (fractalyze/sp1-zorch#242)."""
     ef = p0.dtype
     two, four = jnp.array(2, ef), jnp.array(4, ef)
     num_non_padded = (nr_live + 1) // 2
@@ -389,7 +417,8 @@ def _summand_values(term, alpha, p0, diff, gkr_powers, nr_live, is_round0):
 
     def one(rows, *, mask_round0):
         a = jnp.where(is_round0, jnp.zeros_like(alpha), alpha) if mask_round0 else alpha
-        return term(rows.T, a, gkr_powers, num_non_padded)  # per-row, eq-unweighted
+        # per-row, eq-unweighted; the carry is row-major, so no transpose
+        return term(rows, a, gkr_powers, num_non_padded)
 
     return (one(t_traces[0], mask_round0=True),
             one(t_traces[1], mask_round0=False),
@@ -519,15 +548,20 @@ def prove_jagged_zerocheck(
         for i in range(num_chips)
     ]
 
-    # Fixed-width buffers: each chip's width is pinned once at its padded
-    # round-0 height and never shrinks; folds re-extend into the same width
-    # so every per-chip op (and its compiled kernel) is round-invariant. The
-    # buffer rides the scan carry, so it is promoted to the round's field up
-    # front: a base-field trace would otherwise change dtype the first time it
-    # folds against an extension-field challenge, which a fixed-shape carry
-    # forbids (the embedding is exact, so the round polys are unchanged).
+    # Fixed-height row-major buffers: each chip's buffer is `[pad4(nr), num_cols]`
+    # (fractalyze/sp1-zorch#242), the orientation `zorch.constraint_eval` reads
+    # directly (and the one its follow-on `start_offset` window will read out of
+    # a shared class buffer) with no transpose. The height is pinned once at
+    # the padded round-0 height and never shrinks; folds re-extend into the same
+    # height so every per-chip op (and its compiled kernel) is round-invariant.
+    # `traces[i]` is column-major `(num_cols, nr)`, so transpose to rows before
+    # the axis-0 zero-extend. The buffer rides the scan carry, so it is promoted
+    # to the round's field up front: a base-field trace would otherwise change
+    # dtype the first time it folds against an extension-field challenge, which a
+    # fixed-shape carry forbids (the embedding is exact, so the polys are
+    # unchanged).
     widths = [((nr + 3) // 4) * 4 for nr in nrs]
-    bufs = [_zero_extend(traces[i], widths[i]).astype(ef) for i in range(num_chips)]
+    bufs = [_row_zero_extend(traces[i].T, widths[i]).astype(ef) for i in range(num_chips)]
     # int32 threshold from the start: as a scan carry it must keep the same
     # leaf type fix_last_variable produces (it folds to a traced int32).
     vgeqs = [VirtualGeq(jnp.asarray(nr, jnp.int32), one, zero) for nr in nrs]
@@ -593,7 +627,11 @@ def prove_jagged_zerocheck(
         p0s = []
         diffs = []
         for i in range(num_chips):
-            p0, p1 = split_pairs(bufs[i])
+            # Row-major carry: the pair fold halves the ROW axis (axis 0). Each
+            # chip block height is pad4(nr) — a multiple of 4, hence even — so
+            # the stride-2 row pairing never straddles a fold boundary (the
+            # axis-0 dual of the last-axis `split_pairs`, fractalyze/sp1-zorch#242).
+            p0, p1 = bufs[i][0::2], bufs[i][1::2]
             diff = p1 - p0
             p0s.append(p0)
             diffs.append(diff)
@@ -626,7 +664,7 @@ def prove_jagged_zerocheck(
         transcript = transcript.observe(rlc)
         transcript, r = sample_challenge(transcript, ef, ef_limbs)
 
-        bufs = [_zero_extend(p0s[i] + r * diffs[i], widths[i]) for i in range(num_chips)]
+        bufs = [_row_zero_extend(p0s[i] + r * diffs[i], widths[i]) for i in range(num_chips)]
         vgeqs = [vg.fix_last_variable(r) for vg in vgeqs]
         nrs_live = [(nr + 1) // 2 for nr in nrs_live]
         chip_claims, eq_adj = fold_round_scalars(polys, r, eq_adj, last)
@@ -647,6 +685,8 @@ def prove_jagged_zerocheck(
         round_step, init, (last_xs, interp_xs, is_round0_xs)
     )
 
-    # The first pair of each buffer is the whole fold result; the rest of the
-    # fixed width is dead zeros.
-    return [b[:, :2] for b in bufs], transcript, msgs
+    # The first two rows of each row-major buffer are the whole fold result; the
+    # rest of the fixed height is dead zeros. Transpose back to the column-major
+    # `(num_cols, 2)` folded-trace contract the caller expects (position 0 holds
+    # the column's evaluation at the sumcheck point).
+    return [b[:2, :].T for b in bufs], transcript, msgs
