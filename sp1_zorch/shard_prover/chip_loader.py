@@ -4,8 +4,10 @@
 ``rw_constraints.Chip`` already carries the AIR constraints and LogUp
 interactions a chip needs downstream; this module binds the SP1 field dtype
 and owns the SP1↔rw naming seam. Dump files use SP1's PascalCase chip names,
-the rw manifest uses snake_case — :data:`SP1_NAME_TO_RW` keeps the handful of
-genuinely-irregular pairs in one place and everything else is ``.lower()``.
+the rw manifest uses snake_case; the pairing is genuinely irregular for many
+chips (``byte_lookup`` ↔ ``Byte``), so it is read from each chip's manifest
+``sp1_name`` field — emitted by the exporter from the schema — rather than a
+table maintained here.
 """
 
 from __future__ import annotations
@@ -21,66 +23,37 @@ from typing import Optional
 from rw_constraints import Chip, ConstraintRegistry, bundled_constraints_dir
 from zk_dtypes import koalabear_mont
 
-# SP1 PascalCase -> rw snake_case, ONLY where ``name.lower()`` is wrong.
-# Mirrors riscv-witness tools/sp1/sp1_shard_prover trace_loader NAME_MAP.
-# Interim: the rw manifest itself should carry each chip's SP1 name so
-# consumers stop hand-maintaining copies of this table; drop it once
-# fractalyze/riscv-witness#1580 ships the mapping in the wheel.
-SP1_NAME_TO_RW = {
-    "Byte": "byte_lookup",
-    "DivRem": "divrem",
-    "KeccakPermute": "keccak_permute",
-    "KeccakPermuteControl": "keccak_permute_control",
-    "LoadByte": "load_byte",
-    "LoadDouble": "load_double",
-    "LoadHalf": "load_half",
-    "LoadWord": "load_word",
-    "LoadX0": "load_x0",
-    "MemoryBump": "memory_bump",
-    "MemoryGlobalFinalize": "memory_global_final",
-    "MemoryGlobalInit": "memory_global_init",
-    "MemoryLocal": "memory_local",
-    "Program": "program_rom",
-    "ShiftLeft": "shift_left",
-    "ShiftRight": "shift_right",
-    "StateBump": "state_bump",
-    "StoreByte": "store_byte",
-    "StoreDouble": "store_double",
-    "StoreHalf": "store_half",
-    "StoreWord": "store_word",
-    "SyscallCore": "syscall_core",
-    "SyscallInstrs": "syscall_instrs",
-    "SyscallPrecompile": "syscall_precompile",
-    "UType": "utype",
-    "Secp256k1AddAssign": "secp256k1_add",
-    "Secp256k1DoubleAssign": "secp256k1_double",
-    "Secp256r1AddAssign": "secp256r1_add",
-    "Secp256r1DoubleAssign": "secp256r1_double",
-    "Bn254AddAssign": "bn254_add",
-    "Bn254DoubleAssign": "bn254_double",
-    "Bls12381AddAssign": "bls12381_add",
-    "Bls12381DoubleAssign": "bls12381_double",
-    "Bn254FpOpAssign": "bn254_fp_op",
-    "Bls12381FpOpAssign": "bls12381_fp_op",
-    "Bn254Fp2AddSubAssign": "bn254_fp2_addsub",
-    "Bls12381Fp2AddSubAssign": "bls12381_fp2_addsub",
-    "Bn254Fp2MulAssign": "bn254_fp2_mul",
-    "Bls12381Fp2MulAssign": "bls12381_fp2_mul",
-    "EdAddAssign": "ed_add",
-    "ShaExtend": "sha256_extend",
-    "ShaExtendControl": "sha256_extend_control",
-    "ShaCompress": "sha256_compress",
-    "ShaCompressControl": "sha256_compress_control",
-    "Uint256MulMod": "uint256_mul",
-    "U256XU2048Mul": "u256x2048_mul",
-}
+
+@functools.cache
+def _sp1_rw_name_maps() -> tuple[dict[str, str], dict[str, str]]:
+    """``(sp1_name -> rw_name, rw_name -> sp1_name)`` from the sp1/v1 manifest.
+
+    riscv-witness emits each chip's SP1 name into ``manifest.json`` (from the
+    schema's ``sp1_name`` attribute), so the irregular SP1↔rw pairing is read
+    from the shipped data rather than a table copied here — it cannot silently
+    drift out of sync with the producer. Chips whose manifest omits
+    ``sp1_name`` are skipped (they fall back to the ``.lower()`` /
+    ``.capitalize()`` defaults below).
+    """
+    manifest = _registry().get_manifest("sp1", "v1")
+    if manifest is None:
+        raise FileNotFoundError(
+            "rw-constraints ships no sp1/v1 manifest; cannot resolve chip names"
+        )
+    sp1_to_rw: dict[str, str] = {}
+    rw_to_sp1: dict[str, str] = {}
+    for chip in manifest.get("chips", []):
+        sp1_name = chip.get("sp1_name")
+        if not sp1_name:
+            continue
+        rw_to_sp1[chip["name"]] = sp1_name
+        sp1_to_rw[sp1_name] = chip["name"]
+    return sp1_to_rw, rw_to_sp1
 
 
 def sp1_name_to_rw(sp1_name: str) -> str:
-    return SP1_NAME_TO_RW.get(sp1_name, sp1_name.lower())
-
-
-_RW_NAME_TO_SP1 = {rw: sp1 for sp1, rw in SP1_NAME_TO_RW.items()}
+    sp1_to_rw, _ = _sp1_rw_name_maps()
+    return sp1_to_rw.get(sp1_name, sp1_name.lower())
 
 
 def rw_name_to_sp1(rw_name: str) -> str:
@@ -93,21 +66,22 @@ def rw_name_to_sp1(rw_name: str) -> str:
     (``"sp1_add"``); the prefix is namespacing, not part of the chip name,
     so it is stripped before mapping.
 
-    Outside the irregular table the forward map is ``.lower()``, whose
-    inverse is well-defined only for single-token PascalCase names
-    (``"add"`` -> ``"Add"``). A snake_case name missing from the table is
-    therefore uninvertible — fail loudly rather than fabricate an SP1 name
-    the transcript preamble would absorb.
+    Chips the manifest doesn't map fall back to ``.capitalize()``, the inverse
+    of ``sp1_name_to_rw``'s ``.lower()`` default, which is well-defined only
+    for single-token names (``"add"`` -> ``"Add"``). A multi-token snake_case
+    name with no manifest ``sp1_name`` is uninvertible — fail loudly rather
+    than fabricate an SP1 name the transcript preamble would absorb.
     """
     rw_name = rw_name.removeprefix("sp1_")
-    sp1 = _RW_NAME_TO_SP1.get(rw_name)
+    _, rw_to_sp1 = _sp1_rw_name_maps()
+    sp1 = rw_to_sp1.get(rw_name)
     if sp1 is not None:
         return sp1
     if "_" in rw_name or not rw_name.islower():
         raise ValueError(
-            f"unknown rw chip name {rw_name!r}: not in SP1_NAME_TO_RW and not "
-            "a single-token lowercase name, so its SP1 spelling cannot be "
-            "derived; add the pair to chip_loader.SP1_NAME_TO_RW"
+            f"unknown rw chip name {rw_name!r}: absent from the rw-constraints "
+            "manifest's sp1_name map and not a single-token lowercase name, so "
+            "its SP1 spelling cannot be derived"
         )
     return rw_name.capitalize()
 
@@ -183,6 +157,7 @@ def make_chip_stub(name: str, num_cols: int) -> Chip:
     """
     obj = Chip.__new__(Chip)
     obj.name = name
+    obj.sp1_name = ""
     obj.num_cols = num_cols
     obj.num_blocks = 1
     obj._funcs = {}
