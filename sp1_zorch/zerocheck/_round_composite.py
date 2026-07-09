@@ -16,6 +16,15 @@ from zorch.poly.eq import eq_factor
 from zorch.sumcheck.gruen import round_coeffs_from_matrix
 from zorch.sumcheck.prover import SUMCHECK_ROUND_MARKER, SUMCHECK_ROUND_MARKER_VERSION
 
+# The PJRT plugin only recognizes the sumcheck round marker for variant
+# dense/jagged (LogUp-GKR); the variant=zerocheck recognizer is a later zorch#394
+# slice than this producer. Emitting the marker before the plugin knows the
+# variant hard-errors on GPU (missing composite attributes / unknown variant),
+# while CPU decomposes inline and hides it. Keep the marker off -- run the
+# byte-identical inline decomposition -- and flip this to True once the plugin
+# lands the recognizer.
+_MARK_ZEROCHECK_ROUNDS = False
+
 
 def _decomp(v0, v2, v4, eq, interp, claim, last, eq_adj, padded_row_adj,
             nr_live, vgeq_threshold, vgeq_geq_coeff, vgeq_eq_coeff, **_attrs):
@@ -42,11 +51,18 @@ def _decomp(v0, v2, v4, eq, interp, claim, last, eq_adj, padded_row_adj,
 
 def zerocheck_round_poly(vals, eq, interp, claim, last, eq_adj, padded_row_adj,
                          nr_live, vgeq):
-    """Emit the variant=zerocheck marker around one LIVE chip's round reduce."""
+    """Emit the variant=zerocheck marker around one LIVE chip's round reduce
+    (gated: see `_MARK_ZEROCHECK_ROUNDS` -- default runs the inline decomposition,
+    byte-identical, until the zkx plugin ships the variant=zerocheck emitter)."""
     v0, v2, v4 = vals
-    return composite(
-        _decomp, v0, v2, v4, eq, interp, claim, last, eq_adj, padded_row_adj,
+    operands = (
+        v0, v2, v4, eq, interp, claim, last, eq_adj, padded_row_adj,
         nr_live, vgeq.threshold, vgeq.geq_coefficient, vgeq.eq_coefficient,
+    )
+    if not _MARK_ZEROCHECK_ROUNDS:
+        return _decomp(*operands)
+    return composite(
+        _decomp, *operands,
         name=SUMCHECK_ROUND_MARKER, version=SUMCHECK_ROUND_MARKER_VERSION,
-        variant="zerocheck", degree=4, poly_form="coefficient",
+        phase="mid", variant="zerocheck", degree=4, poly_form="coefficient",
     )
