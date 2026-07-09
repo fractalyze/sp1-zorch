@@ -10,10 +10,10 @@
 # on the SP1 byte-match path.
 absl-py
 numpy
-jax==0.10.0.dev20260708221109
-jaxlib==0.10.0.dev20260708221109
-jax-cuda12-pjrt==0.10.0.dev20260708221109
-jax-cuda12-plugin==0.10.0.dev20260708221109
+jax==0.10.0.dev20260709133957
+jaxlib==0.10.0.dev20260709133957
+jax-cuda12-pjrt==0.10.0.dev20260709133957
+jax-cuda12-plugin==0.10.0.dev20260709133957
 zk-dtypes==0.0.8
 
 # SP1 chip definitions (constraints + LogUp interactions) exported from
