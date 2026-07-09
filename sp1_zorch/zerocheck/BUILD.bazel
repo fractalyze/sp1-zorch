@@ -7,7 +7,6 @@ py_library(
     name = "zerocheck",
     srcs = [
         "__init__.py",
-        "_dense_carry.py",
         "_round_composite.py",
         "coeffs.py",
         "jagged.py",
@@ -144,20 +143,6 @@ py_test(
         "//sp1_zorch/shard_prover:replay",
         "@zorch//zorch/poly:poly",
         "@zorch//zorch:transcript",
-        requirement("absl_py"),
-        requirement("jax"),
-        requirement("numpy"),
-        requirement("zk_dtypes"),
-    ],
-)
-
-py_test(
-    name = "_dense_carry_test",
-    size = "small",
-    srcs = ["_dense_carry_test.py"],
-    deps = [
-        ":zerocheck",
-        "@zorch//zorch/sumcheck",
         requirement("absl_py"),
         requirement("jax"),
         requirement("numpy"),
