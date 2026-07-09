@@ -34,7 +34,6 @@ from zorch.poly.eq import expand_eq_to_hypercube
 from zorch.poly.geq import VirtualGeq
 from zorch.poly.univariate import compute_inv_vandermonde, eval_coeffs
 from zorch.sumcheck.gruen import interp_matrix, round_coeffs_from_matrix
-from zorch.sumcheck.prover import split_pairs, zero_extend
 from zorch.testkit.transcript import cheap_transcript
 from zorch.transcript import sample_challenge
 
@@ -46,6 +45,17 @@ from sp1_zorch.zerocheck.jagged import (
     prove_jagged_zerocheck,
 )
 from sp1_zorch.zerocheck.coeffs import gkr_powers, rlc_coeffs
+
+
+def zero_extend(arr, width):
+    """Oracle-local zero-extend of the last axis to `width` (zorch#412 removed
+    `sumcheck.prover.zero_extend`; the engine keeps a private copy). Byte-equal
+    to the old block: the padded rows are exact field zeros."""
+    pad = width - arr.shape[-1]
+    if pad == 0:
+        return arr
+    return jnp.concatenate([arr, jnp.zeros((*arr.shape[:-1], pad), arr.dtype)], axis=-1)
+
 
 # Witness chip: columns [a, b, c] with a == 1 on every real row, so both
 # constraints vanish there while C(0_row) = [1, 0] keeps the padded-row
@@ -285,7 +295,11 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
         )
 
         gkr = gkr_powers(beta, _NUM_COLS)
-        p0, p1 = split_pairs(trace)
+        # Row-major carry (fractalyze/sp1-zorch#242): the trace is
+        # `[rows, num_cols]` and the pair fold is an axis-0 stride-2 split
+        # (the dual of the old column-major last-axis `split_pairs`).
+        trace_rm = trace.T
+        p0, p1 = trace_rm[0::2], trace_rm[1::2]
         diff = p1 - p0
         eq = _rand(3, (nr // 2,))
         nr_live = jnp.asarray(nr, jnp.int32)

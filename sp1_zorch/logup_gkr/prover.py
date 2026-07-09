@@ -406,7 +406,7 @@ def prove_logup_gkr_body(
     # fixes the round count, so it cannot be padded away.
     floor_padded = sum(rc + rc % 2 for rc in first.row_counts)
     caps = RoundWidthCaps(
-        row=_row_cap(floor_padded),
+        elements=_row_cap(floor_padded),
         eq_row=1 << num_row_variables,
         interaction=max(4, len(first.row_counts)),
     )
