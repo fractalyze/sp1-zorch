@@ -42,13 +42,10 @@ from sp1_zorch.logup_gkr.prover import (
     ChipEvaluation,
     LogupGkrProof,
     prove_logup_gkr,
-    prove_logup_gkr_body,
-    resolve_witness_and_grind,
 )
 from sp1_zorch.shard_prover.types import MachineVerifyingKey
 from sp1_zorch.zerocheck.prover import ZerocheckProof, prove_shard_zerocheck
 from zorch.coding.reed_solomon import BitReversedReedSolomon
-from zorch.logup_gkr.circuit import LogUpGkrOutput
 from zorch.round import ProveChain, Round
 from zorch.transcript import GrindingTranscript, Transcript
 from zorch.utils.bits import log2_ceil_usize
@@ -64,7 +61,7 @@ from zorch.utils.bits import log2_ceil_usize
         "main_region",
         "prep_region",
         "public_values",
-        "commit_rounds",
+        "commit_digest_layers",
         "commit_commitments",
         "gkr_eval_point",
         "gkr_chip_openings",
@@ -82,9 +79,14 @@ class ShardCarry:
     main_region: JaggedRegion
     prep_region: JaggedRegion | None
     public_values: Array
-    # Written by TraceCommitRound; read by the jagged-eval open stage. [prep,
-    # main] order, matching SP1's round_evaluation_claims.
-    commit_rounds: tuple[StackedRound, ...] | None = None
+    # Written by TraceCommitRound; read by the jagged-eval open stage (which
+    # rebuilds each StackedRound, recomputing the [S,K] mle from the region dense
+    # it already holds) and by proof assembly (the digest-tree root). [prep, main]
+    # order, matching SP1's round_evaluation_claims. Only the digest tree is kept
+    # here: the ~trace-sized mle is a transpose of the region dense, so retaining
+    # it too duplicates the trace on-device through the LogUp-GKR + zerocheck
+    # stages and OOMs the widest rsp shards (fractalyze/sp1-zorch#264).
+    commit_digest_layers: tuple[list[Array], ...] | None = None
     # Written by TraceCommitRound; read by proof assembly as the jagged proof's
     # original_commitments -- each round's SMCS commitment (pre-structure-binding),
     # [prep, main] order.
@@ -204,15 +206,17 @@ class TraceCommitRound(Round):
             )
             commit_data.append(prep_data)
         commit_data.append(main_data)
-        commit_rounds = tuple(
-            StackedRound(d.mle, d.digest_layers) for d in commit_data
-        )
+        # Keep only the digest tree; the open recomputes the mle from the region
+        # dense (mle == dense.reshape(K, S).T) rather than pinning a trace-sized
+        # copy through GKR + zerocheck (fractalyze/sp1-zorch#264). Each d.mle drops
+        # with commit_data at return.
+        commit_digest_layers = tuple(d.digest_layers for d in commit_data)
         # Per-round SMCS commitment for the jagged proof's original_commitments;
-        # StackedRound retains only the open witness, so keep it separately.
+        # kept separately from the open witness.
         commit_commitments = tuple(d.smcs_commitment for d in commit_data)
         carry = replace(
             carry,
-            commit_rounds=commit_rounds,
+            commit_digest_layers=commit_digest_layers,
             commit_commitments=commit_commitments,
         )
         return carry, transcript, bound
@@ -222,13 +226,11 @@ class LogupGkrRound(Round):
     """LogUp-GKR stage over ``prove_logup_gkr``; writes the final evaluation
     point and per-chip openings onto the carry for zerocheck.
 
-    With ``jit=True`` the grind-free body (head challenges, circuit build, the
-    rolled pyramid sumcheck, trace openings) runs under one cached outer ``@jit``
-    so the warm prove's ~thousands of op-by-op dispatches collapse into a single
-    program -- the host-dispatch wall that otherwise leaves the GPU ~idle at
-    shard scale (sp1-zorch#119). The grind stays eager so its ``pow_bits > 0``
-    host-side PoW verdict is legal; ``@jit`` is byte-transparent, so the proof is
-    identical to the eager path either way."""
+    Runs eagerly: the ~20-layer GKR pyramid releases each layer's buffers as it
+    folds, so peak stays bounded. A whole-body ``@jit`` instead hands XLA the
+    pyramid's liveness and pins every layer at once -- 27 GiB, OOM at shard scale
+    (sp1-zorch#264). The grind's ``pow_bits > 0`` host-side PoW verdict needs the
+    eager path anyway to stay a legal ``bool(ok)``."""
 
     def __init__(
         self,
@@ -238,107 +240,26 @@ class LogupGkrRound(Round):
         num_row_variables: int,
         pow_bits: int = 0,
         witness: Array | None = None,
-        jit: bool = True,
     ) -> None:
         self._gkr_chips = tuple(gkr_chips)
         self._num_betas = num_betas
         self._num_row_variables = num_row_variables
         self._pow_bits = pow_bits
         self._witness = witness
-        # Bind the static config to the *class-level* jitted body so every
-        # LogupGkrRound shares one `jax.jit` wrapper. JAX's compile cache lives on
-        # the wrapper object, so a fresh-per-shard instance (the chain rebuilds
-        # with each shard's witness) reuses the compiled executable instead of
-        # recompiling. `gkr_chips` is a tuple of frozen GkrChips, so it keys the
-        # cache by value -- same machine config, one compile.
-        self._body = (
-            partial(
-                self._jit_body,
-                gkr_chips=self._gkr_chips,
-                num_betas=num_betas,
-                num_row_variables=num_row_variables,
-            )
-            if jit
-            else None
-        )
-
-    @staticmethod
-    @partial(jax.jit, static_argnames=("gkr_chips", "num_betas", "num_row_variables"))
-    def _jit_body(
-        main_region,
-        prep_region,
-        transcript,
-        witness,
-        *,
-        gkr_chips,
-        num_betas,
-        num_row_variables,
-    ):
-        # Regions + the post-grind transcript trace as args. `LogUpGkrOutput` is
-        # not a registered pytree, so return its two array leaves and let
-        # `__call__` rebuild it -- everything else (transcript, round_proofs,
-        # openings) already crosses jit.
-        transcript, proof = prove_logup_gkr_body(
-            gkr_chips,
-            main_region,
-            prep_region,
-            transcript,
-            witness,
-            num_betas=num_betas,
-            num_row_variables=num_row_variables,
-        )
-        out = proof.circuit_output
-        return (
-            transcript,
-            proof.witness,
-            out.numerator,
-            out.denominator,
-            proof.round_proofs,
-            proof.eval_point,
-            proof.chip_openings,
-        )
 
     def __call__(
         self, carry: ShardCarry, transcript: Transcript
     ) -> tuple[ShardCarry, Transcript, LogupGkrProof]:
-        if self._body is None:
-            transcript, proof = prove_logup_gkr(
-                self._gkr_chips,
-                carry.main_region,
-                carry.prep_region,
-                transcript,
-                num_betas=self._num_betas,
-                num_row_variables=self._num_row_variables,
-                pow_bits=self._pow_bits,
-                witness=self._witness,
-            )
-        else:
-            # Grind eagerly (its pow_bits > 0 verdict is a host-side bool(ok));
-            # the grind-free body then dispatches as one program.
-            transcript, witness = resolve_witness_and_grind(
-                transcript,
-                pow_bits=self._pow_bits,
-                witness=self._witness,
-                bf_dtype=carry.main_region.dense.dtype,
-            )
-            (
-                transcript,
-                witness,
-                numerator,
-                denominator,
-                round_proofs,
-                eval_point,
-                chip_openings,
-            ) = self._body(carry.main_region, carry.prep_region, transcript, witness)
-            proof = LogupGkrProof(
-                witness=witness,
-                circuit_output=LogUpGkrOutput(
-                    numerator=numerator, denominator=denominator
-                ),
-                round_proofs=round_proofs,
-                eval_point=eval_point,
-                chip_openings=chip_openings,
-            )
+        transcript, proof = prove_logup_gkr(
+            self._gkr_chips,
+            carry.main_region,
+            carry.prep_region,
+            transcript,
+            num_betas=self._num_betas,
+            num_row_variables=self._num_row_variables,
+            pow_bits=self._pow_bits,
+            witness=self._witness,
+        )
         carry = replace(
             carry,
             gkr_eval_point=proof.eval_point,
@@ -537,7 +458,7 @@ class ShardJaggedEvalRound(Round):
         prep_region,
         opened_values,
         zc_sumcheck_point,
-        commit_rounds,
+        commit_digest_layers,
         transcript,
         *,
         smcs,
@@ -550,7 +471,7 @@ class ShardJaggedEvalRound(Round):
             prep_region,
             opened_values,
             zc_sumcheck_point,
-            commit_rounds,
+            commit_digest_layers,
             transcript,
             smcs=smcs,
             log_blowup=log_blowup,
@@ -574,12 +495,12 @@ class ShardJaggedEvalRound(Round):
     ) -> tuple[ShardCarry, GrindingTranscript, ShardJaggedEvalProof]:
         if (
             carry.zc_sumcheck_point is None
-            or carry.commit_rounds is None
+            or carry.commit_digest_layers is None
             or carry.zc_opened_values is None
         ):
             raise ValueError(
                 "the jagged-eval stage needs the zerocheck point, committed "
-                "rounds, and zerocheck opened values on the carry; sequence "
+                "digest layers, and zerocheck opened values on the carry; sequence "
                 "the commit, LogUp-GKR, and zerocheck Rounds before it"
             )
         if self._body is not None:
@@ -588,7 +509,7 @@ class ShardJaggedEvalRound(Round):
                 carry.prep_region,
                 carry.zc_opened_values,
                 carry.zc_sumcheck_point,
-                carry.commit_rounds,
+                carry.commit_digest_layers,
                 transcript,
             )
             eval_msg = JaggedEvalMsg(*msg_fields)
@@ -598,7 +519,7 @@ class ShardJaggedEvalRound(Round):
                 carry.prep_region,
                 carry.zc_opened_values,
                 carry.zc_sumcheck_point,
-                carry.commit_rounds,
+                carry.commit_digest_layers,
                 transcript,
                 smcs=self._smcs,
                 log_blowup=self._log_blowup,
@@ -608,12 +529,23 @@ class ShardJaggedEvalRound(Round):
         return carry, transcript, ShardJaggedEvalProof(eval=eval_msg, open=open_proof)
 
 
+def _region_mle(region: JaggedRegion) -> Array:
+    """The commit's ``[S, K]`` stacked message for a region, recomputed from its
+    dense buffer (``mle == dense.reshape(K, S).T``, S = 2^log_stacking_height) --
+    identical to what ``commit_region`` returned. The open reconstructs it here
+    instead of the carry pinning a trace-sized copy through the whole chain
+    (fractalyze/sp1-zorch#264)."""
+    S = 1 << region.log_stacking_height
+    K = region.dense.shape[0] // S
+    return region.dense.reshape(K, S).T
+
+
 def _jagged_eval_body(
     main_region,
     prep_region,
     opened_values,
     zc_sumcheck_point,
-    commit_rounds,
+    commit_digest_layers,
     transcript: GrindingTranscript,
     *,
     smcs: SingleMatrixCommitmentScheme,
@@ -683,9 +615,14 @@ def _jagged_eval_body(
         blowup=1 << log_blowup,
         dtype=main.dense.dtype,
     )
-    # commit_rounds carry only mle + digest tree; stacked_basefold_open
-    # re-encodes the codeword from the mle. No host<->device round-trip, so the
-    # open stays traceable under one whole-chain @jit.
+    # Rebuild each StackedRound here: the mle is recomputed from the region dense
+    # (the loop above already reads it for `denses`), joined to the carried digest
+    # tree, in the same [prep, main] order. stacked_basefold_open re-encodes the
+    # codeword from the mle -- no host<->device round-trip, still traceable.
+    commit_rounds = tuple(
+        StackedRound(_region_mle(region), digests)
+        for (region, _), digests in zip(regions, commit_digest_layers, strict=True)
+    )
     open_proof, transcript = stacked_basefold_open(
         smcs,
         code,
@@ -737,13 +674,17 @@ def prove_shard_chain(
                 chip_metadata=chip_metadata,
                 jit=jit,
             ),
+            # Alone among the stages LogUp-GKR takes no `jit` knob: its ~20-layer
+            # pyramid must fold eagerly to release each layer, or a whole-body @jit
+            # pins all of them and OOMs the widest shards (see LogupGkrRound). Its
+            # heavy inner zones are @jit-ed on their own, so the eager glue is a
+            # handful of dispatches per layer, not the op-by-op wall.
             LogupGkrRound(
                 gkr_chips,
                 num_betas=num_betas,
                 num_row_variables=num_row_variables,
                 pow_bits=pow_bits,
                 witness=witness,
-                jit=jit,
             ),
             ShardZerocheckRound(
                 chips, max_log_row_count=max_log_row_count, jit=jit

@@ -59,6 +59,7 @@ mismatch aborts in ~one trace-commit, not after the whole chain.
 
 from __future__ import annotations
 
+import gc
 import sys
 import time
 from pathlib import Path
@@ -184,6 +185,22 @@ def main(argv) -> None:
     order = main.traces.chip_order
     num_reals = [main.traces.per_chip[name].num_real for name in order]
 
+    # Lift everything the chain reads off the shard into locals, then drop the
+    # shard so its raw per-chip trace arrays (already copied into the region
+    # dense by shard_regions) free before the wide-shard LogUp-GKR pyramid
+    # allocates. The ~1.5 GiB duplicate otherwise rides the card through the GKR
+    # arena and tips shard8-10 over 32 GB (fractalyze/sp1-zorch#264) -- whir-zorch's
+    # post-commit `mtd.traces.clear()`. vk/chips/public_values are metadata; they
+    # pin no trace data.
+    vk = shard.vk
+    chips = main.chips
+    public_values = main.public_values
+    gkr_chips = build_gkr_chips(chips, order)
+    chip_metadata = preamble_chip_metadata(order, num_reals, dtype=F)
+    num_betas = num_beta_values(chips)
+    del shard, main
+    gc.collect()
+
     perm = Poseidon2(koalabear16_params())
     smcs = SingleMatrixCommitmentScheme(
         Sponge(perm, SpongeParams(rate=8, out=8)),
@@ -201,11 +218,11 @@ def main(argv) -> None:
     chain = prove_shard_chain(
         smcs=smcs,
         log_blowup=_LOG_BLOWUP,
-        vk=shard.vk,
-        chip_metadata=preamble_chip_metadata(order, num_reals, dtype=F),
-        gkr_chips=build_gkr_chips(main.chips, order),
-        chips=main.chips,
-        num_betas=num_beta_values(main.chips),
+        vk=vk,
+        chip_metadata=chip_metadata,
+        gkr_chips=gkr_chips,
+        chips=chips,
+        num_betas=num_betas,
         num_row_variables=MAX_LOG_ROW_COUNT - 1,
         max_log_row_count=MAX_LOG_ROW_COUNT,
         pow_bits=_GKR_POW_BITS.value,
@@ -300,7 +317,7 @@ def main(argv) -> None:
         # is what tips a wide shard over the card on --runs>=2.
         carry = msgs = None
         carry, _, msgs = chain(
-            ShardCarry(main_region, prep_region, main.public_values),
+            ShardCarry(main_region, prep_region, public_values),
             fresh_transcript(),
         )
         print(f"chain run: {(time.monotonic() - t0) * 1e3:.1f}ms", flush=True)
@@ -313,7 +330,7 @@ def main(argv) -> None:
         # the four stage messages the bincode wire needs, in order.
         commitment, gkr, zc, jagged = msgs
         t0 = time.monotonic()
-        vk_bytes = encode_vk(shard.vk)
+        vk_bytes = encode_vk(vk)
         proof_bytes = encode_shard_proof(
             carry,
             commitment,

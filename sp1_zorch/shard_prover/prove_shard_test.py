@@ -36,6 +36,7 @@ from sp1_zorch.shard_prover.prove_shard import (
     PreambleRound,
     ShardCarry,
     ShardZerocheckRound,
+    _region_mle,
     preamble_chip_metadata,
     prove_shard_chain,
 )
@@ -229,7 +230,7 @@ class ProveShardChainTest(absltest.TestCase):
             jit=False,
         )
         # A jit=True twin for the lowering smoke (sp1-zorch#119): same wiring,
-        # the LogUp-GKR body staged under one outer @jit.
+        # with the commit/zerocheck/jagged-eval stages jitted (LogUp-GKR stays eager).
         cls.jit_chain = prove_shard_chain(
             smcs=smcs,
             log_blowup=_LOG_BLOWUP,
@@ -295,7 +296,7 @@ class ProveShardChainTest(absltest.TestCase):
         harness's job, so here we pin the executed shape."""
         msg = self.jagged
         self.assertEqual(msg.eval.dense_eval.shape, ())  # scalar D(z_final)
-        n_rounds = len(self.carry.commit_rounds)
+        n_rounds = len(self.carry.commit_digest_layers)
         self.assertLen(msg.open.batch_evals, n_rounds)
         self.assertLen(msg.open.component_openings, n_rounds)
         self.assertNotEmpty(msg.open.query_openings)  # one per FRI fold layer
@@ -349,10 +350,10 @@ class ProveShardChainTest(absltest.TestCase):
         sync that would split it."""
         self._assert_chain_lowers(self.chain)
 
-    def test_jit_chain_lowers_with_logup_gkr_staged(self) -> None:
-        """``prove_shard_chain(jit=True)`` stages the grind-free LogUp-GKR body
-        under one outer ``@jit`` (sp1-zorch#119): the body traces cleanly with no
-        stray host-side ``bool(ok)`` leaking past the eager grind."""
+    def test_jit_chain_lowers_with_logup_gkr_eager(self) -> None:
+        """``prove_shard_chain(jit=True)`` jits the commit/zerocheck/jagged-eval
+        stages while LogUp-GKR stays eager (sp1-zorch#264): the chain still lowers
+        cleanly, with no stray host-side ``bool(ok)`` leaking from the eager grind."""
         self._assert_chain_lowers(self.jit_chain)
 
     def test_jaggedregion_is_a_pytree_with_only_dense_as_leaf(self) -> None:
@@ -410,17 +411,17 @@ class ProveShardChainTest(absltest.TestCase):
         for leaf in leaves:
             self.assertIsInstance(leaf, jax.Array)
 
-    def test_trace_commit_round_carries_stacked_open_witness(self) -> None:
-        """TraceCommitRound retains each region's stacked witness — the
-        ``[S, K]`` message matrix — on the carry as ``[prep, main]``, so the
-        jagged-eval open stage reproves them without recommitting (the open
-        re-encodes the codeword from the mle)."""
-        rounds = self.carry.commit_rounds
-        self.assertIsNotNone(rounds)
-        self.assertLen(rounds, 2)  # prep, then main
+    def test_trace_commit_round_carries_digest_layers_not_mle(self) -> None:
+        """TraceCommitRound retains only each region's digest tree on the carry
+        as ``[prep, main]`` — NOT the trace-sized ``[S, K]`` mle, which the
+        jagged-eval open recomputes from the region dense (``_region_mle``) so a
+        trace-sized copy never rides the card through GKR + zerocheck
+        (fractalyze/sp1-zorch#264). The recompute yields the stacked shape."""
+        digests = self.carry.commit_digest_layers
+        self.assertIsNotNone(digests)
+        self.assertLen(digests, 2)  # prep, then main
         S = 1 << self.main_region.log_stacking_height
-        for rd in rounds:
-            self.assertEqual(rd.mle.shape[0], S)
+        self.assertEqual(_region_mle(self.main_region).shape[0], S)
 
     def test_zerocheck_round_carries_the_eval_point(self) -> None:
         """ShardZerocheckRound threads its sumcheck point onto the carry as the
@@ -519,8 +520,8 @@ class PreambleChipMetadataTest(absltest.TestCase):
 
 class JitPermutationTest(absltest.TestCase):
     """JitPermutation rides as a static meta_field in DuplexTranscript, so it
-    keys the jit cache whenever a transcript is a jit argument (the production
-    LogUp-GKR stage, LogupGkrRound(jit=True)). Value-equality forwarded from the
+    keys the jit cache whenever a transcript is a jit argument (the jitted stage
+    bodies: zerocheck, jagged-eval, and the GKR inner zones). Value-equality forwarded from the
     inner Poseidon2 is what lets a fresh same-config transcript reuse the
     compiled stage instead of recompiling per prove -- without it every
     fresh_transcript() is a new cache key."""

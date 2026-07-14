@@ -419,10 +419,10 @@ def encode_shard_proof(
         if region is not None
     ]
     component_raw_roots = [
-        stacked.digest_layers[-1][0] for stacked in carry.commit_rounds
+        digest_layers[-1][0] for digest_layers in carry.commit_digest_layers
     ]
     # original_commitments = the SMCS commitment (pre-structure-binding), retained
-    # off the commit stage in the same [prep, main] order as commit_rounds.
+    # off the commit stage in the same [prep, main] order as commit_digest_layers.
     component_commitments = list(carry.commit_commitments)
     row_column_counts = [
         list(zip(region.row_counts, region.column_counts, strict=True))

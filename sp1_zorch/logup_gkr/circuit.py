@@ -134,9 +134,7 @@ def _chip_first_layer_batched(
     Matmul + gather + element-wise field mul/add are the only ops -- a field
     ``segment_sum`` (scatter-add) does not lower on the GPU emitter. The even/odd
     slot split and fold-neutral padding match ``populateLastCircuitLayer``. Each
-    chip rides one ``@jit`` boundary, so its build is a single fused dispatch when
-    ``generate_first_layer`` runs standalone; under the production
-    ``LogupGkrRound(jit=True)`` the outer jit inlines it.
+    chip rides one ``@jit`` boundary, so its build is a single fused dispatch.
     """
     interactions = chip.interactions
     num_inter = len(interactions)

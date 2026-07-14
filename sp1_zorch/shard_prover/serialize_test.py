@@ -21,7 +21,7 @@ from zorch.sumcheck.prover import RoundMsg
 from zorch.pcs.jagged.region import JaggedRegion
 from zorch.pcs.jagged.prover import JaggedEvalMsg
 
-from zorch.pcs.jagged.open import StackedOpenProof, StackedRound
+from zorch.pcs.jagged.open import StackedOpenProof
 from sp1_zorch.logup_gkr.prover import ChipEvaluation, LogupGkrProof
 from sp1_zorch.shard_prover.prove_shard import ShardCarry, ShardJaggedEvalProof
 from sp1_zorch.shard_prover.serialize import (
@@ -444,16 +444,14 @@ class EncodeEvaluationProofTest(absltest.TestCase):
         )
 
 
-def _stacked_round(root_base: int) -> StackedRound:
-    # Only digest_layers matters to the assembly (the raw root lives at the
-    # root layer's single row); mle is the carried witness.
-    return StackedRound(
-        mle=jnp.zeros((4, 1), dtype=F),
-        digest_layers=[
-            jnp.zeros((2, 8), dtype=F),
-            jnp.arange(root_base, root_base + 8, dtype=F).reshape(1, 8),
-        ],
-    )
+def _digest_layers(root_base: int) -> list:
+    # The assembly reads only the raw root (the root layer's single row); the
+    # carry holds the digest tree, not the mle -- the open recomputes the mle
+    # from the region dense (fractalyze/sp1-zorch#264).
+    return [
+        jnp.zeros((2, 8), dtype=F),
+        jnp.arange(root_base, root_base + 8, dtype=F).reshape(1, 8),
+    ]
 
 
 def _carry() -> ShardCarry:
@@ -479,7 +477,7 @@ def _carry() -> ShardCarry:
         main_region=main_region,
         prep_region=prep_region,
         public_values=jnp.arange(1, 6, dtype=F),
-        commit_rounds=(_stacked_round(100), _stacked_round(400)),
+        commit_digest_layers=(_digest_layers(100), _digest_layers(400)),
         # SMCS commitments (original_commitments), distinct from the raw roots.
         commit_commitments=(
             jnp.arange(200, 208, dtype=F),
