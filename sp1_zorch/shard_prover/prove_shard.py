@@ -83,9 +83,8 @@ class ShardCarry:
     # rebuilds each StackedRound, recomputing the [S,K] mle from the region dense
     # it already holds) and by proof assembly (the digest-tree root). [prep, main]
     # order, matching SP1's round_evaluation_claims. Only the digest tree is kept
-    # here: the ~trace-sized mle is a transpose of the region dense, so retaining
-    # it too duplicates the trace on-device through the LogUp-GKR + zerocheck
-    # stages and OOMs the widest rsp shards (fractalyze/sp1-zorch#264).
+    # here: the mle is a transpose of the region dense, so keeping it too would
+    # duplicate the trace on-device through the LogUp-GKR + zerocheck stages.
     commit_digest_layers: tuple[list[Array], ...] | None = None
     # Written by TraceCommitRound; read by proof assembly as the jagged proof's
     # original_commitments -- each round's SMCS commitment (pre-structure-binding),
@@ -187,17 +186,13 @@ class TraceCommitRound(Round):
             commitment=bound,
             chip_metadata=self._chip_metadata,
         )(carry, transcript)
-        # Retain each region's stacked witness for the jagged-eval open in
-        # [prep, main] order (SP1's round_evaluation_claims). Only the mle +
-        # digest tree are kept: the open re-encodes the ~6 GB full-blowup
-        # codeword, so it never pins device memory through the LogUp-GKR +
-        # zerocheck stages — the ~0.65 GiB that tips rsp shard17's full chain
-        # over a 32 GiB card (fractalyze/sp1-zorch#55, #124). prep is bound into
+        # Keep each region's commit witness for the jagged-eval open, in
+        # [prep, main] order (SP1's round_evaluation_claims). prep is bound into
         # the vk at setup, not re-observed here, but the open still reproves it.
         commit_data = []
         if carry.prep_region is not None:
-            # Same @jit knob as main: committing prep eagerly de-fuses the
-            # Merkle fold into ~5k tiny generic-fusion launches (#137).
+            # prep uses main's jit knob: an eager commit de-fuses the Merkle
+            # fold into many tiny launches.
             _, prep_data = commit_region(
                 carry.prep_region,
                 self._smcs,
@@ -206,10 +201,9 @@ class TraceCommitRound(Round):
             )
             commit_data.append(prep_data)
         commit_data.append(main_data)
-        # Keep only the digest tree; the open recomputes the mle from the region
-        # dense (mle == dense.reshape(K, S).T) rather than pinning a trace-sized
-        # copy through GKR + zerocheck (fractalyze/sp1-zorch#264). Each d.mle drops
-        # with commit_data at return.
+        # Carry only the digest tree; the open recomputes the mle from the region
+        # dense (mle == dense.reshape(K, S).T) instead of holding a trace-sized
+        # copy through GKR + zerocheck. The mles in commit_data drop at return.
         commit_digest_layers = tuple(d.digest_layers for d in commit_data)
         # Per-round SMCS commitment for the jagged proof's original_commitments;
         # kept separately from the open witness.
@@ -226,11 +220,9 @@ class LogupGkrRound(Round):
     """LogUp-GKR stage over ``prove_logup_gkr``; writes the final evaluation
     point and per-chip openings onto the carry for zerocheck.
 
-    Runs eagerly: the ~20-layer GKR pyramid releases each layer's buffers as it
-    folds, so peak stays bounded. A whole-body ``@jit`` instead hands XLA the
-    pyramid's liveness and pins every layer at once -- 27 GiB, OOM at shard scale
-    (sp1-zorch#264). The grind's ``pow_bits > 0`` host-side PoW verdict needs the
-    eager path anyway to stay a legal ``bool(ok)``."""
+    Eager, not jitted: a whole-body ``@jit`` keeps every pyramid layer live at
+    once (XLA owns liveness) and overflows the memory budget on wide shards, and
+    the grind's host-side ``pow_bits`` verdict cannot be traced."""
 
     def __init__(
         self,
@@ -674,11 +666,8 @@ def prove_shard_chain(
                 chip_metadata=chip_metadata,
                 jit=jit,
             ),
-            # Alone among the stages LogUp-GKR takes no `jit` knob: its ~20-layer
-            # pyramid must fold eagerly to release each layer, or a whole-body @jit
-            # pins all of them and OOMs the widest shards (see LogupGkrRound). Its
-            # heavy inner zones are @jit-ed on their own, so the eager glue is a
-            # handful of dispatches per layer, not the op-by-op wall.
+            # GKR is always eager (see LogupGkrRound); only the other stages
+            # take the `jit` knob.
             LogupGkrRound(
                 gkr_chips,
                 num_betas=num_betas,

@@ -224,11 +224,9 @@ def open_traces(
     open at their keygen height.
 
     ``@jit`` so the per-chip ``_chip_view`` + ``_open_chip`` + Fiat-Shamir absorb
-    fuse into one program: under the eager LogUp-GKR fold (needed to release the
-    pyramid, fractalyze/sp1-zorch#264) this loop would otherwise dispatch op-by-op
-    per chip and dominate the warm GKR wall (~93ms on rsp shard17). It runs after
-    the fold, so it pins no layer -- jitting it costs no memory. Byte-transparent;
-    nested harmlessly under the whole-body ``@jit`` when that path is used."""
+    fuse into one program: under the eager LogUp-GKR fold this loop would
+    otherwise dispatch op-by-op per chip and dominate the warm GKR time. It runs
+    after the fold, so it pins no layer -- jitting it costs no memory."""
     rev_point = eval_point[-trace_dimension:][::-1]
     prep_name_to_idx = (
         {name: i for i, name in enumerate(prep_region.chip_names)}
@@ -284,10 +282,8 @@ def resolve_witness_and_grind(
     **replayed** unchanged, byte-identical to the reference-dump path.
 
     Split out from ``prove_logup_gkr`` because ``GrindRound``'s ``pow_bits > 0``
-    PoW verdict is a host-side ``bool(ok)`` -- illegal inside a traced region, so
-    the grind stays eager while the body's inner zones self-jit. The grind is a
-    handful of dispatches next to the body's thousands, so keeping it eager costs
-    nothing and preserves the judged ``pow_bits > 0`` path exactly.
+    PoW verdict is a host-side ``bool(ok)`` that cannot run inside a traced
+    region, so the grind stays eager while the body's inner zones self-jit.
     """
     if pow_bits < 0:
         # Fail closed at the stage boundary: a negative bit count is nonsense,
@@ -370,11 +366,9 @@ def prove_logup_gkr_body(
     """The grind-free LogUp-GKR body: head challenges, circuit build, the rolled
     pyramid sumcheck, and the trace openings, on a post-grind transcript.
 
-    Pure traceable array work. Each heavy inner zone (first-layer build, the
-    per-transition pyramid build, each layer's whole-layer sumcheck zone) is
-    ``@jit``-ed on its own, so the eager glue between them is a handful of
-    dispatches per layer rather than the op-by-op host-bound wall. ``witness`` is
-    threaded only onto the returned proof.
+    Pure traceable array work; each heavy inner zone (first-layer build,
+    per-transition pyramid build, whole-layer sumcheck) is ``@jit``-ed on its
+    own. ``witness`` is threaded only onto the returned proof.
     """
     _, transcript, head = HeadChallengesRound(num_betas)(None, transcript)
 

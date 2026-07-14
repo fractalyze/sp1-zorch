@@ -185,13 +185,10 @@ def main(argv) -> None:
     order = main.traces.chip_order
     num_reals = [main.traces.per_chip[name].num_real for name in order]
 
-    # Lift everything the chain reads off the shard into locals, then drop the
-    # shard so its raw per-chip trace arrays (already copied into the region
-    # dense by shard_regions) free before the wide-shard LogUp-GKR pyramid
-    # allocates. The ~1.5 GiB duplicate otherwise rides the card through the GKR
-    # arena and tips shard8-10 over 32 GB (fractalyze/sp1-zorch#264) -- whir-zorch's
-    # post-commit `mtd.traces.clear()`. vk/chips/public_values are metadata; they
-    # pin no trace data.
+    # Drop the shard once its raw trace arrays are copied into the region dense:
+    # the duplicate would otherwise stay resident through the GKR pyramid and
+    # overflow the memory budget on wide shards. vk/chips/public_values are
+    # metadata and pin no trace data.
     vk = shard.vk
     chips = main.chips
     public_values = main.public_values
