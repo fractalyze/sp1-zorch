@@ -208,6 +208,7 @@ class ChipOpeningsRound(Round):
         return carry, transcript.observe(flat), self._openings
 
 
+@partial(jax.jit, static_argnames=("trace_dimension",))
 def open_traces(
     main_region: JaggedRegion,
     prep_region: JaggedRegion | None,
@@ -221,7 +222,11 @@ def open_traces(
 
     SP1 opens ALL shard chips (not just the GKR ones). Preprocessed traces
     open at their keygen height.
-    """
+
+    ``@jit`` so the per-chip ``_chip_view`` + ``_open_chip`` + Fiat-Shamir absorb
+    fuse into one program: under the eager LogUp-GKR fold this loop would
+    otherwise dispatch op-by-op per chip and dominate the warm GKR time. It runs
+    after the fold, so it pins no layer -- jitting it costs no memory."""
     rev_point = eval_point[-trace_dimension:][::-1]
     prep_name_to_idx = (
         {name: i for i, name in enumerate(prep_region.chip_names)}
@@ -276,12 +281,9 @@ def resolve_witness_and_grind(
     the docstring at the top of this module names); a supplied witness is
     **replayed** unchanged, byte-identical to the reference-dump path.
 
-    Split out from ``prove_logup_gkr`` so the production stage can run it
-    eagerly while jitting the grind-free body below (``LogupGkrRound(jit=True)``):
-    ``GrindRound``'s ``pow_bits > 0`` PoW verdict is a host-side ``bool(ok)``
-    (illegal under trace), and the grind is a handful of dispatches next to the
-    body's thousands -- so keeping it eager costs nothing and preserves the
-    judged ``pow_bits > 0`` path exactly.
+    Split out from ``prove_logup_gkr`` because ``GrindRound``'s ``pow_bits > 0``
+    PoW verdict is a host-side ``bool(ok)`` that cannot run inside a traced
+    region, so the grind stays eager while the body's inner zones self-jit.
     """
     if pow_bits < 0:
         # Fail closed at the stage boundary: a negative bit count is nonsense,
@@ -364,11 +366,9 @@ def prove_logup_gkr_body(
     """The grind-free LogUp-GKR body: head challenges, circuit build, the rolled
     pyramid sumcheck, and the trace openings, on a post-grind transcript.
 
-    Pure traceable array work -- this is the island the production stage stages
-    into one outer ``@jit`` (``LogupGkrRound(jit=True)``) so the warm prove's
-    ~thousands of op-by-op dispatches (the host-bound wall that leaves the GPU
-    ~idle) collapse into one program. ``witness`` is threaded only onto the
-    returned proof.
+    Pure traceable array work; each heavy inner zone (first-layer build,
+    per-transition pyramid build, whole-layer sumcheck) is ``@jit``-ed on its
+    own. ``witness`` is threaded only onto the returned proof.
     """
     _, transcript, head = HeadChallengesRound(num_betas)(None, transcript)
 
@@ -452,8 +452,8 @@ def prove_logup_gkr(
     preamble (vk, public values, main commitment, chip metadata).
 
     Returns the advanced transcript and the proof; the caller opens the
-    traces at ``proof.eval_point``. The eager single-source for the stage;
-    ``LogupGkrRound(jit=True)`` runs the same two pieces with the body jitted.
+    traces at ``proof.eval_point``. The single source for the stage --
+    ``LogupGkrRound`` calls it directly (host-side grind, then the body).
     """
     transcript, witness = resolve_witness_and_grind(
         transcript,

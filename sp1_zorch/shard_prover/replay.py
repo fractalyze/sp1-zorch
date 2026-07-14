@@ -74,8 +74,8 @@ class JitPermutation:
 
     # Value identity from the wrapped permutation. JitPermutation rides as a
     # static meta_field in DuplexTranscript, so it keys the jit cache whenever a
-    # transcript is a jit argument (the production LogUp-GKR stage,
-    # LogupGkrRound(jit=True)). Without value-equality every fresh_transcript()
+    # transcript is a jit argument (the jitted stage bodies: zerocheck,
+    # jagged-eval, and the GKR inner zones). Without value-equality every fresh_transcript()
     # is a fresh wrapper -> a new cache key -> the whole-stage @jit recompiles on
     # every prove. Poseidon2 already carries value-equality for this exact
     # reason (zorch#214); the wrapper must forward it.
