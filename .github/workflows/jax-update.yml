@@ -3,11 +3,6 @@
 # Receives a `jax-update` repository_dispatch from the jax repo's
 # notify-downstream workflow and opens a pin-bump PR. sp1-zorch must be in that
 # dispatcher's consumer list for events to arrive.
-#
-# Unlike zorch, sp1-zorch pins jax-cuda12-plugin in lockstep with the other jax
-# wheels (see requirements.in), so all four bump together. The zorch git pin in
-# MODULE.bazel is a separate, manual bump — the pip-bump action only touches the
-# pip lock, not Bazel git_override revisions.
 
 name: JAX Update
 
