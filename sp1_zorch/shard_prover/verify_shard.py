@@ -1,7 +1,7 @@
 # Copyright 2026 The sp1-zorch Authors. SPDX-License-Identifier: Apache-2.0
 """The shard proof's verifier as one zorch ``VerifyChain`` of stage duals.
 
-``verify_shard_chain`` mirrors ``prove_shard_chain`` round for round — one
+``verify_shard_chain`` mirrors ``prove_shard_chain`` stage for stage — one
 verifier Stage per prover stage, glue included, consuming the prover chain's
 message list as the proof object. ``VerifyChain``'s one-message-per-round
 check makes the mirror fail loud: a stage or glue step present on one side
