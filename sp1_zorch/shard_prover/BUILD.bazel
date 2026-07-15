@@ -99,7 +99,7 @@ py_library(
 )
 
 # The shard verifier as one zorch VerifyChain of stage duals, mirroring
-# prove_shard round for round (docs/architecture.md).
+# prove_shard stage for stage (docs/architecture.md).
 py_library(
     name = "verify_shard",
     srcs = ["verify_shard.py"],

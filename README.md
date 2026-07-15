@@ -6,7 +6,7 @@ scheme-agnostic SNARK building blocks. `zorch` provides the reusable pieces
 SP1-specific glue on top — domain separator, verify codes, heap proof layout,
 and the FFI byte-match against the SP1 reference prover.
 
-```
+```text
 frx  ──▶  zorch (scheme-/zkVM-agnostic blocks)  ──▶  sp1-zorch (SP1 glue)
 ```
 

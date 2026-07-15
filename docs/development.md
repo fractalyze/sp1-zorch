@@ -30,7 +30,7 @@ export PYTHONPATH="$PWD:/abs/path/to/zorch"
 **Dev against a local `zorch` checkout** instead of the pinned commit — add to
 `.bazelrc.user` (gitignored, holds an absolute path):
 
-```
+```text
 common --override_module=zorch=/abs/path/to/your/zorch/checkout
 ```
 

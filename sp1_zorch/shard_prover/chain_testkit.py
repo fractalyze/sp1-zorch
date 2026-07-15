@@ -156,8 +156,8 @@ def small_shard_chain_fixture() -> ShardChainFixture:
     bridge = ShardBridge(main_region, None, public_values)
     transcript = cheap_transcript(BF)
     messages = []
-    for round_ in prove_chain.rounds:
-        bridge, transcript, msg = round_(bridge, transcript)
+    for stage in prove_chain.rounds:
+        bridge, transcript, msg = stage(bridge, transcript)
         messages.append(msg)
 
     return ShardChainFixture(

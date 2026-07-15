@@ -411,7 +411,7 @@ class ProveShardChainTest(absltest.TestCase):
         for leaf in leaves:
             self.assertIsInstance(leaf, frx.Array)
 
-    def test_trace_commit_round_carries_digest_layers_not_mle(self) -> None:
+    def test_trace_commit_stage_threads_digest_layers_not_mle(self) -> None:
         """TraceCommitStage retains only each region's digest tree on the bridge
         as ``[prep, main]`` — NOT the trace-sized ``[S, K]`` mle, which the
         jagged-eval open recomputes from the region dense (``_region_mle``) so a
@@ -423,7 +423,7 @@ class ProveShardChainTest(absltest.TestCase):
         S = 1 << self.main_region.log_stacking_height
         self.assertEqual(_region_mle(self.main_region).shape[0], S)
 
-    def test_zerocheck_round_carries_the_eval_point(self) -> None:
+    def test_zerocheck_stage_threads_the_eval_point(self) -> None:
         """ShardZerocheckStage threads its sumcheck point onto the bridge as the
         jagged-eval open's z_row (the accumulated per-round challenges, not the
         GKR zeta), so the eval stage opens the trace at the right point."""
@@ -436,7 +436,7 @@ class ProveShardChainTest(absltest.TestCase):
             self.bridge.gkr_eval_point, self.want_gkr.eval_point, "gkr_eval_point"
         )
 
-    def test_zerocheck_round_carries_opened_values(self) -> None:
+    def test_zerocheck_stage_threads_opened_values(self) -> None:
         """ShardZerocheckStage threads the stage's per-chip opened values onto
         the bridge — the jagged-eval stage's per-column claims (SP1's
         round_evaluation_claims, the trace evaluations at the zerocheck point,
@@ -458,15 +458,15 @@ class ProveShardChainTest(absltest.TestCase):
         _, want = self.want_transcript.sample(1)
         _assert_bytes_equal(got, want, "post-chain sample")
 
-    def test_zerocheck_round_rejects_a_chain_without_gkr(self) -> None:
-        round_ = ShardZerocheckStage(
+    def test_zerocheck_stage_rejects_a_chain_without_gkr(self) -> None:
+        stage = ShardZerocheckStage(
             {"alpha": _WitnessChip()}, max_log_row_count=_MAX_LOG_ROW_COUNT
         )
         bridge = ShardBridge(
             self.bridge.main_region, self.bridge.prep_region, self.bridge.public_values
         )
         with self.assertRaisesRegex(ValueError, "LogUp-GKR"):
-            round_(bridge, cheap_transcript(BF))
+            stage(bridge, cheap_transcript(BF))
 
 
 class PreambleStageTest(absltest.TestCase):
