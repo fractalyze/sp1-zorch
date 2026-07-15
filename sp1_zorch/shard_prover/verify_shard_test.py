@@ -27,7 +27,7 @@ from zorch.testkit.transcript import cheap_transcript
 from sp1_zorch.shard_prover.types import ChipShape, TraceShape
 from sp1_zorch.shard_prover.verify_shard import (
     ShardVerifierBridge,
-    ShardZerocheckVerifierStage,
+    ZerocheckVerifierStage,
 )
 
 from sp1_zorch.shard_prover.chain_testkit import (
@@ -197,7 +197,7 @@ class VerifyShardChainTest(absltest.TestCase):
         check). The bridge is the post-chain one (every seam written), so the
         call exercises only the shape check, which raises before any
         cryptographic work."""
-        round_ = ShardZerocheckVerifierStage(
+        stage = ZerocheckVerifierStage(
             self.fx.chips,
             chip_names=("alpha",),
             chip_shapes={
@@ -209,7 +209,7 @@ class VerifyShardChainTest(absltest.TestCase):
             max_log_row_count=MAX_LOG_ROW_COUNT,
         )
         with self.assertRaisesRegex(ValueError, "preprocessed claim per statement"):
-            round_(self.dual_bridge, self.zc_proof, self.dual_transcript)
+            stage(self.dual_bridge, self.zc_proof, self.dual_transcript)
 
     def test_trace_commit_dual_writes_commitment_roots(self) -> None:
         """[prep (from the vk), main (from the message)] — the order of SP1's

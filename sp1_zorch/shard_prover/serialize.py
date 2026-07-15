@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 
     from zorch.pcs.jagged.open import Opening, StackedOpenProof
     from sp1_zorch.logup_gkr.prover import LogupGkrProof
-    from sp1_zorch.shard_prover.prove_shard import ShardBridge, ShardJaggedEvalProof
+    from sp1_zorch.shard_prover.prove_shard import ShardBridge, JaggedPcsProof
     from sp1_zorch.zerocheck.prover import ZerocheckProof
 
 
@@ -353,7 +353,7 @@ def chip_opened_values(bridge: ShardBridge) -> list[ChipOpenedValues]:
     if bridge.zc_opened_values is None:
         raise ValueError(
             "the bridge holds no zerocheck opened values; run the chain "
-            "through ShardZerocheckStage before assembling the wire"
+            "through ZerocheckStage before assembling the wire"
         )
     main = bridge.main_region
     values = []
@@ -374,7 +374,7 @@ def encode_shard_proof(
     commitment: Array,
     gkr_proof: LogupGkrProof,
     zerocheck_proof: ZerocheckProof,
-    jagged_proof: ShardJaggedEvalProof,
+    jagged_proof: JaggedPcsProof,
     *,
     max_log_row_count: int,
 ) -> bytes:

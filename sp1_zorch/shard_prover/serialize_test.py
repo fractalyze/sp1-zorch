@@ -23,7 +23,7 @@ from zorch.pcs.jagged.prover import JaggedEvalMsg
 
 from zorch.pcs.jagged.open import StackedOpenProof
 from sp1_zorch.logup_gkr.prover import ChipEvaluation, LogupGkrProof
-from sp1_zorch.shard_prover.prove_shard import ShardBridge, ShardJaggedEvalProof
+from sp1_zorch.shard_prover.prove_shard import ShardBridge, JaggedPcsProof
 from sp1_zorch.shard_prover.serialize import (
     _encode_basefold_proof,
     _encode_chip_opened_values,
@@ -557,7 +557,7 @@ class EncodeShardProofTest(absltest.TestCase):
         bridge = _bridge()
         zerocheck = _zerocheck_proof()
         gkr = _gkr_proof()
-        jagged = ShardJaggedEvalProof(eval=_eval_msg(), open=_open_proof(num_rounds=2))
+        jagged = JaggedPcsProof(eval=_eval_msg(), open=_open_proof(num_rounds=2))
         commitment = jnp.arange(50, 58, dtype=F)
 
         covs = [

@@ -90,13 +90,13 @@ class ShardBridge:
     # original_commitments -- each round's SMCS commitment (pre-structure-binding),
     # [prep, main] order.
     commit_commitments: tuple[Array, ...] | None = None
-    # Written by LogupGkrStage; read by ShardZerocheckStage.
+    # Written by LogupGkrStage; read by ZerocheckStage.
     gkr_eval_point: Array | None = None
     gkr_chip_openings: Mapping[str, ChipEvaluation] | None = None
-    # Written by ShardZerocheckStage; read by the jagged-eval open stage as its
+    # Written by ZerocheckStage; read by the jagged-eval open stage as its
     # z_row — the accumulated per-round sumcheck challenges, not the GKR zeta.
     zc_sumcheck_point: Array | None = None
-    # Written by ShardZerocheckStage; read by the jagged-eval stage as its
+    # Written by ZerocheckStage; read by the jagged-eval stage as its
     # per-column claims (the trace evaluations at the zerocheck point) and by
     # proof assembly as the wire's ShardOpenedValues.
     zc_opened_values: Mapping[str, ChipEvaluation] | None = None
@@ -260,7 +260,7 @@ class LogupGkrStage(Round):
         return bridge, transcript, proof
 
 
-class ShardZerocheckStage(Round):
+class ZerocheckStage(Round):
     """Zerocheck stage over ``prove_shard_zerocheck``, consuming the GKR
     point and openings off the bridge. The stage absorbs the per-chip opened
     values itself (``OpenedValuesRound`` in ``zerocheck.prover``); this Stage
@@ -391,7 +391,7 @@ class ShardZerocheckStage(Round):
 
 
 @dataclass(frozen=True)
-class ShardJaggedEvalProof:
+class JaggedPcsProof:
     """The jagged evaluation proof: the outer/inner sumcheck reducing the
     committed trace to ``D(z_final)``, then the stacked BaseFold open of ``D``
     at that point."""
@@ -400,7 +400,7 @@ class ShardJaggedEvalProof:
     open: StackedOpenProof
 
 
-class ShardJaggedEvalStage(Round):
+class JaggedPcsStage(Round):
     """Jagged evaluation proof (SP1 Phase 4): reduce the committed trace to
     ``D(z_final)`` via the outer/inner sumcheck, then open ``D`` at ``z_final``
     with the stacked BaseFold FRI. Reads the zerocheck point, the per-chip
@@ -484,7 +484,7 @@ class ShardJaggedEvalStage(Round):
 
     def __call__(
         self, bridge: ShardBridge, transcript: GrindingTranscript
-    ) -> tuple[ShardBridge, GrindingTranscript, ShardJaggedEvalProof]:
+    ) -> tuple[ShardBridge, GrindingTranscript, JaggedPcsProof]:
         if (
             bridge.zc_sumcheck_point is None
             or bridge.commit_digest_layers is None
@@ -518,7 +518,7 @@ class ShardJaggedEvalStage(Round):
                 num_queries=self._num_queries,
                 pow_bits=self._pow_bits,
             )
-        return bridge, transcript, ShardJaggedEvalProof(eval=eval_msg, open=open_proof)
+        return bridge, transcript, JaggedPcsProof(eval=eval_msg, open=open_proof)
 
 
 def _region_mle(region: JaggedRegion) -> Array:
@@ -546,7 +546,7 @@ def _jagged_eval_body(
     pow_bits: int,
 ) -> tuple[GrindingTranscript, JaggedEvalMsg, StackedOpenProof]:
     """The jagged-eval stage's traceable body -- the single source both the
-    eager path and ``ShardJaggedEvalStage``'s ``@jit`` run."""
+    eager path and ``JaggedPcsStage``'s ``@jit`` run."""
     main = main_region
     openings = opened_values
     # The jagged eval runs in the extension field — the upstream sumcheck
@@ -675,10 +675,10 @@ def prove_shard_chain(
                 pow_bits=pow_bits,
                 witness=witness,
             ),
-            ShardZerocheckStage(
+            ZerocheckStage(
                 chips, max_log_row_count=max_log_row_count, jit=jit
             ),
-            ShardJaggedEvalStage(
+            JaggedPcsStage(
                 smcs,
                 log_blowup=log_blowup,
                 num_queries=open_num_queries,

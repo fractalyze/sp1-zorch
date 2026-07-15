@@ -57,7 +57,7 @@ rule as `fractalyze/riscv-witness:docs/conventions/docs-and-refs.md`.
 The LogUp-GKR prover pins SP1's reference challenger trajectory in its module
 docstring, where the file-wide dependence lives:
 
-```
+```text
 https://github.com/fractalyze/sp1/blob/e2c02f376/sp1-gpu/crates/sys/lib/logup_gkr/round.cu
 ```
 
