@@ -16,9 +16,9 @@ from dataclasses import dataclass, replace
 from functools import partial
 from typing import Any
 
-import jax
-import jax.numpy as jnp
-from jax import Array
+import frx
+import frx.numpy as jnp
+from frx import Array
 from rw_constraints import Chip
 from zk_dtypes import koalabearx4_mont
 
@@ -56,7 +56,7 @@ from zorch.utils.bits import log2_ceil_usize
 # subtree). Lets the bridge cross the chain's @jit boundary as one donatable
 # argument.
 @partial(
-    jax.tree_util.register_dataclass,
+    frx.tree_util.register_dataclass,
     data_fields=[
         "main_region",
         "prep_region",
@@ -299,7 +299,7 @@ class ShardZerocheckStage(Round):
         )
 
     @staticmethod
-    @partial(jax.jit, static_argnames=("chips", "max_log_row_count"))
+    @partial(frx.jit, static_argnames=("chips", "max_log_row_count"))
     def _jit_body(
         main_region,
         prep_region,
@@ -442,7 +442,7 @@ class ShardJaggedEvalStage(Round):
 
     @staticmethod
     @partial(
-        jax.jit,
+        frx.jit,
         static_argnames=("smcs", "log_blowup", "num_queries", "pow_bits"),
     )
     def _jit_body(
@@ -650,7 +650,7 @@ def prove_shard_chain(
     benchmark, the byte-match runnables, and proof assembly cannot drift
     on it.
 
-    ``jit`` stages every stage's heavy body under a cached ``jax.jit``: the
+    ``jit`` stages every stage's heavy body under a cached ``frx.jit``: the
     trace-commit tail (required at rsp scale, see
     ``zorch.pcs.jagged.commit``), the LogUp-GKR body (host-dispatch-bound
     eagerly, sp1-zorch#119), and the zerocheck + jagged-eval bodies — eagerly

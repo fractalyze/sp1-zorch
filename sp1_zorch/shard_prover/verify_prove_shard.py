@@ -64,8 +64,8 @@ import sys
 import time
 from pathlib import Path
 
-import jax
-import jax.numpy as jnp
+import frx
+import frx.numpy as jnp
 from absl import app, flags
 from zk_dtypes import koalabear_mont as F
 
@@ -157,7 +157,7 @@ class _TimedRound(Round):
     def __call__(self, carry, transcript):
         t0 = time.monotonic()
         out = self._inner(carry, transcript)
-        jax.block_until_ready(out)
+        frx.block_until_ready(out)
         label = type(self._inner).__name__
         print(
             f"[stage {label}] {(time.monotonic() - t0) * 1e3:.1f}ms",

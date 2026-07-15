@@ -14,8 +14,8 @@ from __future__ import annotations
 import dataclasses
 from dataclasses import replace
 
-import jax
-import jax.numpy as jnp
+import frx
+import frx.numpy as jnp
 import numpy as np
 from absl.testing import absltest
 from rw_constraints import Interaction, VirtualPairCol
@@ -89,7 +89,7 @@ def _rand_bf(seed: int, shape) -> jnp.ndarray:
 
 
 def _u32(a) -> np.ndarray:
-    return np.asarray(jax.lax.bitcast_convert_type(a, jnp.uint32)).reshape(-1)
+    return np.asarray(frx.lax.bitcast_convert_type(a, jnp.uint32)).reshape(-1)
 
 
 def _assert_bytes_equal(got, want, label: str = "") -> None:
@@ -101,7 +101,7 @@ def _flatten_arrays(x) -> list:
     lists/tuples, dicts, and dataclasses — so a proof message flattens without
     each proof type being a registered pytree. Static scalars (counts, flags)
     are identical by construction and contribute nothing."""
-    if isinstance(x, (jax.Array, np.ndarray)):
+    if isinstance(x, (frx.Array, np.ndarray)):
         return [x]
     if x is None:
         return []
@@ -214,7 +214,7 @@ class ProveShardChainTest(absltest.TestCase):
         # jit-legal — the statement rides `zorch.constraint_eval`'s aux_operands
         # operand, not a closure the composite would reject (the lowering smokes
         # below exercise it). This executed reference stays eager because CPU
-        # cannot execute the jitted field dots (fractalyze/jax#168); the jitted
+        # cannot execute the jitted field dots (fractalyze/frx#168); the jitted
         # prove is GPU's, byte-checked there.
         chain = prove_shard_chain(
             smcs=smcs,
@@ -246,7 +246,7 @@ class ProveShardChainTest(absltest.TestCase):
         )
         # The full four-stage chain runs eagerly on CPU: the jagged-eval
         # stage's base->extension embeds keep its EF->PF converts off the CPU
-        # path (jax#168), so the open executes. The hand replay stops at
+        # path (frx#168), so the open executes. The hand replay stops at
         # zerocheck, so snapshot the transcript there for the in-sync check;
         # the open's SP1 byte-match is the GPU verify_prove_shard harness's job.
         bridge = ShardBridge(main_region, prep_region, public_values)
@@ -332,7 +332,7 @@ class ProveShardChainTest(absltest.TestCase):
         # The bridge is built inside the traced function (so this needs no pytree
         # registration of ``ShardBridge``); backend compile stays GPU's job --
         # poseidon2 has no CPU fusion emitter and CPU jit miscompiles field dots
-        # (fractalyze/jax#168) -- so the smoke stops at StableHLO lowering.
+        # (fractalyze/frx#168) -- so the smoke stops at StableHLO lowering.
         def run(dense, public_values, transcript):
             bridge = ShardBridge(
                 replace(self.main_region, dense=dense), self.prep_region, public_values
@@ -340,7 +340,7 @@ class ProveShardChainTest(absltest.TestCase):
             _, out_transcript, _ = chain(bridge, transcript)
             return out_transcript
 
-        lowered = jax.jit(run).lower(
+        lowered = frx.jit(run).lower(
             self.main_region.dense, self.public_values, cheap_transcript(BF)
         )
         self.assertIn("func", lowered.as_text())
@@ -360,11 +360,11 @@ class ProveShardChainTest(absltest.TestCase):
         """JaggedRegion registers ``dense`` as its sole array leaf; the layout
         counts are static aux data, so a region crosses a ``@jit`` boundary
         without leaking the count tuples into the traced graph."""
-        leaves, treedef = jax.tree_util.tree_flatten(self.main_region)
+        leaves, treedef = frx.tree_util.tree_flatten(self.main_region)
         self.assertLen(leaves, 1)
         self.assertIs(leaves[0], self.main_region.dense)
         # The layout counts ride in the treedef as static aux, not as leaves.
-        rebuilt = jax.tree_util.tree_unflatten(treedef, leaves)
+        rebuilt = frx.tree_util.tree_unflatten(treedef, leaves)
         self.assertIs(rebuilt.dense, self.main_region.dense)
         self.assertEqual(rebuilt.row_counts, self.main_region.row_counts)
 
@@ -374,7 +374,7 @@ class ProveShardChainTest(absltest.TestCase):
         contribute no leaves — so the whole bridge crosses a ``@jit`` boundary
         as one argument."""
         bridge = ShardBridge(self.main_region, self.prep_region, self.public_values)
-        leaves = jax.tree_util.tree_leaves(bridge)
+        leaves = frx.tree_util.tree_leaves(bridge)
         self.assertEqual(
             [id(x) for x in leaves],
             [
@@ -389,14 +389,14 @@ class ProveShardChainTest(absltest.TestCase):
         that takes the bridge as a *donated* argument (vs the closed-over bridge
         in ``test_chain_lowers_under_single_jit``), letting XLA reuse its input
         buffers. Stops at StableHLO lowering: CPU can't execute field dots
-        (fractalyze/jax#168), GPU owns backend compile."""
+        (fractalyze/frx#168), GPU owns backend compile."""
 
         def run(bridge, transcript):
             _, out_transcript, _ = self.chain(bridge, transcript)
             return out_transcript
 
         bridge = ShardBridge(self.main_region, self.prep_region, self.public_values)
-        lowered = jax.jit(run, donate_argnums=0).lower(bridge, cheap_transcript(BF))
+        lowered = frx.jit(run, donate_argnums=0).lower(bridge, cheap_transcript(BF))
         self.assertIn("func", lowered.as_text())
 
     def test_populated_bridge_flattens_to_array_leaves_only(self) -> None:
@@ -406,10 +406,10 @@ class ProveShardChainTest(absltest.TestCase):
         (region, opening) is a pytree, so a mid-chain populated bridge can
         cross a ``@jit`` boundary too, not just the initial one."""
         self.assertIsNotNone(self.bridge.gkr_chip_openings)
-        leaves = jax.tree_util.tree_leaves(self.bridge)
+        leaves = frx.tree_util.tree_leaves(self.bridge)
         self.assertNotEmpty(leaves)
         for leaf in leaves:
-            self.assertIsInstance(leaf, jax.Array)
+            self.assertIsInstance(leaf, frx.Array)
 
     def test_trace_commit_round_carries_digest_layers_not_mle(self) -> None:
         """TraceCommitStage retains only each region's digest tree on the bridge

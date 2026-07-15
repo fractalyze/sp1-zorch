@@ -15,10 +15,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import jax
-import jax.numpy as jnp
+import frx
+import frx.numpy as jnp
 import numpy as np
-from jax import Array
+from frx import Array
 from zk_dtypes import koalabear_mont as F
 from zk_dtypes import koalabearx4_mont as EF
 
@@ -47,12 +47,12 @@ RATE = 8
 
 def to_u32(a: Array) -> np.ndarray:
     """Montgomery-form u32 bitpatterns — the byte-match comparison unit."""
-    return np.asarray(jax.lax.bitcast_convert_type(a, jnp.uint32))
+    return np.asarray(frx.lax.bitcast_convert_type(a, jnp.uint32))
 
 
 def from_u32(u32: np.ndarray, dtype: Any) -> Array:
     """Raw u32 Mont bitpatterns -> field array (EF collapses a trailing 4)."""
-    return jax.lax.bitcast_convert_type(jnp.asarray(u32, dtype=jnp.uint32), dtype)
+    return frx.lax.bitcast_convert_type(jnp.asarray(u32, dtype=jnp.uint32), dtype)
 
 
 class JitPermutation:
@@ -67,7 +67,7 @@ class JitPermutation:
         self.width: int = inner.width
         self.dtype: Any = inner.dtype
         self.has_dedicated_fusion: bool = inner.has_dedicated_fusion
-        self._permute = jax.jit(inner.permute)
+        self._permute = frx.jit(inner.permute)
 
     def permute(self, state: Array) -> Array:
         return self._permute(state)
@@ -247,7 +247,7 @@ def seed_gkr_outputs_rolled(
         )
         return t, proof.eval_point, proof.chip_openings
 
-    return jax.jit(_rolled)(main_region, prep_region, preamble, witness)
+    return frx.jit(_rolled)(main_region, prep_region, preamble, witness)
 
 
 def shard_regions(shard: ShardData) -> tuple[JaggedRegion, JaggedRegion | None]:

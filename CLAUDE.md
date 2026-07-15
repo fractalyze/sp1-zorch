@@ -24,17 +24,19 @@ common --override_module=zorch=/abs/path/to/your/zorch/checkout
 ```
 
 Bump the pin when you need newer `zorch` blocks; keep it on `main` commits so CI
-is reproducible. **Bump the jax family in `requirements.in` +
-`requirements_lock_3_11.txt` to match zorch's pin in the *same* commit** — zorch
-and sp1-zorch build against a shared jaxlib, so a lagging jax pin ABI-mismatches
-and **segfaults** the GPU tests (`verify_shard_test`), not a clean `ImportError`.
-`sp1-zorch main` is the reference for the matching `(zorch pin, jax)` pair.
+is reproducible. **Bump the frx family (`frx` = Fractalyze Field, Ring
+Accelerated) in `requirements.in` + `requirements_lock_3_11.txt` to match zorch's
+pin in the *same* commit** — zorch and sp1-zorch build against a shared frxlib,
+so a lagging frx pin ABI-mismatches and **segfaults** the GPU tests
+(`verify_shard_test`), not a clean `ImportError`. `sp1-zorch main` is the
+reference for the matching `(zorch pin, frx)` pair.
 
 ## Development environment
 
-Pure Python on JAX + the ZKX PJRT plugin. Bazel 9 (bzlmod). Tests default to
+Pure Python on frx (Field, Ring Accelerated), run against the
+Fractalyze XLA GPU plugin. Bazel 9 (bzlmod). Tests default to
 `JAX_PLATFORMS=cpu`; the SP1 FFI byte-match needs a CUDA GPU. Full setup, the
-GPU-plugin gotcha (jax **silently falls back to CPU** without the cuda plugin
+GPU-plugin gotcha (frx **silently falls back to CPU** without the cuda plugin
 deps), test `size`/`timeout` conventions, and the per-stage SP1 baseline live in
 [`docs/development.md`](docs/development.md).
 

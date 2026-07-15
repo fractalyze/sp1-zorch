@@ -8,9 +8,9 @@ sponge in the same state. The value-level anchor against SP1 itself is the
 rsp byte-match (``verify_gkr_prove``).
 """
 
-import jax.numpy as jnp
+import frx.numpy as jnp
 from absl.testing import absltest
-from jax import lax
+from frx import lax
 from zk_dtypes import koalabear_mont as F
 from zk_dtypes import koalabearx4_mont as EF
 

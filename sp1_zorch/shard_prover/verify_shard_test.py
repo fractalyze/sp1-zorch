@@ -16,8 +16,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-import jax
-import jax.numpy as jnp
+import frx
+import frx.numpy as jnp
 import numpy as np
 from absl.testing import absltest
 from zk_dtypes import koalabear_mont
@@ -41,7 +41,7 @@ BF = koalabear_mont
 
 
 def _u32(a) -> np.ndarray:
-    return np.asarray(jax.lax.bitcast_convert_type(a, jnp.uint32)).reshape(-1)
+    return np.asarray(frx.lax.bitcast_convert_type(a, jnp.uint32)).reshape(-1)
 
 
 def _assert_bytes_equal(got, want, label: str = "") -> None:
@@ -224,10 +224,10 @@ class VerifyShardChainTest(absltest.TestCase):
         """``ShardVerifierBridge`` is a pytree like the prover's bridge: the
         public values and written roots are its array leaves, so the dual
         chain can cross a ``@jit`` boundary as one argument."""
-        leaves = jax.tree_util.tree_leaves(self.dual_bridge)
+        leaves = frx.tree_util.tree_leaves(self.dual_bridge)
         self.assertNotEmpty(leaves)
         for leaf in leaves:
-            self.assertIsInstance(leaf, jax.Array)
+            self.assertIsInstance(leaf, frx.Array)
 
 
 if __name__ == "__main__":

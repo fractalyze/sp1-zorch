@@ -16,10 +16,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-import jax.numpy as jnp
+import frx.numpy as jnp
 import numpy as np
 import zk_dtypes
-from jax import Array
+from frx import Array
 from zk_dtypes import koalabear_mont
 
 from sp1_zorch.shard_prover.chip_loader import (

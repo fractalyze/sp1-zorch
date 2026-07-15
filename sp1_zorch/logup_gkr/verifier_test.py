@@ -14,8 +14,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-import jax
-import jax.numpy as jnp
+import frx
+import frx.numpy as jnp
 from absl.testing import absltest
 from rw_constraints import Interaction, VirtualPairCol
 from zk_dtypes import koalabear_mont as F
@@ -185,13 +185,13 @@ class VirtualPaddingGeqTest(absltest.TestCase):
         # An arbitrary full-limb EF point (small fixed affine limbs, all
         # well below the field modulus).
         limbs = jnp.arange(24, dtype=jnp.uint32).reshape(6, 4) * 48271 + 7
-        point = jax.lax.bitcast_convert_type(limbs, EF)
+        point = frx.lax.bitcast_convert_type(limbs, EF)
         size = 1 << point.shape[0]
         for threshold in (0, 4, 24, 32, size):
             # Field-valued 0/1 indicator via a select, not a bool->EF
             # convert_element_type: the latter fails to bufferize in eager mode
-            # on the pinned jaxlib's CPU backend ("op was not bufferized",
-            # jax 0.10.0). A select over field operands lowers cleanly and gives
+            # on the pinned frxlib's CPU backend ("op was not bufferized",
+            # frx 0.10.0). A select over field operands lowers cleanly and gives
             # the identical 0/1 indicator.
             mask = jnp.arange(size) >= threshold
             indicator = jnp.where(mask, jnp.ones((), EF), jnp.zeros((), EF))

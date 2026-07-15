@@ -2,7 +2,7 @@
 """zerocheck coefficient layouts: descending-power RLC coeffs, shifted GKR
 column weights, and a fold byte-equal to the plain dot it marks."""
 
-import jax.numpy as jnp
+import frx.numpy as jnp
 from absl.testing import absltest
 from zk_dtypes import koalabear_mont as F
 

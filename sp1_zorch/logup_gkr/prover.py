@@ -22,9 +22,9 @@ from dataclasses import dataclass
 from functools import partial
 from typing import Any, Mapping, Sequence
 
-import jax
-import jax.numpy as jnp
-from jax import Array, lax
+import frx
+import frx.numpy as jnp
+from frx import Array, lax
 from rw_constraints import Chip
 from zk_dtypes import efinfo
 
@@ -60,7 +60,7 @@ from zorch.transcript import GrindingTranscript, Transcript
 # Pytree: both evals are array leaves (preprocessed is None for prep-less
 # chips), so a carry holding these openings stays an arrays-only pytree.
 @partial(
-    jax.tree_util.register_dataclass,
+    frx.tree_util.register_dataclass,
     data_fields=["main", "preprocessed"],
     meta_fields=[],
 )
@@ -208,7 +208,7 @@ class ChipOpeningsRound(Round):
         return carry, transcript.observe(flat), self._openings
 
 
-@partial(jax.jit, static_argnames=("trace_dimension",))
+@partial(frx.jit, static_argnames=("trace_dimension",))
 def open_traces(
     main_region: JaggedRegion,
     prep_region: JaggedRegion | None,

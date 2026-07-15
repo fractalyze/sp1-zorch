@@ -8,9 +8,10 @@ SP1. For architecture (ProveChain / Stage / Round / Bridge) see
 
 ## Development environment
 
-Pure Python on JAX + the ZKX PJRT plugin. Bazel 9 (bzlmod). `sp1-zorch` consumes
-`zorch` as a Bazel module, pinned in `MODULE.bazel` via `git_override` for
-reproducible builds.
+Pure Python on frx (Field, Ring Accelerated), run against the
+Fractalyze XLA GPU plugin. Bazel 9 (bzlmod). `sp1-zorch` consumes `zorch` as a
+Bazel module, pinned in `MODULE.bazel` via `git_override` for reproducible
+builds.
 
 ```sh
 python3.11 -m venv .venv && . .venv/bin/activate
@@ -19,11 +20,11 @@ pip install -r requirements.in \
 bazel test //...                 # hermetic, sandboxed; JAX_PLATFORMS=cpu default
 ```
 
-For iterative dev outside Bazel:
+For iterative dev outside Bazel — source the venv, then put the sp1-zorch and a
+local `zorch` checkout on the path:
 
 ```sh
 export PYTHONPATH="$PWD:/abs/path/to/zorch"
-export ZKX_REPO_ROOT="$HOME/Workspace/zkx"   # dev against a local ZKX checkout
 ```
 
 **Dev against a local `zorch` checkout** instead of the pinned commit — add to
@@ -33,17 +34,17 @@ export ZKX_REPO_ROOT="$HOME/Workspace/zkx"   # dev against a local ZKX checkout
 common --override_module=zorch=/abs/path/to/your/zorch/checkout
 ```
 
-Bumping the `zorch` pin and its matching jax family is a coupled change — see the
-"Dependency on zorch" section of [`../CLAUDE.md`](../CLAUDE.md) (a lagging jax pin
+Bumping the `zorch` pin and its matching frx family is a coupled change — see the
+"Dependency on zorch" section of [`../CLAUDE.md`](../CLAUDE.md) (a lagging frx pin
 segfaults the GPU tests rather than raising a clean `ImportError`).
 
 **GPU-plugin gotcha.** A `py_binary` GPU runnable must dep
-`requirement("jax_cuda12_plugin")` + `requirement("jax_cuda12_pjrt")` or jax
+`requirement("frx_cuda12_plugin")` + `requirement("frx_cuda12_pjrt")` or frx
 **silently falls back to CPU**. Run with `JAX_PLATFORMS=cuda` so a missing plugin
 errors instead of silently degrading (`gpu` is wrong: it also initializes rocm
-and dies). The new-jax loader takes no plugin-path env var; to measure a locally
-built zkx plugin you overwrite the wheel's bundled `xla_cuda_plugin.so` — see
-[Measure shipped code](#measure-shipped-code) below.
+and dies). The Fractalyze XLA plugin loader takes no plugin-path env var; to
+measure a locally built plugin you overwrite the wheel's bundled
+`xla_cuda_plugin.so` — see [Measure shipped code](#measure-shipped-code) below.
 
 ## Testing
 
@@ -123,8 +124,8 @@ JAX_PLATFORMS=cuda \
 ```
 
 Use `--runs=5`, not `--runs=2`: the **first** warm pass (pass 2) has not fully
-settled — LogUp-GKR's eager host-dispatch driver reads ~54 ms on pass 2 but
-converges to ~35 ms by passes 3–5, so reading pass 2 overstates it ~50%. Take a
+settled — LogUp-GKR's eager host-dispatch driver reads ~58 ms on pass 2 but
+converges to ~38 ms by passes 3–5, so reading pass 2 overstates it ~50%. Take a
 converged steady-state pass. Pin to an idle card on a shared box
 (`CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=<idx>`) — contending with
 another prove during CUDA init can hard-kill the run.
@@ -142,15 +143,16 @@ LogUp-GKR zone is already captured as one big graph.
 `--ffi_verify` byte-verifies the assembled bincode proof through SP1's
 `sp1_verify_shard` FFI; point `SP1_JAX_FFI_LIB` at `libsp1_gpu_jax_ffi.so`
 (vendored in SP1 reference checkouts, e.g. whir-zorch `third_party/sp1/`). This
-runs the GPU plugin bundled in the pinned `jax_cuda12_pjrt` wheel; to measure a
-*locally built* zkx plugin instead, see [Measure shipped code](#measure-shipped-code).
+runs the GPU plugin bundled in the pinned `frx-cuda12-pjrt` wheel; to measure a
+*locally built* Fractalyze XLA plugin instead, see [Measure shipped code](#measure-shipped-code).
 
 - Runs `prove_shard_chain` (the `ProveChain` of `TraceCommitStage` → `LogupGkrStage`
   → `ShardZerocheckStage` → `ShardJaggedEvalStage`) on the real shard.
 - A `_TimedRound` wrapper prints **per-Stage wall-clock** in ms:
-  `[stage TraceCommitStage] X.Yms`, and likewise for the other three. `--runs=2`
-  proves twice in one process: pass 1 is cold (XLA/zkx compiles), pass 2 is
-  **warm** (executables reused) — compare the warm pass against SP1.
+  `[stage TraceCommitStage] X.Yms`, and likewise for the other three. `--runs=5`
+  proves five times in one process: pass 1 is cold (XLA compiles), passes
+  2–5 are **warm** (executables reused); read a converged pass (3–5), not the
+  first warm pass (see the run note above), and compare it against SP1.
 - **Golden**: the chain's commitment must equal the dump's `main_commit`
   (`gpu_commitment.txt`), the zerocheck point must equal `gpu_z_row.txt`, the
   jagged claim must equal `phase4_sumcheck_claim`, and with `--ffi_verify` the
@@ -193,18 +195,19 @@ an ELF + stdin) the tool uses `CpuShardProver`: useful as the injection-validity
 
 | Stage | SP1 GPU | sp1-zorch GPU | ratio | golden |
 |---|---|---|---|---|
-| trace commit | 16.6 ms | 18.1 ms | 1.09× | byte-match |
-| LogUp-GKR | 19.9 ms | 35.1 ms | 1.76× | byte-match |
-| zerocheck | 156.9 ms | **141.5 ms** | **0.90×** | byte-match |
-| jagged eval (PCS open) | 41.1 ms | 74.6 ms | 1.82× | byte-match |
-| _full chain_ | 234.8 ms | 275.9 ms | 1.18× | `sp1_verify_shard` ACCEPTED |
+| trace commit | 16.6 ms | 18.2 ms | 1.10× | byte-match |
+| LogUp-GKR | 19.9 ms | 38.2 ms | 1.92× | byte-match |
+| zerocheck | 156.9 ms | **141.7 ms** | **0.90×** | byte-match |
+| jagged eval (PCS open) | 41.1 ms | **37.4 ms** | **0.91×** | byte-match |
+| full chain | 234.8 ms | 242.6 ms | 1.03× | `sp1_verify_shard` ACCEPTED |
 
 The two wall-clock columns are warm, byte-matched runs of the two tools above:
 the sp1-zorch column is the converged warm steady state (passes 3–5 of the
 `--runs=5` command, on an idle RTX 5090 — all four Stages byte-match and
 `--ffi_verify` reports `sp1_verify_shard: ACCEPTED`); the SP1 column is the SP1
-GPU NoExec run. zerocheck now edges out SP1 (0.90×); the remaining gaps are
-LogUp-GKR and the jagged-eval PCS open.
+GPU NoExec run. zerocheck (0.90×) and the jagged-eval PCS open (0.91×) now edge
+out SP1; the full chain is at ~parity (1.03×), with LogUp-GKR the one remaining
+gap.
 
 ### Measure shipped code
 
@@ -215,10 +218,10 @@ shipped path, not a stale local one:
 - `zorch` is the `MODULE.bazel` pin — or, if you dev against a local checkout via
   a `.bazelrc.user` `--override_module=zorch=`, that checkout is on the same
   `origin/main` commit, not behind it and not dirty;
-- the GPU plugin is the one you mean to measure. The new-jax loader
-  (`jax_plugins/xla_cuda12/__init__.py` in the pinned `jax_cuda12_pjrt` wheel)
+- the GPU plugin is the one you mean to measure. The Fractalyze XLA plugin loader
+  (`frx_plugins/xla_cuda12/__init__.py` in the pinned `frx-cuda12-pjrt` wheel)
   reads no plugin-path env var — it loads the bundled `xla_cuda_plugin.so`. To
-  measure a locally built zkx plugin, overwrite that bundled `.so` (back it up)
+  measure a locally built Fractalyze XLA plugin, overwrite that bundled `.so` (back it up)
   and run the **prebuilt** binary directly — `bazel run` re-extracts the wheel
   and reverts the swap. Confirm which ran with
   `strings -a <.so> | grep service/hlo_verifier.cc` (`external/xla/…` = wheel,

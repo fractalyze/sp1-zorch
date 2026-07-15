@@ -12,7 +12,7 @@ import hashlib
 from dataclasses import fields
 from types import SimpleNamespace
 
-import jax.numpy as jnp
+import frx.numpy as jnp
 import numpy as np
 from absl.testing import absltest
 from rw_constraints import Interaction, VirtualPairCol
@@ -134,7 +134,7 @@ class ExtractSp1OutputsTest(absltest.TestCase):
 
 # Golden digest of the rolled prove output (the sole prove path). Regenerate with
 # `print(_proof_digest(ProveLogupGkrTest()._prove()))` when the prove output
-# legitimately changes (e.g. a jax/zkx wheel bump that alters the field encoding).
+# legitimately changes (e.g. a frx/zkx wheel bump that alters the field encoding).
 _ROLLED_PYRAMID_GOLDEN = (
     "af801e4f09ae9c3a375f9cdc4613282ecd753e212129f5f91196a1494cd0cce4"
 )

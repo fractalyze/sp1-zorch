@@ -36,10 +36,10 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import jax.numpy as jnp
+import frx.numpy as jnp
 import numpy as np
 from absl import app, flags
-from jax import Array
+from frx import Array
 from zk_dtypes import koalabearx4_mont as EF
 
 from sp1_zorch.shard_prover.fixture_loader import (

@@ -20,9 +20,9 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from functools import partial
 
-import jax
-import jax.numpy as jnp
-from jax import Array
+import frx
+import frx.numpy as jnp
+from frx import Array
 from rw_constraints import Chip
 from zorch.pcs.jagged.region import structure_counts
 from zorch.commit.smcs import SingleMatrixCommitmentScheme
@@ -51,7 +51,7 @@ from zorch.utils.bits import log2_ceil_usize
 # Optional fields are None (an empty subtree), so the bridge crosses a @jit
 # boundary as one argument.
 @partial(
-    jax.tree_util.register_dataclass,
+    frx.tree_util.register_dataclass,
     data_fields=[
         "public_values",
         "commitment_roots",

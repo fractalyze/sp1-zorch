@@ -16,8 +16,8 @@ Reference: whir-zorch ``sp1/shard_prover/prover.py``, its zerocheck (SP1
 
 from __future__ import annotations
 
-import jax
-import jax.numpy as jnp
+import frx
+import frx.numpy as jnp
 import numpy as np
 from absl.testing import absltest
 from zk_dtypes import koalabear_mont, koalabearx4_mont
@@ -81,7 +81,7 @@ def _rand_ef(seed: int, shape) -> jnp.ndarray:
 
 
 def _u32(a) -> np.ndarray:
-    return np.asarray(jax.lax.bitcast_convert_type(a, jnp.uint32)).reshape(-1)
+    return np.asarray(frx.lax.bitcast_convert_type(a, jnp.uint32)).reshape(-1)
 
 
 def _assert_bytes_equal(got, want, label: str = "") -> None:

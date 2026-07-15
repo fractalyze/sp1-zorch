@@ -28,8 +28,8 @@ from __future__ import annotations
 
 from typing import Iterable, Mapping, Sequence
 
-import jax.numpy as jnp
-from jax import Array
+import frx.numpy as jnp
+from frx import Array
 
 from sp1_zorch.logup_gkr.circuit import GkrChip, generate_interaction_vals_batch
 from sp1_zorch.logup_gkr.head import EF_LIMBS, HeadChallengesRound, OutputBindRound

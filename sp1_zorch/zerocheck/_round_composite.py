@@ -9,7 +9,7 @@ round shape; the SP1-specific column term never enters it. An unclaimed marker
 decomposes inline, byte-identical to the plain reduce."""
 from __future__ import annotations
 
-import jax.numpy as jnp
+import frx.numpy as jnp
 from zorch._composite import composite
 from zorch.poly.geq import VirtualGeq
 from zorch.poly.eq import eq_factor

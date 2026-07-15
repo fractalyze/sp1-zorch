@@ -16,9 +16,9 @@ from __future__ import annotations
 import struct
 from typing import TYPE_CHECKING
 
-import jax.numpy as jnp
+import frx.numpy as jnp
 import numpy as np
-from jax import Array, lax
+from frx import Array, lax
 from zk_dtypes import efinfo
 
 from sp1_zorch.shard_prover.types import ChipOpenedValues, MachineVerifyingKey

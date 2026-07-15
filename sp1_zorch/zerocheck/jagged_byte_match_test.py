@@ -28,8 +28,8 @@ from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 
-import jax
-import jax.numpy as jnp
+import frx
+import frx.numpy as jnp
 import numpy as np
 from absl.testing import absltest
 from zk_dtypes import koalabear_mont, koalabearx4_mont
@@ -56,7 +56,7 @@ _FIXTURE = Path(__file__).parent / "testdata" / "gpu_fibonacci"
 
 def _from_u32(u32: np.ndarray, dtype) -> jnp.ndarray:
     """Raw u32 Mont bitpatterns -> field array (EF collapses a trailing 4)."""
-    return jax.lax.bitcast_convert_type(jnp.asarray(u32, dtype=jnp.uint32), dtype)
+    return frx.lax.bitcast_convert_type(jnp.asarray(u32, dtype=jnp.uint32), dtype)
 
 
 def _load_npy(name: str, dtype) -> jnp.ndarray:
@@ -76,7 +76,7 @@ def _load_region(name: str, dense: jnp.ndarray) -> JaggedRegion:
 
 
 @partial(
-    jax.tree_util.register_dataclass, data_fields=["challenges", "pos"], meta_fields=[]
+    frx.tree_util.register_dataclass, data_fields=["challenges", "pos"], meta_fields=[]
 )
 @dataclass(frozen=True)
 class _ScriptedTranscript:
@@ -96,7 +96,7 @@ class _ScriptedTranscript:
         # (one extension element = degree base squeezes, the
         # ``sample_challenge`` rule — fractalyze/sp1-zorch#88), so the script
         # stores flat base limbs.
-        flat = jax.lax.bitcast_convert_type(jnp.asarray(challenges), BF).reshape(-1)
+        flat = frx.lax.bitcast_convert_type(jnp.asarray(challenges), BF).reshape(-1)
         return cls(flat, jnp.asarray(0, jnp.int32))
 
     def observe(self, values):
@@ -104,12 +104,12 @@ class _ScriptedTranscript:
         return self
 
     def sample(self, n=1):
-        out = jax.lax.dynamic_slice_in_dim(self.challenges, self.pos, n, axis=0)
+        out = frx.lax.dynamic_slice_in_dim(self.challenges, self.pos, n, axis=0)
         return _ScriptedTranscript(self.challenges, self.pos + n), out
 
 
 def _u32(a) -> np.ndarray:
-    return np.asarray(jax.lax.bitcast_convert_type(a, jnp.uint32)).reshape(-1)
+    return np.asarray(frx.lax.bitcast_convert_type(a, jnp.uint32)).reshape(-1)
 
 
 class JaggedZerocheckByteMatchTest(absltest.TestCase):
