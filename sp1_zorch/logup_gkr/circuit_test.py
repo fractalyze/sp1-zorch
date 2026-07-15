@@ -8,7 +8,7 @@ reference dump, which runs against the rsp capture separately (GPU)."""
 
 from types import SimpleNamespace
 
-import jax.numpy as jnp
+import frx.numpy as jnp
 from absl.testing import absltest
 from rw_constraints import Interaction, VirtualPairCol
 from zk_dtypes import koalabear_mont as F

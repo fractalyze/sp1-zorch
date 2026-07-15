@@ -2,7 +2,7 @@
 """Shard ingest from a co-located trace-gen producer (no dump files).
 
 A co-located riscv-witness GPU trace-gen (fractalyze/riscv-witness#2251)
-hands per-chip device ``jax.Array``s — ``riscv_witness.chips_to_jax``: raw
+hands per-chip device ``frx.Array``s — ``riscv_witness.chips_to_jax``: raw
 Montgomery ``uint32`` cells, rw-named, fired chips only — plus the bundle's
 ``num_reals`` and a device public-values vector
 (``riscv_witness.public_values_to_jax``). This module is
@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from jax import Array
+from frx import Array
 from zk_dtypes import koalabear_mont
 from zorch.pcs.jagged.region import JaggedRegion
 
@@ -55,7 +55,7 @@ def regions_from_producer(
     fixture path's, unchanged::
 
         chain(
-            ShardCarry(main_region, prep_region,
+            ShardBridge(main_region, prep_region,
                        shard.main_trace_data.public_values),
             fresh_transcript(),
         )

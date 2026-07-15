@@ -2,11 +2,11 @@
 """``verify_shard_chain`` vs ``prove_shard_chain`` — the structural mirror.
 
 The dual chain's guarantee is structural before it is cryptographic: one
-verifier Round per prover stage, so a proof whose message list misaligns with
+verifier Stage per prover stage, so a proof whose message list misaligns with
 the schedule is rejected loudly by ``VerifyChain`` itself rather than
 accepted on a desynced stream. These tests pin that alignment plus all four
 stage duals against a full prover run (the shared ``chain_testkit``
-fixture): same Fiat-Shamir stream, carry seams written for the downstream
+fixture): same Fiat-Shamir stream, bridge seams written for the downstream
 duals, a tampered stage message rejected through the chain (the per-leg
 tamper coverage is each stage's own verifier test), and the zerocheck
 dual's opening-shape statement checks.
@@ -16,8 +16,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-import jax
-import jax.numpy as jnp
+import frx
+import frx.numpy as jnp
 import numpy as np
 from absl.testing import absltest
 from zk_dtypes import koalabear_mont
@@ -26,8 +26,8 @@ from zorch.testkit.transcript import cheap_transcript
 
 from sp1_zorch.shard_prover.types import ChipShape, TraceShape
 from sp1_zorch.shard_prover.verify_shard import (
-    ShardVerifierCarry,
-    ShardZerocheckVerifierRound,
+    ShardVerifierBridge,
+    ShardZerocheckVerifierStage,
 )
 
 from sp1_zorch.shard_prover.chain_testkit import (
@@ -41,7 +41,7 @@ BF = koalabear_mont
 
 
 def _u32(a) -> np.ndarray:
-    return np.asarray(jax.lax.bitcast_convert_type(a, jnp.uint32)).reshape(-1)
+    return np.asarray(frx.lax.bitcast_convert_type(a, jnp.uint32)).reshape(-1)
 
 
 def _assert_bytes_equal(got, want, label: str = "") -> None:
@@ -57,13 +57,13 @@ class VerifyShardChainTest(absltest.TestCase):
         fx = small_shard_chain_fixture()
         cls.fx = fx
         cls.commitment, cls.gkr_proof, cls.zc_proof, cls.je_proof = fx.messages
-        cls.dual_carry, cls.dual_transcript, cls.dual_ok = fx.dual(
-            ShardVerifierCarry(fx.public_values),
+        cls.dual_bridge, cls.dual_transcript, cls.dual_ok = fx.dual(
+            ShardVerifierBridge(fx.public_values),
             fx.messages,
             cheap_transcript(BF),
         )
 
-    def test_one_verifier_round_per_prover_stage(self) -> None:
+    def test_one_verifier_stage_per_prover_stage(self) -> None:
         self.assertLen(self.fx.dual.rounds, len(self.fx.prove_chain.rounds))
 
     def test_round_count_mismatch_fails_loud(self) -> None:
@@ -71,7 +71,7 @@ class VerifyShardChainTest(absltest.TestCase):
         ``VerifyChain``'s own check, before any stage dual runs."""
         with self.assertRaisesRegex(ValueError, "one message per round"):
             self.fx.dual(
-                ShardVerifierCarry(self.fx.public_values),
+                ShardVerifierBridge(self.fx.public_values),
                 self.fx.messages[:3],
                 cheap_transcript(BF),
             )
@@ -90,10 +90,10 @@ class VerifyShardChainTest(absltest.TestCase):
         copy inside the stage), the openings the proof's leaf-checked values
         — what the zerocheck dual reads, surviving to the chain output."""
         _assert_bytes_equal(
-            self.dual_carry.gkr_eval_point, self.gkr_proof.eval_point, "point"
+            self.dual_bridge.gkr_eval_point, self.gkr_proof.eval_point, "point"
         )
         _assert_bytes_equal(
-            self.dual_carry.gkr_chip_openings["alpha"].main,
+            self.dual_bridge.gkr_chip_openings["alpha"].main,
             self.gkr_proof.chip_openings["alpha"].main,
             "openings",
         )
@@ -108,7 +108,7 @@ class VerifyShardChainTest(absltest.TestCase):
         )
         bad_proof = replace(self.gkr_proof, round_proofs=bad_rounds)
         _, _, ok = self.fx.dual(
-            ShardVerifierCarry(self.fx.public_values),
+            ShardVerifierBridge(self.fx.public_values),
             [self.commitment, bad_proof, self.zc_proof, self.je_proof],
             cheap_transcript(BF),
         )
@@ -120,10 +120,10 @@ class VerifyShardChainTest(absltest.TestCase):
         oracle-checked ones — what the jagged-eval dual reads, surviving to
         the chain output."""
         _assert_bytes_equal(
-            self.dual_carry.zc_sumcheck_point, self.zc_proof.msgs.challenge, "point"
+            self.dual_bridge.zc_sumcheck_point, self.zc_proof.msgs.challenge, "point"
         )
         _assert_bytes_equal(
-            self.dual_carry.zc_opened_values["alpha"].main,
+            self.dual_bridge.zc_opened_values["alpha"].main,
             self.zc_proof.opened_values["alpha"].main,
             "opened values",
         )
@@ -135,7 +135,7 @@ class VerifyShardChainTest(absltest.TestCase):
             (), self.zc_proof.claimed_sum.dtype
         )
         _, _, ok = self.fx.dual(
-            ShardVerifierCarry(self.fx.public_values),
+            ShardVerifierBridge(self.fx.public_values),
             [
                 self.commitment,
                 self.gkr_proof,
@@ -155,7 +155,7 @@ class VerifyShardChainTest(absltest.TestCase):
             + jnp.ones((), self.je_proof.eval.dense_eval.dtype),
         )
         _, _, ok = self.fx.dual(
-            ShardVerifierCarry(self.fx.public_values),
+            ShardVerifierBridge(self.fx.public_values),
             [
                 self.commitment,
                 self.gkr_proof,
@@ -178,7 +178,7 @@ class VerifyShardChainTest(absltest.TestCase):
             opened_values={"alpha": replace(ev, main=ev.main[:-1])},
         )
         with self.assertRaisesRegex(ValueError, "main claim per statement"):
-            self.fx.dual.rounds[2](self.dual_carry, bad, self.dual_transcript)
+            self.fx.dual.rounds[2](self.dual_bridge, bad, self.dual_transcript)
 
     def test_unexpected_preprocessed_opening_rejected(self) -> None:
         """A statement with no preprocessed trace rejects a proof that opens
@@ -189,15 +189,15 @@ class VerifyShardChainTest(absltest.TestCase):
             opened_values={"alpha": replace(ev, preprocessed=ev.main[:1])},
         )
         with self.assertRaisesRegex(ValueError, "no preprocessed trace"):
-            self.fx.dual.rounds[2](self.dual_carry, bad, self.dual_transcript)
+            self.fx.dual.rounds[2](self.dual_bridge, bad, self.dual_transcript)
 
     def test_missing_preprocessed_opening_rejected(self) -> None:
         """A statement whose chip carries a preprocessed trace rejects a
         proof that opens none (SP1's preprocessed-chips-appear-in-the-proof
-        check). The carry is the post-chain one (every seam written), so the
+        check). The bridge is the post-chain one (every seam written), so the
         call exercises only the shape check, which raises before any
         cryptographic work."""
-        round_ = ShardZerocheckVerifierRound(
+        round_ = ShardZerocheckVerifierStage(
             self.fx.chips,
             chip_names=("alpha",),
             chip_shapes={
@@ -209,25 +209,25 @@ class VerifyShardChainTest(absltest.TestCase):
             max_log_row_count=MAX_LOG_ROW_COUNT,
         )
         with self.assertRaisesRegex(ValueError, "preprocessed claim per statement"):
-            round_(self.dual_carry, self.zc_proof, self.dual_transcript)
+            round_(self.dual_bridge, self.zc_proof, self.dual_transcript)
 
     def test_trace_commit_dual_writes_commitment_roots(self) -> None:
         """[prep (from the vk), main (from the message)] — the order of SP1's
         round_evaluation_claims, read skip-level by the stacked-open dual."""
-        roots = self.dual_carry.commitment_roots
+        roots = self.dual_bridge.commitment_roots
         _assert_bytes_equal(
             roots[0], self.fx.vk.preprocessed_commit, "prep root"
         )
         _assert_bytes_equal(roots[1], self.commitment, "main root")
 
-    def test_verifier_carry_flattens_to_array_leaves(self) -> None:
-        """``ShardVerifierCarry`` is a pytree like the prover's carry: the
+    def test_verifier_bridge_flattens_to_array_leaves(self) -> None:
+        """``ShardVerifierBridge`` is a pytree like the prover's bridge: the
         public values and written roots are its array leaves, so the dual
         chain can cross a ``@jit`` boundary as one argument."""
-        leaves = jax.tree_util.tree_leaves(self.dual_carry)
+        leaves = frx.tree_util.tree_leaves(self.dual_bridge)
         self.assertNotEmpty(leaves)
         for leaf in leaves:
-            self.assertIsInstance(leaf, jax.Array)
+            self.assertIsInstance(leaf, frx.Array)
 
 
 if __name__ == "__main__":

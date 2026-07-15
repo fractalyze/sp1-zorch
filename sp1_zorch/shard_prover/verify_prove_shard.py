@@ -5,13 +5,13 @@ Runs ``prove_shard_chain`` (the ``ProveChain`` of trace commit -> LogUp-GKR
 -> zerocheck -> jagged evaluation proof) over a real rsp dump and seals the
 composition against the reference:
 
-- the commitment the chain's ``TraceCommitRound`` computes must equal the
+- the commitment the chain's ``TraceCommitStage`` computes must equal the
   dump's ``main_commit`` (``gpu_commitment.txt``);
 - the GKR evaluation point's row tail (SP1's ``zeta``) must equal
   ``gpu_z_row.txt``. ``zeta`` is a sponge image of every byte the chain
   observed through the LogUp-GKR leg, so this one match transitively pins the
   preamble (vk, public values, commitment, chip metadata) and the GKR leg,
-  proving the Round wiring reproduces SP1's transcript. The zerocheck sumcheck
+  proving the Stage wiring reproduces SP1's transcript. The zerocheck sumcheck
   point is not dumped to a txt (it lives only in the proof JSON); ``final_eval``
   below pins the zerocheck rounds instead. ``gpu_z_row.txt`` is SP1's ``zeta``,
   not the zerocheck point -- see ``zerocheck/verify_zerocheck.py``, the
@@ -64,8 +64,8 @@ import sys
 import time
 from pathlib import Path
 
-import jax
-import jax.numpy as jnp
+import frx
+import frx.numpy as jnp
 from absl import app, flags
 from zk_dtypes import koalabear_mont as F
 
@@ -81,7 +81,7 @@ from sp1_zorch.shard_prover.fixture_loader import (
     load_fixture_shard,
 )
 from sp1_zorch.shard_prover.prove_shard import (
-    ShardCarry,
+    ShardBridge,
     preamble_chip_metadata,
     prove_shard_chain,
 )
@@ -157,7 +157,7 @@ class _TimedRound(Round):
     def __call__(self, carry, transcript):
         t0 = time.monotonic()
         out = self._inner(carry, transcript)
-        jax.block_until_ready(out)
+        frx.block_until_ready(out)
         label = type(self._inner).__name__
         print(
             f"[stage {label}] {(time.monotonic() - t0) * 1e3:.1f}ms",
@@ -309,12 +309,12 @@ def main(argv) -> None:
         )
         t0 = time.monotonic()
         # Release the prior pass's device buffers before this pass allocates. The
-        # carry pins the shard's trace regions plus the GKR openings; holding a
+        # bridge pins the shard's trace regions plus the GKR openings; holding a
         # spent pass resident while the next re-allocates the pyramid intermediate
         # is what tips a wide shard over the card on --runs>=2.
-        carry = msgs = None
-        carry, _, msgs = chain(
-            ShardCarry(main_region, prep_region, public_values),
+        bridge = msgs = None
+        bridge, _, msgs = chain(
+            ShardBridge(main_region, prep_region, public_values),
             fresh_transcript(),
         )
         print(f"chain run: {(time.monotonic() - t0) * 1e3:.1f}ms", flush=True)
@@ -329,7 +329,7 @@ def main(argv) -> None:
         t0 = time.monotonic()
         vk_bytes = encode_vk(vk)
         proof_bytes = encode_shard_proof(
-            carry,
+            bridge,
             commitment,
             gkr,
             zc,

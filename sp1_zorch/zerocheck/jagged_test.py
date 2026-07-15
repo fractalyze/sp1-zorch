@@ -23,8 +23,8 @@ import re
 from dataclasses import dataclass
 from functools import partial
 
-import jax
-import jax.numpy as jnp
+import frx
+import frx.numpy as jnp
 import numpy as np
 from absl.testing import absltest
 from zk_dtypes import koalabear_mont as KB
@@ -90,11 +90,11 @@ def _rand(seed: int, shape) -> jnp.ndarray:
 
 
 def _rand_ef(seed: int, shape) -> jnp.ndarray:
-    return jax.lax.bitcast_convert_type(_rand(seed, (*shape, 4)), EF)
+    return frx.lax.bitcast_convert_type(_rand(seed, (*shape, 4)), EF)
 
 
 def _u32(a) -> np.ndarray:
-    return np.asarray(jax.lax.bitcast_convert_type(a, jnp.uint32)).reshape(-1)
+    return np.asarray(frx.lax.bitcast_convert_type(a, jnp.uint32)).reshape(-1)
 
 
 def _assert_bytes_equal(got, want, label: str = "") -> None:
@@ -111,7 +111,7 @@ def _witness_trace(seed: int, nr: int) -> jnp.ndarray:
 
 
 @partial(
-    jax.tree_util.register_dataclass, data_fields=["challenges", "pos"], meta_fields=[]
+    frx.tree_util.register_dataclass, data_fields=["challenges", "pos"], meta_fields=[]
 )
 @dataclass(frozen=True)
 class _ScriptedTranscript:
@@ -133,7 +133,7 @@ class _ScriptedTranscript:
         return self
 
     def sample(self, n=1):
-        out = jax.lax.dynamic_slice_in_dim(self.challenges, self.pos, n, axis=0)
+        out = frx.lax.dynamic_slice_in_dim(self.challenges, self.pos, n, axis=0)
         return _ScriptedTranscript(self.challenges, self.pos + n), out
 
 
@@ -351,7 +351,7 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
             )[2].round_poly
 
         txt = (
-            jax.jit(run)
+            frx.jit(run)
             .lower(traces, alphas, _rand(55, (nchips,)), _rand(7, (num_vars,)))
             .as_text()
         )
@@ -430,7 +430,7 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
             )[2].round_poly
 
         txt = (
-            jax.jit(run)
+            frx.jit(run)
             .lower(traces, alphas, _rand(55, (nchips,)), _rand(7, (num_vars,)))
             .as_text()
         )

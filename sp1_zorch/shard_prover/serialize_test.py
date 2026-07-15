@@ -9,7 +9,7 @@ fields flatten to their base-field limbs.
 
 import struct
 
-import jax.numpy as jnp
+import frx.numpy as jnp
 from absl.testing import absltest
 from zk_dtypes import koalabear_mont as F
 from zk_dtypes import koalabearx4_mont as EF
@@ -23,7 +23,7 @@ from zorch.pcs.jagged.prover import JaggedEvalMsg
 
 from zorch.pcs.jagged.open import StackedOpenProof
 from sp1_zorch.logup_gkr.prover import ChipEvaluation, LogupGkrProof
-from sp1_zorch.shard_prover.prove_shard import ShardCarry, ShardJaggedEvalProof
+from sp1_zorch.shard_prover.prove_shard import ShardBridge, ShardJaggedEvalProof
 from sp1_zorch.shard_prover.serialize import (
     _encode_basefold_proof,
     _encode_chip_opened_values,
@@ -446,7 +446,7 @@ class EncodeEvaluationProofTest(absltest.TestCase):
 
 def _digest_layers(root_base: int) -> list:
     # The assembly reads only the raw root (the root layer's single row); the
-    # carry holds the digest tree, not the mle -- the open recomputes the mle
+    # bridge holds the digest tree, not the mle -- the open recomputes the mle
     # from the region dense (fractalyze/sp1-zorch#264).
     return [
         jnp.zeros((2, 8), dtype=F),
@@ -454,7 +454,7 @@ def _digest_layers(root_base: int) -> list:
     ]
 
 
-def _carry() -> ShardCarry:
+def _bridge() -> ShardBridge:
     # "alpha": 2 main cols x 3 rows + 1 prep col; "lookup": 1 main col x 2
     # rows, no prep. Trailing two counts per region are the stacking dummies.
     main_region = JaggedRegion(
@@ -473,7 +473,7 @@ def _carry() -> ShardCarry:
         log_stacking_height=2,
         chip_names=("alpha",),
     )
-    return ShardCarry(
+    return ShardBridge(
         main_region=main_region,
         prep_region=prep_region,
         public_values=jnp.arange(1, 6, dtype=F),
@@ -524,7 +524,7 @@ class ChipOpenedValuesTest(absltest.TestCase):
         # The split itself is the zerocheck stage's
         # (zerocheck.prover.split_opened_values, pinned in prover_test); this
         # bridge adds the wire's degree off the chip heights.
-        values = chip_opened_values(_carry())
+        values = chip_opened_values(_bridge())
         self.assertLen(values, 2)
 
         alpha, lookup = values
@@ -536,25 +536,25 @@ class ChipOpenedValuesTest(absltest.TestCase):
         self.assertIsNone(lookup.preprocessed_evals)
         self.assertEqual(lookup.degree, 2)
 
-    def test_rejects_a_carry_without_opened_values(self) -> None:
-        carry = ShardCarry(
-            main_region=_carry().main_region,
+    def test_rejects_a_bridge_without_opened_values(self) -> None:
+        bridge = ShardBridge(
+            main_region=_bridge().main_region,
             prep_region=None,
             public_values=jnp.arange(1, 6, dtype=F),
         )
         with self.assertRaisesRegex(ValueError, "opened values"):
-            chip_opened_values(carry)
+            chip_opened_values(bridge)
 
 
 class EncodeShardProofTest(absltest.TestCase):
     """Wiring golden for the full-proof assembly: the component encoders
     carry their own byte goldens above, so this pins the bridging decisions —
     wire field order, the zerocheck point reversal, the finals split, the
-    raw-root extraction off the carry's stacked witnesses, and the per-round
+    raw-root extraction off the bridge's stacked witnesses, and the per-round
     layout with the stacking dummies included."""
 
     def test_wire_order_and_bridged_values(self) -> None:
-        carry = _carry()
+        bridge = _bridge()
         zerocheck = _zerocheck_proof()
         gkr = _gkr_proof()
         jagged = ShardJaggedEvalProof(eval=_eval_msg(), open=_open_proof(num_rounds=2))
@@ -574,7 +574,7 @@ class EncodeShardProofTest(absltest.TestCase):
         ]
         expected = (
             _u64(5)
-            + _field_bytes(carry.public_values)
+            + _field_bytes(bridge.public_values)
             + _field_bytes(commitment)
             + _encode_logup_gkr_proof(gkr, 3)
             # The zerocheck point is the challenge list reversed: [7, 8] -> [8, 7].
@@ -587,9 +587,9 @@ class EncodeShardProofTest(absltest.TestCase):
             + _encode_evaluation_proof(
                 jagged.eval,
                 jagged.open,
-                # Raw roots off the carry's stacked witnesses, [prep, main].
+                # Raw roots off the bridge's stacked witnesses, [prep, main].
                 [jnp.arange(100, 108, dtype=F), jnp.arange(400, 408, dtype=F)],
-                # original_commitments = the carry's SMCS commitments, [prep, main].
+                # original_commitments = the bridge's SMCS commitments, [prep, main].
                 [jnp.arange(200, 208, dtype=F), jnp.arange(500, 508, dtype=F)],
                 # Region layouts with the stacking dummies included.
                 [[(3, 1), (4, 1), (1, 1)], [(3, 2), (2, 1), (4, 1), (1, 1)]],
@@ -598,7 +598,7 @@ class EncodeShardProofTest(absltest.TestCase):
         )
         self.assertEqual(
             encode_shard_proof(
-                carry,
+                bridge,
                 commitment,
                 gkr,
                 zerocheck,

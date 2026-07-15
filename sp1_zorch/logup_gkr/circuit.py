@@ -20,9 +20,9 @@ from dataclasses import dataclass
 from functools import partial
 from typing import Mapping, Sequence
 
-import jax
-import jax.numpy as jnp
-from jax import Array, lax
+import frx
+import frx.numpy as jnp
+from frx import Array, lax
 from rw_constraints import Chip, Interaction
 
 from zorch.pcs.jagged.region import JaggedRegion
@@ -97,7 +97,7 @@ def sp1_col_h(real_h: int) -> int:
     return (max(real_h, 8) + 3) // 4
 
 
-@partial(jax.jit, static_argnames=("h", "w"))
+@partial(frx.jit, static_argnames=("h", "w"))
 def _chip_view_jit(dense: Array, start, *, h: int, w: int) -> Array:
     # Static-arg key is just (h, w); start stays traced so cross-shard offset
     # variation doesn't blow the pjit cache.
@@ -112,7 +112,7 @@ def _chip_view(region: JaggedRegion, idx: int) -> Array:
     return _chip_view_jit(region.dense, region.chip_starts[idx], h=h, w=w)
 
 
-@partial(jax.jit, static_argnames=("chip",))
+@partial(frx.jit, static_argnames=("chip",))
 def _chip_first_layer_batched(
     chip: GkrChip,
     main_trace: Array,

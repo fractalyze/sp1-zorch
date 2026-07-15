@@ -26,7 +26,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import jax.numpy as jnp
+import frx.numpy as jnp
 from absl import app, flags
 from zk_dtypes import koalabear_mont as F
 from zk_dtypes import koalabearx4_mont as EF

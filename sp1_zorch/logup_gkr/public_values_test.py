@@ -18,8 +18,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import jax
-import jax.numpy as jnp
+import frx
+import frx.numpy as jnp
 import numpy as np
 from absl.testing import absltest
 from rw_constraints import Interaction, VirtualPairCol
@@ -46,7 +46,7 @@ _PV_NPY = (
 def _ef(seed: int, n: int) -> jnp.ndarray:
     """A deterministic EF vector with small, distinct, in-range limbs."""
     limbs = (np.arange(n * 4) * 48271 + seed * 7 + 1).reshape(n, 4) % 0x7F000001
-    return jax.lax.bitcast_convert_type(
+    return frx.lax.bitcast_convert_type(
         jnp.asarray(limbs, dtype=jnp.uint32), EF
     )
 
@@ -54,7 +54,7 @@ def _ef(seed: int, n: int) -> jnp.ndarray:
 class EvalPublicValuesTest(absltest.TestCase):
     def test_valid_shard_pv_drives_accumulator_to_zero(self) -> None:
         pv_u32 = np.load(_PV_NPY)
-        public_values = jax.lax.bitcast_convert_type(
+        public_values = frx.lax.bitcast_convert_type(
             jnp.asarray(pv_u32, dtype=jnp.uint32), F
         )
         self.assertGreaterEqual(public_values.shape[0], SP1_PROOF_NUM_PV_ELTS)
@@ -105,7 +105,7 @@ class EvalPublicValuesTest(absltest.TestCase):
         # a different digest, so a circuit output that cancelled the honest
         # digest no longer balances. Pin that sensitivity directly.
         pv_u32 = np.load(_PV_NPY)
-        public_values = jax.lax.bitcast_convert_type(
+        public_values = frx.lax.bitcast_convert_type(
             jnp.asarray(pv_u32, dtype=jnp.uint32), F
         )
         pv_challenge, alpha, betas = _ef(1, 1)[0], _ef(2, 1)[0], _ef(3, 16)

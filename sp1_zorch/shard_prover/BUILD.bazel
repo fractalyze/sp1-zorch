@@ -12,10 +12,10 @@ py_library(
     ],
     visibility = ["//visibility:public"],
     # serialize.py's jagged imports are TYPE_CHECKING-only by design — adding
-    # the jagged deps here swaps consumers' jax wheel via pip-hub sys.path
+    # the jagged deps here swaps consumers' frx wheel via pip-hub sys.path
     # shadowing (#60).
     deps = [
-        requirement("jax"),
+        requirement("frx"),
         requirement("numpy"),
         requirement("rw_constraints"),
         requirement("zk_dtypes"),
@@ -36,13 +36,13 @@ py_library(
         "@zorch//zorch:transcript",
         "@zorch//zorch/hash/poseidon2",
         "@zorch//zorch/pcs/jagged:region",
-        requirement("jax"),
+        requirement("frx"),
         requirement("numpy"),
         requirement("zk_dtypes"),
     ],
 )
 
-# Shard ingest from a co-located trace-gen producer: device jax.Array traces
+# Shard ingest from a co-located trace-gen producer: device frx.Array traces
 # in, the fixture path's regions/ShardData out (no dump files). Its own target
 # (not a :shard_prover src) because it imports zorch's jagged region at
 # runtime — the dep :shard_prover must not carry (#60).
@@ -54,7 +54,7 @@ py_library(
         ":replay",
         ":shard_prover",
         "@zorch//zorch/pcs/jagged:region",
-        requirement("jax"),
+        requirement("frx"),
         requirement("zk_dtypes"),
     ],
 )
@@ -68,13 +68,13 @@ py_test(
         ":replay",
         ":shard_prover",
         requirement("absl_py"),
-        requirement("jax"),
+        requirement("frx"),
         requirement("numpy"),
         requirement("zk_dtypes"),
     ],
 )
 
-# The shard proof as one zorch ProveChain of stage Rounds (docs/shard-pipeline.md).
+# The shard proof as one zorch ProveChain of Stages (docs/architecture.md).
 py_library(
     name = "prove_shard",
     srcs = ["prove_shard.py"],
@@ -92,14 +92,14 @@ py_library(
         "@zorch//zorch/pcs/jagged:prover",
         "@zorch//zorch/pcs/jagged:region",
         "@zorch//zorch/utils:bits",
-        requirement("jax"),
+        requirement("frx"),
         requirement("rw_constraints"),
         requirement("zk_dtypes"),
     ],
 )
 
 # The shard verifier as one zorch VerifyChain of stage duals, mirroring
-# prove_shard round for round (docs/shard-pipeline.md).
+# prove_shard round for round (docs/architecture.md).
 py_library(
     name = "verify_shard",
     srcs = ["verify_shard.py"],
@@ -117,7 +117,7 @@ py_library(
         "@zorch//zorch/pcs/jagged:region",
         "@zorch//zorch/pcs/jagged:verifier",
         "@zorch//zorch/utils:bits",
-        requirement("jax"),
+        requirement("frx"),
         requirement("rw_constraints"),
         requirement("zk_dtypes"),
     ],
@@ -143,7 +143,7 @@ py_library(
         "@zorch//zorch/hash/poseidon2",
         "@zorch//zorch/pcs/jagged:region",
         "@zorch//zorch/testkit:transcript",
-        requirement("jax"),
+        requirement("frx"),
         requirement("numpy"),
         requirement("rw_constraints"),
         requirement("zk_dtypes"),
@@ -174,7 +174,7 @@ py_test(
         "@zorch//zorch/pcs/jagged:region",
         "@zorch//zorch/testkit:transcript",
         requirement("absl_py"),
-        requirement("jax"),
+        requirement("frx"),
         requirement("numpy"),
         requirement("rw_constraints"),
         requirement("zk_dtypes"),
@@ -195,7 +195,7 @@ py_test(
         ":verify_shard",
         "@zorch//zorch/testkit:transcript",
         requirement("absl_py"),
-        requirement("jax"),
+        requirement("frx"),
         requirement("numpy"),
         requirement("zk_dtypes"),
     ],
@@ -208,7 +208,7 @@ py_test(
     deps = [
         ":shard_prover",
         requirement("absl_py"),
-        requirement("jax"),
+        requirement("frx"),
         requirement("numpy"),
         requirement("zk_dtypes"),
     ],
@@ -229,7 +229,7 @@ py_test(
         "@zorch//zorch/pcs/jagged:region",
         "@zorch//zorch/sumcheck",
         requirement("absl_py"),
-        requirement("jax"),
+        requirement("frx"),
         requirement("zk_dtypes"),
     ],
 )
@@ -261,10 +261,10 @@ py_binary(
         "@zorch//zorch/hash/poseidon2",
         "@zorch//zorch/poly",
         requirement("absl_py"),
-        requirement("jax"),
-        requirement("jax_cuda12_plugin"),
+        requirement("frx"),
+        requirement("frx_cuda12_plugin"),
         requirement("zk_dtypes"),
-        requirement("jax_cuda12_pjrt"),
+        requirement("frx_cuda12_pjrt"),
     ],
 )
 

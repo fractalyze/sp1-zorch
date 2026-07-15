@@ -15,7 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-import jax.numpy as jnp
+import frx.numpy as jnp
 import numpy as np
 from rw_constraints import Interaction, VirtualPairCol
 from zk_dtypes import koalabear_mont as BF
@@ -31,7 +31,7 @@ from zorch.commit.smcs import SingleMatrixCommitmentScheme
 from sp1_zorch.logup_gkr.circuit import GkrChip
 from sp1_zorch.poseidon2.koalabear16 import koalabear16_params
 from sp1_zorch.shard_prover.prove_shard import (
-    ShardCarry,
+    ShardBridge,
     preamble_chip_metadata,
     prove_shard_chain,
 )
@@ -153,11 +153,11 @@ def small_shard_chain_fixture() -> ShardChainFixture:
         **shared,
     )
 
-    carry = ShardCarry(main_region, None, public_values)
+    bridge = ShardBridge(main_region, None, public_values)
     transcript = cheap_transcript(BF)
     messages = []
     for round_ in prove_chain.rounds:
-        carry, transcript, msg = round_(carry, transcript)
+        bridge, transcript, msg = round_(bridge, transcript)
         messages.append(msg)
 
     return ShardChainFixture(

@@ -7,7 +7,7 @@ SP1-specific glue on top — domain separator, verify codes, heap proof layout,
 and the FFI byte-match against the SP1 reference prover.
 
 ```
-JAX  ──▶  zorch (scheme-/zkVM-agnostic blocks)  ──▶  sp1-zorch (SP1 glue)
+frx  ──▶  zorch (scheme-/zkVM-agnostic blocks)  ──▶  sp1-zorch (SP1 glue)
 ```
 
 Why a separate repo: most of a general WHIR prover's surface isn't on the SP1
@@ -23,8 +23,9 @@ MerkleTree blocks. Tracking: [fractalyze/zorch#37](https://github.com/fractalyze
 
 ## Development
 
-`sp1-zorch` is pure Python on JAX + the ZKX PJRT plugin, built with Bazel
-(bzlmod). It consumes `zorch` as a Bazel module, pinned in `MODULE.bazel` via
+`sp1-zorch` is pure Python on frx (Field, Ring Accelerated), run
+against the Fractalyze XLA GPU plugin, built with Bazel (bzlmod). It consumes
+`zorch` as a Bazel module, pinned in `MODULE.bazel` via
 `git_override` for reproducible builds.
 
 ```sh
@@ -49,8 +50,11 @@ bazel test //...
 
 ## Documentation
 
-See [`docs/`](docs/README.md) — conventions, the shard pipeline, and testing
-(`size`/`timeout` and fixtures).
+See [`docs/`](docs/README.md) — the [architecture](docs/architecture.md)
+(the shard proof as a ProveChain of Stages, each running inner Rounds, threaded
+by a Bridge, plus the SP1 dump vocabulary), the
+[development guide](docs/development.md) (environment, testing, and the
+per-stage SP1 baseline), and the [conventions](docs/conventions.md).
 
 ## License
 

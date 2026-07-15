@@ -21,8 +21,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-import jax.numpy as jnp
-from jax import Array
+import frx.numpy as jnp
+from frx import Array
 
 from zorch.constraint_eval import constraint_eval
 from zorch.poly.univariate import powers

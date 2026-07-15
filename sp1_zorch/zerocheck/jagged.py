@@ -39,7 +39,7 @@ term vanishes with it). The protocol content is declared on
 ``JaggedZerocheckSummand``; ``prove_jagged_zerocheck`` is the SP1-schedule
 driver around it.
 
-Round loop is one ``jax.lax.scan``, so the traced graph is O(1) in
+Round loop is one ``frx.lax.scan``, so the traced graph is O(1) in
 ``num_vars`` (one round body, not ``num_vars`` copies): the fixed-width
 buffers make every per-chip operand shape round-invariant, so the round carry
 holds a fixed shape and each chip's constraint circuit compiles to ONE kernel
@@ -81,9 +81,9 @@ from dataclasses import dataclass, field
 from functools import partial
 from typing import TYPE_CHECKING, ClassVar
 
-import jax
-import jax.numpy as jnp
-from jax import Array, lax
+import frx
+import frx.numpy as jnp
+from frx import Array, lax
 from zk_dtypes import efinfo
 
 from zorch.constraint_eval import constraint_eval
@@ -594,7 +594,7 @@ def prove_jagged_zerocheck(
             f"{summand.degree - 2} extra points, got {len(extra_ts)}"
         )
     last_xs = zeta[::-1]
-    interp_xs = jax.vmap(lambda z: interp_matrix(extra_ts, z))(last_xs)
+    interp_xs = frx.vmap(lambda z: interp_matrix(extra_ts, z))(last_xs)
     # A traced flag rather than a peeled first round: unrolling round 0 out
     # of the scan would put a second copy of every chip circuit in the graph
     # — the compile cliff the O(1) scan exists to avoid.

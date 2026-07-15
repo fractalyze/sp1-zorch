@@ -4,7 +4,7 @@
 Replays the pipeline up to zerocheck (preamble transcript -> layered GKR),
 runs ``prove_shard_zerocheck`` on the real transcript, and compares every
 stage value against the reference dump (stage / dump-file vocabulary:
-``docs/shard-pipeline.md``):
+``docs/architecture.md``):
 
 - ``gpu_zerocheck_state.txt`` -- batching + GKR opening-batch challenges,
   the joint claimed sum, round count, final eval;
@@ -36,10 +36,10 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import jax.numpy as jnp
+import frx.numpy as jnp
 import numpy as np
 from absl import app, flags
-from jax import Array
+from frx import Array
 from zk_dtypes import koalabearx4_mont as EF
 
 from sp1_zorch.shard_prover.fixture_loader import (

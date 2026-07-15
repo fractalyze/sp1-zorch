@@ -14,7 +14,7 @@ stage's transcript tail — the per-chip opened values absorbed via
 Reference: whir-zorch ``sp1/shard_prover/prover.py``, its zerocheck (SP1
 "phase 3") block, mirroring SP1's schedule —
 https://github.com/fractalyze/sp1/blob/640d8b80c/crates/hypercube/src/prover/shard.rs
-Stage / dump vocabulary: ``docs/shard-pipeline.md``.
+Stage / dump vocabulary: ``docs/architecture.md``.
 """
 
 from __future__ import annotations
@@ -22,8 +22,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Sequence
 
-import jax.numpy as jnp
-from jax import Array
+import frx.numpy as jnp
+from frx import Array
 from rw_constraints import Chip
 
 from zk_dtypes import efinfo

@@ -27,7 +27,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import jax.numpy as jnp
+import frx.numpy as jnp
 from absl import app, flags
 
 from sp1_zorch.logup_gkr.head import (

@@ -34,8 +34,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Sequence
 
-import jax.numpy as jnp
-from jax import Array
+import frx.numpy as jnp
+from frx import Array
 from zk_dtypes import koalabear_mont as F
 
 # Public-values vector layout (SP1 ``PublicValues<[F;4], [F;3], [F;4], F>`` in
