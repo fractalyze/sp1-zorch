@@ -10,16 +10,12 @@ and the FFI byte-match against the SP1 reference prover.
 frx  ──▶  zorch (scheme-/zkVM-agnostic blocks)  ──▶  sp1-zorch (SP1 glue)
 ```
 
-Why a separate repo: most of a general WHIR prover's surface isn't on the SP1
-path. Building directly on `zorch`'s blocks keeps this prover small, keeps
-SP1-specific knowledge out of `zorch` (its hard rule), and gives a focused
-target to grow SP1 glue and benchmark against the SP1 CUDA reference.
-
 ## Status
 
-Early bootstrap. First slice: the single-matrix commitment scheme (SMCS, ≈ SP1's
-`CudaTcsProver::commit_tensors`) ported onto `zorch`'s Sponge / Compression /
-MerkleTree blocks. Tracking: [fractalyze/zorch#37](https://github.com/fractalyze/zorch/issues/37).
+The full SP1 shard proving scheme runs on `zorch` blocks: a `ProveChain` of
+trace commit → LogUp-GKR → zerocheck → jagged PCS, byte-matching SP1's reference
+prover end to end (its `sp1_verify_shard` accepts the assembled proof). See
+[`docs/architecture.md`](docs/architecture.md).
 
 ## Development
 
