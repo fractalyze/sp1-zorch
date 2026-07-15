@@ -151,22 +151,3 @@ py_binary(
         requirement("jax_cuda12_pjrt"),
     ],
 )
-
-# LogUp-GKR prove benchmark over a real rsp shard. GPU-only manual tool
-# (bazel run), not a CI test — needs the external shard dump:
-#   bazel run //sp1_zorch/logup_gkr:bench_sp1_logup_gkr -- \
-#       --shard-dir=/path/to/rsp_dump/shardN
-py_binary(
-    name = "bench_sp1_logup_gkr",
-    srcs = ["bench_sp1_logup_gkr.py"],
-    deps = [
-        ":logup_gkr",
-        "//sp1_zorch/shard_prover",
-        "//sp1_zorch/shard_prover:replay",
-        requirement("jax"),
-        requirement("jax_cuda12_plugin"),
-        requirement("zk_dtypes"),
-        requirement("zkbench"),
-        requirement("jax_cuda12_pjrt"),
-    ],
-)

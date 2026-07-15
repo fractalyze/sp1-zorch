@@ -8,7 +8,7 @@ This file records the rules that bite hardest in an SP1 *consumer* repo:
 how comments are scoped, how we cite the SP1 reference we mirror, and how
 protocol verifiers are named apart from the byte-match harnesses. The
 repo-level "SP1-specific only" rule lives in [`../CLAUDE.md`](../CLAUDE.md);
-test `size`/`timeout` and fixture conventions live in [`testing.md`](testing.md).
+test `size`/`timeout` and fixture conventions live in [`development.md`](development.md).
 
 ## Comments & documentation
 
@@ -32,7 +32,7 @@ drift). This mirrors zorch's rule — keep them consistent.
   *why* it returns the last layer's round polys (the tail of the carry, so
   awaiting it times the whole prove), not that it "runs the prove."
 
-[`sp1_zorch/logup_gkr/bench_sp1_logup_gkr.py`](../sp1_zorch/logup_gkr/bench_sp1_logup_gkr.py)
+[`sp1_zorch/logup_gkr/prover.py`](../sp1_zorch/logup_gkr/prover.py)'s `_prove`
 is the worked shape.
 
 ## External zkVM references
@@ -54,11 +54,11 @@ rule as `fractalyze/riscv-witness:docs/conventions/docs-and-refs.md`.
 # Reference: https://github.com/fractalyze/sp1/blob/<sha>/path/to/file.rs#L10-L25
 ```
 
-The LogUp-GKR bench sizes its first layer from SP1's `logup_gkr_zkbench`, pinned
-in its module docstring:
+The LogUp-GKR prover pins SP1's reference challenger trajectory in its module
+docstring, where the file-wide dependence lives:
 
 ```
-https://github.com/fractalyze/sp1/blob/e2c02f376/sp1-gpu/crates/logup_gkr/bin/logup_gkr_zkbench.rs
+https://github.com/fractalyze/sp1/blob/e2c02f376/sp1-gpu/crates/sys/lib/logup_gkr/round.cu
 ```
 
 ## `verifier.py` vs `verify_*` runnables

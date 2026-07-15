@@ -2,9 +2,8 @@
 
 - **Overview & quick start:** [`README.md`](README.md)
 - **Conventions:** [`docs/conventions.md`](docs/conventions.md) — comments (why-not-what), external SP1 references (pinned permalinks).
-- **Pipeline & terminology:** [`docs/shard-pipeline.md`](docs/shard-pipeline.md) — stages as Round compositions, SP1 dump "phase" vocabulary mapping.
-- **Testing:** [`docs/testing.md`](docs/testing.md) — running tests, `size` vs `timeout` conventions, fixtures.
-- **SP1 baseline:** [`docs/sp1-baseline.md`](docs/sp1-baseline.md) — reproducible SP1-vs-sp1-zorch per-stage wall-clock comparison (`shard_prover:verify_prove_shard` + SP1 `sp1_shard_prover`).
+- **Architecture & terminology:** [`docs/architecture.md`](docs/architecture.md) — the shard proof as a ProveChain of Stages, each running inner Rounds, threaded by a Bridge; SP1 dump "phase" vocabulary mapping.
+- **Development:** [`docs/development.md`](docs/development.md) — environment setup, running tests (`size` vs `timeout`, fixtures), and the reproducible per-stage SP1 baseline (`shard_prover:verify_prove_shard` + SP1 `sp1_shard_prover`).
 - **Current work:** [fractalyze/zorch#37](https://github.com/fractalyze/zorch/issues/37) — bootstrap + SMCS on zorch merkle blocks.
 
 ## One non-negotiable
@@ -34,22 +33,10 @@ and **segfaults** the GPU tests (`verify_shard_test`), not a clean `ImportError`
 ## Development environment
 
 Pure Python on JAX + the ZKX PJRT plugin. Bazel 9 (bzlmod). Tests default to
-`JAX_PLATFORMS=cpu`; the SP1 FFI byte-match needs a CUDA GPU.
-
-```sh
-bazel test //...                 # hermetic, sandboxed
-# iterative dev outside Bazel:
-export PYTHONPATH="$PWD:/abs/path/to/zorch"
-export ZKX_REPO_ROOT="$HOME/Workspace/zkx"   # dev against a local ZKX checkout
-```
-
-GPU runnables: a `py_binary` must dep `requirement("jax_cuda12_plugin")` +
-`requirement("jax_cuda12_pjrt")` or jax **silently falls back to CPU** — run
-with `JAX_PLATFORMS=cuda` so a missing plugin errors instead (`gpu` is wrong:
-it also initializes rocm and dies). The new-jax loader takes no plugin-path env
-var; to measure a locally built zkx plugin you overwrite the wheel's bundled
-`xla_cuda_plugin.so` — see [`docs/sp1-baseline.md`](docs/sp1-baseline.md)
-"Measure shipped code" for the procedure.
+`JAX_PLATFORMS=cpu`; the SP1 FFI byte-match needs a CUDA GPU. Full setup, the
+GPU-plugin gotcha (jax **silently falls back to CPU** without the cuda plugin
+deps), test `size`/`timeout` conventions, and the per-stage SP1 baseline live in
+[`docs/development.md`](docs/development.md).
 
 ## SP1 byte-match
 

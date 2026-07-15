@@ -14,7 +14,7 @@ stage's transcript tail — the per-chip opened values absorbed via
 Reference: whir-zorch ``sp1/shard_prover/prover.py``, its zerocheck (SP1
 "phase 3") block, mirroring SP1's schedule —
 https://github.com/fractalyze/sp1/blob/640d8b80c/crates/hypercube/src/prover/shard.rs
-Stage / dump vocabulary: ``docs/shard-pipeline.md``.
+Stage / dump vocabulary: ``docs/architecture.md``.
 """
 
 from __future__ import annotations

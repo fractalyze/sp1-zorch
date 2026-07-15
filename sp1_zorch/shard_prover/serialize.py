@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 
     from zorch.pcs.jagged.open import Opening, StackedOpenProof
     from sp1_zorch.logup_gkr.prover import LogupGkrProof
-    from sp1_zorch.shard_prover.prove_shard import ShardCarry, ShardJaggedEvalProof
+    from sp1_zorch.shard_prover.prove_shard import ShardBridge, ShardJaggedEvalProof
     from sp1_zorch.zerocheck.prover import ZerocheckProof
 
 
@@ -343,22 +343,22 @@ def encode_vk(vk: MachineVerifyingKey) -> bytes:
     )
 
 
-def chip_opened_values(carry: ShardCarry) -> list[ChipOpenedValues]:
-    """Bridge the carry's zerocheck opened values to the wire's per-chip
+def chip_opened_values(bridge: ShardBridge) -> list[ChipOpenedValues]:
+    """Convert the bridge's zerocheck opened values to the wire's per-chip
     shape. The split off the final folded traces is the zerocheck stage's
     (``zerocheck.prover.split_opened_values`` — one view shared with the
     transcript absorbs and the jagged-eval claims); ``degree`` is the chip's
     live row count — the height whose bits the wire spells out.
     """
-    if carry.zc_opened_values is None:
+    if bridge.zc_opened_values is None:
         raise ValueError(
-            "the carry holds no zerocheck opened values; run the chain "
-            "through ShardZerocheckRound before assembling the wire"
+            "the bridge holds no zerocheck opened values; run the chain "
+            "through ShardZerocheckStage before assembling the wire"
         )
-    main = carry.main_region
+    main = bridge.main_region
     values = []
     for i, name in enumerate(main.chip_names):
-        ev = carry.zc_opened_values[name]
+        ev = bridge.zc_opened_values[name]
         values.append(
             ChipOpenedValues(
                 preprocessed_evals=ev.preprocessed,
@@ -370,7 +370,7 @@ def chip_opened_values(carry: ShardCarry) -> list[ChipOpenedValues]:
 
 
 def encode_shard_proof(
-    carry: ShardCarry,
+    bridge: ShardBridge,
     commitment: Array,
     gkr_proof: LogupGkrProof,
     zerocheck_proof: ZerocheckProof,
@@ -380,13 +380,13 @@ def encode_shard_proof(
 ) -> bytes:
     """Encode ``ShardProof<SP1GlobalContext, SP1PcsProofInner>`` to bincode.
 
-    ``carry`` is the prove_shard chain's final carry (committed regions +
+    ``bridge`` is the prove_shard chain's final bridge (committed regions +
     stacked witnesses); the remaining arguments are the chain's messages in
     stage order. Serde field order: public values, main commitment,
     LogUp-GKR proof, zerocheck partial sumcheck, shard opened values,
     evaluation proof.
     """
-    parts = [_encode_point(carry.public_values)]
+    parts = [_encode_point(bridge.public_values)]
 
     parts.append(_field_bytes(commitment))
 
@@ -405,25 +405,25 @@ def encode_shard_proof(
 
     parts.append(
         _encode_shard_opened_values(
-            chip_opened_values(carry),
-            list(carry.main_region.chip_names),
+            chip_opened_values(bridge),
+            list(bridge.main_region.chip_names),
             max_log_row_count,
         )
     )
 
-    # Committed-round order is [prep, main] — the order TraceCommitRound
-    # wrote the carry's StackedRounds in.
+    # Committed-round order is [prep, main] — the order TraceCommitStage
+    # wrote the bridge's StackedRounds in.
     regions = [
         region
-        for region in (carry.prep_region, carry.main_region)
+        for region in (bridge.prep_region, bridge.main_region)
         if region is not None
     ]
     component_raw_roots = [
-        digest_layers[-1][0] for digest_layers in carry.commit_digest_layers
+        digest_layers[-1][0] for digest_layers in bridge.commit_digest_layers
     ]
     # original_commitments = the SMCS commitment (pre-structure-binding), retained
     # off the commit stage in the same [prep, main] order as commit_digest_layers.
-    component_commitments = list(carry.commit_commitments)
+    component_commitments = list(bridge.commit_commitments)
     row_column_counts = [
         list(zip(region.row_counts, region.column_counts, strict=True))
         for region in regions

@@ -26,7 +26,7 @@ beta-weighted column batch``, scaled by ``eq(zeta, z_row)``, must equal the
 replay's final claim. Trace heights are statement inputs (the same source as
 the GKR dual's); SP1 reads them off the proof's opened-values degrees
 instead. SP1's per-chip opening-width check is the chain round's:
-``ShardZerocheckVerifierRound`` checks every opening against its statement
+``ShardZerocheckVerifierStage`` checks every opening against its statement
 shape before delegating to this module, so the opened values reaching the
 replay and the oracle check here are statement-shaped already.
 """
@@ -75,7 +75,7 @@ def verify_shard_zerocheck(
 
     ``eval_point`` and ``chip_openings`` are the LogUp-GKR dual's outputs —
     already leaf-checked, so the claims derived from them are trusted
-    inputs, mirroring the prover's reads of ``ShardCarry``.
+    inputs, mirroring the prover's reads of ``ShardBridge``.
     ``zc_sumcheck_point`` is the dual's own sampled challenge list (the
     prover's ``msgs.challenge`` order); the caller threads it to the
     jagged-eval dual. ``ok`` is a traced scalar AND of every acceptance leg;

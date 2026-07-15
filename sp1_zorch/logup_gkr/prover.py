@@ -453,7 +453,7 @@ def prove_logup_gkr(
 
     Returns the advanced transcript and the proof; the caller opens the
     traces at ``proof.eval_point``. The single source for the stage --
-    ``LogupGkrRound`` calls it directly (host-side grind, then the body).
+    ``LogupGkrStage`` calls it directly (host-side grind, then the body).
     """
     transcript, witness = resolve_witness_and_grind(
         transcript,

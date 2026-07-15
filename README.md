@@ -49,8 +49,11 @@ bazel test //...
 
 ## Documentation
 
-See [`docs/`](docs/README.md) — conventions, the shard pipeline, and testing
-(`size`/`timeout` and fixtures).
+See [`docs/`](docs/README.md) — the [architecture](docs/architecture.md)
+(the shard proof as a ProveChain of Stages, each running inner Rounds, threaded
+by a Bridge, plus the SP1 dump vocabulary), the
+[development guide](docs/development.md) (environment, testing, and the
+per-stage SP1 baseline), and the [conventions](docs/conventions.md).
 
 ## License
 

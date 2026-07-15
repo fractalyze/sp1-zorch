@@ -4,7 +4,7 @@
 Replays the pipeline up to zerocheck (preamble transcript -> layered GKR),
 runs ``prove_shard_zerocheck`` on the real transcript, and compares every
 stage value against the reference dump (stage / dump-file vocabulary:
-``docs/shard-pipeline.md``):
+``docs/architecture.md``):
 
 - ``gpu_zerocheck_state.txt`` -- batching + GKR opening-batch challenges,
   the joint claimed sum, round count, final eval;

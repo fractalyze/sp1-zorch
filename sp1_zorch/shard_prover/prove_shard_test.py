@@ -4,8 +4,8 @@
 The chain is wiring, not math — each stage function is gated by its own
 tests — so this test demands the ``ProveChain`` composition is byte-identical
 to calling commit, LogUp-GKR, and zerocheck by hand on the same sponge: same
-messages, same carry products, same Fiat-Shamir stream afterwards. Any drift
-in stage order, carry threading, or preamble encoding desynchronizes the two
+messages, same bridge products, same Fiat-Shamir stream afterwards. Any drift
+in stage order, bridge threading, or preamble encoding desynchronizes the two
 streams and fails loudly.
 """
 
@@ -33,9 +33,9 @@ from sp1_zorch.logup_gkr.circuit import GkrChip
 from sp1_zorch.logup_gkr.prover import prove_logup_gkr
 from sp1_zorch.poseidon2.koalabear16 import koalabear16_params
 from sp1_zorch.shard_prover.prove_shard import (
-    PreambleRound,
-    ShardCarry,
-    ShardZerocheckRound,
+    PreambleStage,
+    ShardBridge,
+    ShardZerocheckStage,
     _region_mle,
     preamble_chip_metadata,
     prove_shard_chain,
@@ -249,15 +249,15 @@ class ProveShardChainTest(absltest.TestCase):
         # path (jax#168), so the open executes. The hand replay stops at
         # zerocheck, so snapshot the transcript there for the in-sync check;
         # the open's SP1 byte-match is the GPU verify_prove_shard harness's job.
-        carry = ShardCarry(main_region, prep_region, public_values)
+        bridge = ShardBridge(main_region, prep_region, public_values)
         transcript = cheap_transcript(BF)
         msgs = []
         for i, stage in enumerate(chain.rounds):
-            carry, transcript, msg = stage(carry, transcript)
+            bridge, transcript, msg = stage(bridge, transcript)
             msgs.append(msg)
             if i == 2:  # after zerocheck, where the hand replay stops
                 cls.got_transcript = transcript
-        cls.carry, cls.msgs, cls.jagged = carry, msgs, msgs[-1]
+        cls.bridge, cls.msgs, cls.jagged = bridge, msgs, msgs[-1]
         cls.chain = chain
         cls.main_region = main_region
         cls.prep_region = prep_region
@@ -296,7 +296,7 @@ class ProveShardChainTest(absltest.TestCase):
         harness's job, so here we pin the executed shape."""
         msg = self.jagged
         self.assertEqual(msg.eval.dense_eval.shape, ())  # scalar D(z_final)
-        n_rounds = len(self.carry.commit_digest_layers)
+        n_rounds = len(self.bridge.commit_digest_layers)
         self.assertLen(msg.open.batch_evals, n_rounds)
         self.assertLen(msg.open.component_openings, n_rounds)
         self.assertNotEmpty(msg.open.query_openings)  # one per FRI fold layer
@@ -329,15 +329,15 @@ class ProveShardChainTest(absltest.TestCase):
         _assert_bytes_equal(got.msgs.challenge, want.msgs.challenge, "challenge")
 
     def _assert_chain_lowers(self, chain) -> None:
-        # The carry is built inside the traced function (so this needs no pytree
-        # registration of ``ShardCarry``); backend compile stays GPU's job --
+        # The bridge is built inside the traced function (so this needs no pytree
+        # registration of ``ShardBridge``); backend compile stays GPU's job --
         # poseidon2 has no CPU fusion emitter and CPU jit miscompiles field dots
         # (fractalyze/jax#168) -- so the smoke stops at StableHLO lowering.
         def run(dense, public_values, transcript):
-            carry = ShardCarry(
+            bridge = ShardBridge(
                 replace(self.main_region, dense=dense), self.prep_region, public_values
             )
-            _, out_transcript, _ = chain(carry, transcript)
+            _, out_transcript, _ = chain(bridge, transcript)
             return out_transcript
 
         lowered = jax.jit(run).lower(
@@ -368,13 +368,13 @@ class ProveShardChainTest(absltest.TestCase):
         self.assertIs(rebuilt.dense, self.main_region.dense)
         self.assertEqual(rebuilt.row_counts, self.main_region.row_counts)
 
-    def test_shardcarry_flattens_to_its_array_buffers(self) -> None:
-        """ShardCarry is a pytree: its leaves are exactly the region dense
+    def test_shardbridge_flattens_to_its_array_buffers(self) -> None:
+        """ShardBridge is a pytree: its leaves are exactly the region dense
         buffers and the public values — the ``None`` stage-output fields
-        contribute no leaves — so the whole carry crosses a ``@jit`` boundary
+        contribute no leaves — so the whole bridge crosses a ``@jit`` boundary
         as one argument."""
-        carry = ShardCarry(self.main_region, self.prep_region, self.public_values)
-        leaves = jax.tree_util.tree_leaves(carry)
+        bridge = ShardBridge(self.main_region, self.prep_region, self.public_values)
+        leaves = jax.tree_util.tree_leaves(bridge)
         self.assertEqual(
             [id(x) for x in leaves],
             [
@@ -384,65 +384,65 @@ class ProveShardChainTest(absltest.TestCase):
             ],
         )
 
-    def test_carry_crosses_jit_as_a_donated_argument(self) -> None:
-        """With ShardCarry a pytree, the chain runs under a single ``@jit``
-        that takes the carry as a *donated* argument (vs the closed-over carry
+    def test_bridge_crosses_jit_as_a_donated_argument(self) -> None:
+        """With ShardBridge a pytree, the chain runs under a single ``@jit``
+        that takes the bridge as a *donated* argument (vs the closed-over bridge
         in ``test_chain_lowers_under_single_jit``), letting XLA reuse its input
         buffers. Stops at StableHLO lowering: CPU can't execute field dots
         (fractalyze/jax#168), GPU owns backend compile."""
 
-        def run(carry, transcript):
-            _, out_transcript, _ = self.chain(carry, transcript)
+        def run(bridge, transcript):
+            _, out_transcript, _ = self.chain(bridge, transcript)
             return out_transcript
 
-        carry = ShardCarry(self.main_region, self.prep_region, self.public_values)
-        lowered = jax.jit(run, donate_argnums=0).lower(carry, cheap_transcript(BF))
+        bridge = ShardBridge(self.main_region, self.prep_region, self.public_values)
+        lowered = jax.jit(run, donate_argnums=0).lower(bridge, cheap_transcript(BF))
         self.assertIn("func", lowered.as_text())
 
-    def test_populated_carry_flattens_to_array_leaves_only(self) -> None:
-        """The carry threaded out of the chain holds the GKR stage outputs —
+    def test_populated_bridge_flattens_to_array_leaves_only(self) -> None:
+        """The bridge threaded out of the chain holds the GKR stage outputs —
         the evaluation point and the per-chip ChipEvaluation openings — yet
-        still flattens to array leaves only. Every carry-component type
-        (region, opening) is a pytree, so a mid-chain populated carry can
+        still flattens to array leaves only. Every bridge-component type
+        (region, opening) is a pytree, so a mid-chain populated bridge can
         cross a ``@jit`` boundary too, not just the initial one."""
-        self.assertIsNotNone(self.carry.gkr_chip_openings)
-        leaves = jax.tree_util.tree_leaves(self.carry)
+        self.assertIsNotNone(self.bridge.gkr_chip_openings)
+        leaves = jax.tree_util.tree_leaves(self.bridge)
         self.assertNotEmpty(leaves)
         for leaf in leaves:
             self.assertIsInstance(leaf, jax.Array)
 
     def test_trace_commit_round_carries_digest_layers_not_mle(self) -> None:
-        """TraceCommitRound retains only each region's digest tree on the carry
+        """TraceCommitStage retains only each region's digest tree on the bridge
         as ``[prep, main]`` — NOT the trace-sized ``[S, K]`` mle, which the
         jagged-eval open recomputes from the region dense (``_region_mle``) so a
         trace-sized copy never rides the card through GKR + zerocheck
         (fractalyze/sp1-zorch#264). The recompute yields the stacked shape."""
-        digests = self.carry.commit_digest_layers
+        digests = self.bridge.commit_digest_layers
         self.assertIsNotNone(digests)
         self.assertLen(digests, 2)  # prep, then main
         S = 1 << self.main_region.log_stacking_height
         self.assertEqual(_region_mle(self.main_region).shape[0], S)
 
     def test_zerocheck_round_carries_the_eval_point(self) -> None:
-        """ShardZerocheckRound threads its sumcheck point onto the carry as the
+        """ShardZerocheckStage threads its sumcheck point onto the bridge as the
         jagged-eval open's z_row (the accumulated per-round challenges, not the
         GKR zeta), so the eval stage opens the trace at the right point."""
         _assert_bytes_equal(
-            self.carry.zc_sumcheck_point, self.want_zc.msgs.challenge, "z_row"
+            self.bridge.zc_sumcheck_point, self.want_zc.msgs.challenge, "z_row"
         )
 
-    def test_carry_threads_stage_outputs(self) -> None:
+    def test_bridge_threads_stage_outputs(self) -> None:
         _assert_bytes_equal(
-            self.carry.gkr_eval_point, self.want_gkr.eval_point, "gkr_eval_point"
+            self.bridge.gkr_eval_point, self.want_gkr.eval_point, "gkr_eval_point"
         )
 
     def test_zerocheck_round_carries_opened_values(self) -> None:
-        """ShardZerocheckRound threads the stage's per-chip opened values onto
-        the carry — the jagged-eval stage's per-column claims (SP1's
+        """ShardZerocheckStage threads the stage's per-chip opened values onto
+        the bridge — the jagged-eval stage's per-column claims (SP1's
         round_evaluation_claims, the trace evaluations at the zerocheck point,
         NOT the GKR-point openings) and the wire's ShardOpenedValues read
         them there."""
-        got = self.carry.zc_opened_values
+        got = self.bridge.zc_opened_values
         self.assertIsNotNone(got)
         for name, want in self.want_zc.opened_values.items():
             _assert_bytes_equal(got[name].main, want.main, f"{name} main")
@@ -459,20 +459,20 @@ class ProveShardChainTest(absltest.TestCase):
         _assert_bytes_equal(got, want, "post-chain sample")
 
     def test_zerocheck_round_rejects_a_chain_without_gkr(self) -> None:
-        round_ = ShardZerocheckRound(
+        round_ = ShardZerocheckStage(
             {"alpha": _WitnessChip()}, max_log_row_count=_MAX_LOG_ROW_COUNT
         )
-        carry = ShardCarry(
-            self.carry.main_region, self.carry.prep_region, self.carry.public_values
+        bridge = ShardBridge(
+            self.bridge.main_region, self.bridge.prep_region, self.bridge.public_values
         )
         with self.assertRaisesRegex(ValueError, "LogUp-GKR"):
-            round_(carry, cheap_transcript(BF))
+            round_(bridge, cheap_transcript(BF))
 
 
-class PreambleRoundTest(absltest.TestCase):
-    """Pins ``PreambleRound`` against a raw transcript walk — the one
+class PreambleStageTest(absltest.TestCase):
+    """Pins ``PreambleStage`` against a raw transcript walk — the one
     deliberate second writing of the preamble schedule, so an accidental
-    reorder in the Round fails here instead of two tools later in a
+    reorder in the Stage fails here instead of two tools later in a
     byte-match hunt."""
 
     def test_matches_raw_walk(self) -> None:
@@ -488,14 +488,14 @@ class PreambleRoundTest(absltest.TestCase):
         metadata = preamble_chip_metadata(("ab", "c"), (6, 4), dtype=BF)
 
         sentinel = object()
-        carry, got_t, msg = PreambleRound(
+        bridge, got_t, msg = PreambleStage(
             vk=vk,
             public_values=public_values,
             commitment=commitment,
             chip_metadata=metadata,
         )(sentinel, cheap_transcript(BF))
 
-        self.assertIs(carry, sentinel)  # carry-agnostic pass-through
+        self.assertIs(bridge, sentinel)  # bridge-agnostic pass-through
         _assert_bytes_equal(msg, commitment, "message")
 
         want_t = vk.observe_into(cheap_transcript(BF))
@@ -509,7 +509,7 @@ class PreambleRoundTest(absltest.TestCase):
 
 class PreambleChipMetadataTest(absltest.TestCase):
     """Pins the chip-metadata layout directly: the chain test only exercises it
-    on both TraceCommitRound and replay.py's preamble at once, where a layout
+    on both TraceCommitStage and replay.py's preamble at once, where a layout
     bug would cancel out."""
 
     def test_flat_layout(self) -> None:

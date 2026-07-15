@@ -55,7 +55,7 @@ def regions_from_producer(
     fixture path's, unchanged::
 
         chain(
-            ShardCarry(main_region, prep_region,
+            ShardBridge(main_region, prep_region,
                        shard.main_trace_data.public_values),
             fresh_transcript(),
         )

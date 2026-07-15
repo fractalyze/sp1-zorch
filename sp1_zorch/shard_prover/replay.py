@@ -32,7 +32,7 @@ from sp1_zorch.logup_gkr.prover import (
 )
 from sp1_zorch.poseidon2.koalabear16 import koalabear16_params
 from sp1_zorch.shard_prover.fixture_loader import _parse_int_list, _parse_kv_lines
-from sp1_zorch.shard_prover.prove_shard import PreambleRound, preamble_chip_metadata
+from sp1_zorch.shard_prover.prove_shard import PreambleStage, preamble_chip_metadata
 from sp1_zorch.shard_prover.types import ShardData
 from zorch.hash.poseidon2.poseidon2 import Poseidon2
 from zorch.transcript import DuplexState, DuplexTranscript, Transcript
@@ -95,7 +95,7 @@ def fresh_transcript() -> DuplexTranscript:
 
 def preamble_transcript(shard: ShardData, shard_dir: Path) -> Transcript:
     """The challenger state SP1 enters GKR with: a fresh duplex sponge run
-    through ``PreambleRound`` — the prover's own absorb schedule — with the
+    through ``PreambleStage`` — the prover's own absorb schedule — with the
     dump's commitment. The commitment is the dump's value -- our own
     main-commit byte-match is the trace-commit stage's concern."""
     commit_kv = _parse_kv_lines((shard_dir / "gpu_commitment.txt").read_text())
@@ -105,7 +105,7 @@ def preamble_transcript(shard: ShardData, shard_dir: Path) -> Transcript:
     traces = shard.main_trace_data.traces
     names = traces.chip_order
     num_reals = [traces.per_chip[name].num_real for name in names]
-    preamble = PreambleRound(
+    preamble = PreambleStage(
         vk=shard.vk,
         public_values=shard.main_trace_data.public_values,
         commitment=commitment,

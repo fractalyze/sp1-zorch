@@ -11,7 +11,7 @@ sampling order, claim weighting, or trace assembly desynchronizes the two
 Fiat-Shamir streams and fails loudly.
 
 Reference: whir-zorch ``sp1/shard_prover/prover.py``, its zerocheck (SP1
-"phase 3") block; vocabulary in ``docs/shard-pipeline.md``.
+"phase 3") block; vocabulary in ``docs/architecture.md``.
 """
 
 from __future__ import annotations

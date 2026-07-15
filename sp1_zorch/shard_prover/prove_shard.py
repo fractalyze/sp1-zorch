@@ -1,11 +1,11 @@
 # Copyright 2026 The sp1-zorch Authors. SPDX-License-Identifier: Apache-2.0
-"""The shard proof as one zorch ``ProveChain`` of stage Rounds.
+"""The shard proof as one zorch ``ProveChain`` of Stages.
 
-``prove_shard_chain`` sequences the stages of ``docs/shard-pipeline.md`` —
-trace commit, LogUp-GKR, zerocheck, jagged evaluation proof — as
-``zorch.round.Round``s threading one duplex transcript and a single
-``ShardCarry``. The carry holds only what a later stage reads from an earlier
-one; static configuration (vk, SMCS, chips) lives on the Round instances.
+``prove_shard_chain`` sequences the stages of ``docs/architecture.md`` —
+trace commit, LogUp-GKR, zerocheck, jagged evaluation proof — as Stages
+(``zorch.round.Round`` subclasses) threading one duplex transcript and a single
+``ShardBridge``. The bridge holds only what a later stage reads from an earlier
+one; static configuration (vk, SMCS, chips) lives on the Stage instances.
 Proof assembly consumes the chain's message list (fractalyze/sp1-zorch#21).
 """
 
@@ -53,7 +53,7 @@ from zorch.utils.bits import log2_ceil_usize
 
 # Pytree: the two regions (themselves pytrees), public values, and written
 # stage outputs are array leaves; unwritten Optional fields are None (an empty
-# subtree). Lets the carry cross the chain's @jit boundary as one donatable
+# subtree). Lets the bridge cross the chain's @jit boundary as one donatable
 # argument.
 @partial(
     jax.tree_util.register_dataclass,
@@ -71,32 +71,32 @@ from zorch.utils.bits import log2_ceil_usize
     meta_fields=[],
 )
 @dataclass(frozen=True)
-class ShardCarry:
+class ShardBridge:
     """What flows between stages: the committed regions plus each stage's
-    outputs the next one consumes. Stage Rounds return it via ``replace`` —
+    outputs the next one consumes. Stages return it via ``replace`` —
     a stage writes its own fields and passes the rest through untouched."""
 
     main_region: JaggedRegion
     prep_region: JaggedRegion | None
     public_values: Array
-    # Written by TraceCommitRound; read by the jagged-eval open stage (which
+    # Written by TraceCommitStage; read by the jagged-eval open stage (which
     # rebuilds each StackedRound, recomputing the [S,K] mle from the region dense
     # it already holds) and by proof assembly (the digest-tree root). [prep, main]
     # order, matching SP1's round_evaluation_claims. Only the digest tree is kept
     # here: the mle is a transpose of the region dense, so keeping it too would
     # duplicate the trace on-device through the LogUp-GKR + zerocheck stages.
     commit_digest_layers: tuple[list[Array], ...] | None = None
-    # Written by TraceCommitRound; read by proof assembly as the jagged proof's
+    # Written by TraceCommitStage; read by proof assembly as the jagged proof's
     # original_commitments -- each round's SMCS commitment (pre-structure-binding),
     # [prep, main] order.
     commit_commitments: tuple[Array, ...] | None = None
-    # Written by LogupGkrRound; read by ShardZerocheckRound.
+    # Written by LogupGkrStage; read by ShardZerocheckStage.
     gkr_eval_point: Array | None = None
     gkr_chip_openings: Mapping[str, ChipEvaluation] | None = None
-    # Written by ShardZerocheckRound; read by the jagged-eval open stage as its
+    # Written by ShardZerocheckStage; read by the jagged-eval open stage as its
     # z_row — the accumulated per-round sumcheck challenges, not the GKR zeta.
     zc_sumcheck_point: Array | None = None
-    # Written by ShardZerocheckRound; read by the jagged-eval stage as its
+    # Written by ShardZerocheckStage; read by the jagged-eval stage as its
     # per-column claims (the trace evaluations at the zerocheck point) and by
     # proof assembly as the wire's ShardOpenedValues.
     zc_opened_values: Mapping[str, ChipEvaluation] | None = None
@@ -117,13 +117,13 @@ def preamble_chip_metadata(
     return jnp.array(metadata, dtype)
 
 
-class PreambleRound(Round):
+class PreambleStage(Round):
     """SP1's shard preamble absorb stream: vk, public values, the main
     commitment, chip metadata. The schedule lives here once — the prover's
-    ``TraceCommitRound`` and the byte-match replay's ``preamble_transcript``
-    drive this one Round, so an ordering edit cannot land in one Fiat-Shamir
+    ``TraceCommitStage`` and the byte-match replay's ``preamble_transcript``
+    drive this one Stage, so an ordering edit cannot land in one Fiat-Shamir
     stream and not the other (the GKR head schedule got the same treatment in
-    ``logup_gkr.head``). Carry-agnostic; the message is the observed
+    ``logup_gkr.head``). Bridge-agnostic; the message is the observed
     commitment, the stream's one structure-bound value."""
 
     def __init__(
@@ -140,20 +140,20 @@ class PreambleRound(Round):
         self._chip_metadata = chip_metadata
 
     def __call__(
-        self, carry: Any, transcript: Transcript
+        self, bridge: Any, transcript: Transcript
     ) -> tuple[Any, Transcript, Array]:
         transcript = self._vk.observe_into(transcript)
         transcript = transcript.observe(self._public_values)
         transcript = transcript.observe(self._commitment)
         transcript = transcript.observe(self._chip_metadata)
-        return carry, transcript, self._commitment
+        return bridge, transcript, self._commitment
 
 
-class TraceCommitRound(Round):
+class TraceCommitStage(Round):
     """Trace commit plus the shard preamble: commit the main region, then
-    absorb SP1's preamble stream via ``PreambleRound``. The message is the
+    absorb SP1's preamble stream via ``PreambleStage``. The message is the
     structure-bound main commitment; the prover-side commit data joins the
-    carry once the opening stage that reads it lands
+    bridge once the opening stage that reads it lands
     (fractalyze/sp1-zorch#20)."""
 
     def __init__(
@@ -172,53 +172,53 @@ class TraceCommitRound(Round):
         self._jit = jit
 
     def __call__(
-        self, carry: ShardCarry, transcript: Transcript
-    ) -> tuple[ShardCarry, Transcript, Array]:
+        self, bridge: ShardBridge, transcript: Transcript
+    ) -> tuple[ShardBridge, Transcript, Array]:
         bound, main_data = commit_region(
-            carry.main_region,
+            bridge.main_region,
             self._smcs,
             log_blowup=self._log_blowup,
             jit=self._jit,
         )
-        _, transcript, _ = PreambleRound(
+        _, transcript, _ = PreambleStage(
             vk=self._vk,
-            public_values=carry.public_values,
+            public_values=bridge.public_values,
             commitment=bound,
             chip_metadata=self._chip_metadata,
-        )(carry, transcript)
+        )(bridge, transcript)
         # Keep each region's commit witness for the jagged-eval open, in
         # [prep, main] order (SP1's round_evaluation_claims). prep is bound into
         # the vk at setup, not re-observed here, but the open still reproves it.
         commit_data = []
-        if carry.prep_region is not None:
+        if bridge.prep_region is not None:
             # prep uses main's jit knob: an eager commit de-fuses the Merkle
             # fold into many tiny launches.
             _, prep_data = commit_region(
-                carry.prep_region,
+                bridge.prep_region,
                 self._smcs,
                 log_blowup=self._log_blowup,
                 jit=self._jit,
             )
             commit_data.append(prep_data)
         commit_data.append(main_data)
-        # Carry only the digest tree; the open recomputes the mle from the region
+        # Keep only the digest tree; the open recomputes the mle from the region
         # dense (mle == dense.reshape(K, S).T) instead of holding a trace-sized
         # copy through GKR + zerocheck. The mles in commit_data drop at return.
         commit_digest_layers = tuple(d.digest_layers for d in commit_data)
         # Per-round SMCS commitment for the jagged proof's original_commitments;
         # kept separately from the open witness.
         commit_commitments = tuple(d.smcs_commitment for d in commit_data)
-        carry = replace(
-            carry,
+        bridge = replace(
+            bridge,
             commit_digest_layers=commit_digest_layers,
             commit_commitments=commit_commitments,
         )
-        return carry, transcript, bound
+        return bridge, transcript, bound
 
 
-class LogupGkrRound(Round):
+class LogupGkrStage(Round):
     """LogUp-GKR stage over ``prove_logup_gkr``; writes the final evaluation
-    point and per-chip openings onto the carry for zerocheck.
+    point and per-chip openings onto the bridge for zerocheck.
 
     Eager, not jitted: a whole-body ``@jit`` keeps every pyramid layer live at
     once (XLA owns liveness) and overflows the memory budget on wide shards, and
@@ -240,31 +240,31 @@ class LogupGkrRound(Round):
         self._witness = witness
 
     def __call__(
-        self, carry: ShardCarry, transcript: Transcript
-    ) -> tuple[ShardCarry, Transcript, LogupGkrProof]:
+        self, bridge: ShardBridge, transcript: Transcript
+    ) -> tuple[ShardBridge, Transcript, LogupGkrProof]:
         transcript, proof = prove_logup_gkr(
             self._gkr_chips,
-            carry.main_region,
-            carry.prep_region,
+            bridge.main_region,
+            bridge.prep_region,
             transcript,
             num_betas=self._num_betas,
             num_row_variables=self._num_row_variables,
             pow_bits=self._pow_bits,
             witness=self._witness,
         )
-        carry = replace(
-            carry,
+        bridge = replace(
+            bridge,
             gkr_eval_point=proof.eval_point,
             gkr_chip_openings=proof.chip_openings,
         )
-        return carry, transcript, proof
+        return bridge, transcript, proof
 
 
-class ShardZerocheckRound(Round):
+class ShardZerocheckStage(Round):
     """Zerocheck stage over ``prove_shard_zerocheck``, consuming the GKR
-    point and openings off the carry. The stage absorbs the per-chip opened
-    values itself (``OpenedValuesRound`` in ``zerocheck.prover``); this Round
-    threads them onto the carry for the jagged-eval stage's claims and the
+    point and openings off the bridge. The stage absorbs the per-chip opened
+    values itself (``OpenedValuesRound`` in ``zerocheck.prover``); this Stage
+    threads them onto the bridge for the jagged-eval stage's claims and the
     wire's ShardOpenedValues.
 
     With ``jit=True`` the stage body runs under one cached outer ``@jit``.
@@ -284,7 +284,7 @@ class ShardZerocheckRound(Round):
     ) -> None:
         self._chips = chips
         self._max_log_row_count = max_log_row_count
-        # Class-level jitted body for the same reason as LogupGkrRound: the
+        # Class-level jitted body for the same reason as LogupGkrStage: the
         # wrapper (and its compile cache) is shared by every instance, so a
         # rebuilt chain reuses the executable. `chips` keys the cache by the
         # loaded Chip objects' identities (stable for a process-held machine).
@@ -335,20 +335,20 @@ class ShardZerocheckRound(Round):
         )
 
     def __call__(
-        self, carry: ShardCarry, transcript: Transcript
-    ) -> tuple[ShardCarry, Transcript, ZerocheckProof]:
-        if carry.gkr_eval_point is None or carry.gkr_chip_openings is None:
+        self, bridge: ShardBridge, transcript: Transcript
+    ) -> tuple[ShardBridge, Transcript, ZerocheckProof]:
+        if bridge.gkr_eval_point is None or bridge.gkr_chip_openings is None:
             raise ValueError(
-                "zerocheck needs the LogUp-GKR stage's outputs on the carry; "
-                "sequence a LogupGkrRound before this Round"
+                "zerocheck needs the LogUp-GKR stage's outputs on the bridge; "
+                "sequence a LogupGkrStage before this Stage"
             )
         if self._body is not None:
             transcript, fields = self._body(
-                carry.main_region,
-                carry.prep_region,
-                carry.public_values,
-                carry.gkr_eval_point,
-                carry.gkr_chip_openings,
+                bridge.main_region,
+                bridge.prep_region,
+                bridge.public_values,
+                bridge.gkr_eval_point,
+                bridge.gkr_chip_openings,
                 transcript,
             )
             (
@@ -374,20 +374,20 @@ class ShardZerocheckRound(Round):
         else:
             transcript, proof = prove_shard_zerocheck(
                 self._chips,
-                carry.main_region,
-                carry.prep_region,
-                carry.public_values,
-                carry.gkr_eval_point,
-                carry.gkr_chip_openings,
+                bridge.main_region,
+                bridge.prep_region,
+                bridge.public_values,
+                bridge.gkr_eval_point,
+                bridge.gkr_chip_openings,
                 transcript,
                 max_log_row_count=self._max_log_row_count,
             )
-        carry = replace(
-            carry,
+        bridge = replace(
+            bridge,
             zc_sumcheck_point=proof.msgs.challenge,
             zc_opened_values=proof.opened_values,
         )
-        return carry, transcript, proof
+        return bridge, transcript, proof
 
 
 @dataclass(frozen=True)
@@ -400,11 +400,11 @@ class ShardJaggedEvalProof:
     open: StackedOpenProof
 
 
-class ShardJaggedEvalRound(Round):
+class ShardJaggedEvalStage(Round):
     """Jagged evaluation proof (SP1 Phase 4): reduce the committed trace to
     ``D(z_final)`` via the outer/inner sumcheck, then open ``D`` at ``z_final``
     with the stacked BaseFold FRI. Reads the zerocheck point, the per-chip
-    opened values at it, and the committed stacked witness off the carry.
+    opened values at it, and the committed stacked witness off the bridge.
 
     With ``jit=True`` the stage body (column assembly, the outer/inner
     sumchecks, and the stacked BaseFold open) runs under one cached outer
@@ -426,7 +426,7 @@ class ShardJaggedEvalRound(Round):
         self._log_blowup = log_blowup
         self._num_queries = num_queries
         self._pow_bits = pow_bits
-        # Class-level jitted body (the LogupGkrRound pattern); `smcs` keys the
+        # Class-level jitted body (the LogupGkrStage pattern); `smcs` keys the
         # cache by identity, stable for the chain-held scheme instance.
         self._body = (
             partial(
@@ -483,49 +483,49 @@ class ShardJaggedEvalRound(Round):
         ), open_proof
 
     def __call__(
-        self, carry: ShardCarry, transcript: GrindingTranscript
-    ) -> tuple[ShardCarry, GrindingTranscript, ShardJaggedEvalProof]:
+        self, bridge: ShardBridge, transcript: GrindingTranscript
+    ) -> tuple[ShardBridge, GrindingTranscript, ShardJaggedEvalProof]:
         if (
-            carry.zc_sumcheck_point is None
-            or carry.commit_digest_layers is None
-            or carry.zc_opened_values is None
+            bridge.zc_sumcheck_point is None
+            or bridge.commit_digest_layers is None
+            or bridge.zc_opened_values is None
         ):
             raise ValueError(
                 "the jagged-eval stage needs the zerocheck point, committed "
-                "digest layers, and zerocheck opened values on the carry; sequence "
-                "the commit, LogUp-GKR, and zerocheck Rounds before it"
+                "digest layers, and zerocheck opened values on the bridge; sequence "
+                "the commit, LogUp-GKR, and zerocheck Stages before it"
             )
         if self._body is not None:
             transcript, msg_fields, open_proof = self._body(
-                carry.main_region,
-                carry.prep_region,
-                carry.zc_opened_values,
-                carry.zc_sumcheck_point,
-                carry.commit_digest_layers,
+                bridge.main_region,
+                bridge.prep_region,
+                bridge.zc_opened_values,
+                bridge.zc_sumcheck_point,
+                bridge.commit_digest_layers,
                 transcript,
             )
             eval_msg = JaggedEvalMsg(*msg_fields)
         else:
             transcript, eval_msg, open_proof = _jagged_eval_body(
-                carry.main_region,
-                carry.prep_region,
-                carry.zc_opened_values,
-                carry.zc_sumcheck_point,
-                carry.commit_digest_layers,
+                bridge.main_region,
+                bridge.prep_region,
+                bridge.zc_opened_values,
+                bridge.zc_sumcheck_point,
+                bridge.commit_digest_layers,
                 transcript,
                 smcs=self._smcs,
                 log_blowup=self._log_blowup,
                 num_queries=self._num_queries,
                 pow_bits=self._pow_bits,
             )
-        return carry, transcript, ShardJaggedEvalProof(eval=eval_msg, open=open_proof)
+        return bridge, transcript, ShardJaggedEvalProof(eval=eval_msg, open=open_proof)
 
 
 def _region_mle(region: JaggedRegion) -> Array:
     """The commit's ``[S, K]`` stacked message for a region, recomputed from its
     dense buffer (``mle == dense.reshape(K, S).T``, S = 2^log_stacking_height) --
     identical to what ``commit_region`` returned. The open reconstructs it here
-    instead of the carry pinning a trace-sized copy through the whole chain
+    instead of the bridge pinning a trace-sized copy through the whole chain
     (fractalyze/sp1-zorch#264)."""
     S = 1 << region.log_stacking_height
     K = region.dense.shape[0] // S
@@ -546,7 +546,7 @@ def _jagged_eval_body(
     pow_bits: int,
 ) -> tuple[GrindingTranscript, JaggedEvalMsg, StackedOpenProof]:
     """The jagged-eval stage's traceable body -- the single source both the
-    eager path and ``ShardJaggedEvalRound``'s ``@jit`` run."""
+    eager path and ``ShardJaggedEvalStage``'s ``@jit`` run."""
     main = main_region
     openings = opened_values
     # The jagged eval runs in the extension field — the upstream sumcheck
@@ -659,26 +659,26 @@ def prove_shard_chain(
     compile. Byte-identical either way."""
     return ProveChain(
         [
-            TraceCommitRound(
+            TraceCommitStage(
                 smcs,
                 log_blowup=log_blowup,
                 vk=vk,
                 chip_metadata=chip_metadata,
                 jit=jit,
             ),
-            # GKR is always eager (see LogupGkrRound); only the other stages
+            # GKR is always eager (see LogupGkrStage); only the other stages
             # take the `jit` knob.
-            LogupGkrRound(
+            LogupGkrStage(
                 gkr_chips,
                 num_betas=num_betas,
                 num_row_variables=num_row_variables,
                 pow_bits=pow_bits,
                 witness=witness,
             ),
-            ShardZerocheckRound(
+            ShardZerocheckStage(
                 chips, max_log_row_count=max_log_row_count, jit=jit
             ),
-            ShardJaggedEvalRound(
+            ShardJaggedEvalStage(
                 smcs,
                 log_blowup=log_blowup,
                 num_queries=open_num_queries,

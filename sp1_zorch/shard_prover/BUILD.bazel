@@ -74,7 +74,7 @@ py_test(
     ],
 )
 
-# The shard proof as one zorch ProveChain of stage Rounds (docs/shard-pipeline.md).
+# The shard proof as one zorch ProveChain of Stages (docs/architecture.md).
 py_library(
     name = "prove_shard",
     srcs = ["prove_shard.py"],
@@ -99,7 +99,7 @@ py_library(
 )
 
 # The shard verifier as one zorch VerifyChain of stage duals, mirroring
-# prove_shard round for round (docs/shard-pipeline.md).
+# prove_shard round for round (docs/architecture.md).
 py_library(
     name = "verify_shard",
     srcs = ["verify_shard.py"],

@@ -2,16 +2,16 @@
 """The shard proof's verifier as one zorch ``VerifyChain`` of stage duals.
 
 ``verify_shard_chain`` mirrors ``prove_shard_chain`` round for round — one
-verifier Round per prover stage, glue included, consuming the prover chain's
+verifier Stage per prover stage, glue included, consuming the prover chain's
 message list as the proof object. ``VerifyChain``'s one-message-per-round
 check makes the mirror fail loud: a stage or glue step present on one side
 and not the other is a structural reject, not a silent Fiat-Shamir desync
 (zorch ``docs/stage-composition.md``, "Pipelines as nested chains").
 
-Static configuration (vk, chip metadata, chip set) lives on the Round
-instances and per-shard values flow on the carry, mirroring the prover's
-split; ``ShardVerifierCarry`` threads what a later dual reads from an
-earlier one — the witness-free dual of ``ShardCarry``.
+Static configuration (vk, chip metadata, chip set) lives on the Stage
+instances and per-shard values flow on the bridge, mirroring the prover's
+split; ``ShardVerifierBridge`` threads what a later dual reads from an
+earlier one — the witness-free dual of ``ShardBridge``.
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ from sp1_zorch.logup_gkr.circuit import GkrChip
 from sp1_zorch.logup_gkr.prover import ChipEvaluation, LogupGkrProof
 from sp1_zorch.logup_gkr.verifier import verify_logup_gkr
 from sp1_zorch.shard_prover.prove_shard import (
-    PreambleRound,
+    PreambleStage,
     ShardJaggedEvalProof,
 )
 from sp1_zorch.shard_prover.types import ChipShape, MachineVerifyingKey
@@ -47,8 +47,8 @@ from zorch.transcript import GrindingTranscript, Transcript
 from zorch.utils.bits import log2_ceil_usize
 
 
-# Pytree like ShardCarry: written stage outputs are array leaves; unwritten
-# Optional fields are None (an empty subtree), so the carry crosses a @jit
+# Pytree like ShardBridge: written stage outputs are array leaves; unwritten
+# Optional fields are None (an empty subtree), so the bridge crosses a @jit
 # boundary as one argument.
 @partial(
     jax.tree_util.register_dataclass,
@@ -63,24 +63,24 @@ from zorch.utils.bits import log2_ceil_usize
     meta_fields=[],
 )
 @dataclass(frozen=True)
-class ShardVerifierCarry:
+class ShardVerifierBridge:
     """What flows between stage duals: each dual writes the fields a later
-    one consumes — the same seams as ``ShardCarry``, minus the witness."""
+    one consumes — the same seams as ``ShardBridge``, minus the witness."""
 
     # Statement input, read by the trace-commit dual (preamble) and the
-    # zerocheck dual (constraint evaluation) — on the carry, not the Rounds,
-    # exactly as the prover reads ``ShardCarry.public_values``.
+    # zerocheck dual (constraint evaluation) — on the bridge, not the Stages,
+    # exactly as the prover reads ``ShardBridge.public_values``.
     public_values: Array
-    # Written by TraceCommitVerifierRound; read by the stacked-open dual
+    # Written by TraceCommitVerifierStage; read by the stacked-open dual
     # (skip-level, two seams later). [prep, main] order, matching SP1's
     # round_evaluation_claims.
     commitment_roots: tuple[Array, Array] | None = None
-    # Written by LogupGkrVerifierRound; read by the zerocheck dual (zeta =
+    # Written by LogupGkrVerifierStage; read by the zerocheck dual (zeta =
     # row tail; claims derivation). The point is the dual's own derivation,
     # the openings are the proof's leaf-checked values.
     gkr_eval_point: Array | None = None
     gkr_chip_openings: Mapping[str, ChipEvaluation] | None = None
-    # Written by ShardZerocheckVerifierRound; read by the jagged-eval dual as
+    # Written by ShardZerocheckVerifierStage; read by the jagged-eval dual as
     # its z_row (the dual's own sampled challenges) and its per-column claims
     # (the proof's opened values, shape- and oracle-checked by the zerocheck
     # dual).
@@ -88,11 +88,11 @@ class ShardVerifierCarry:
     zc_opened_values: Mapping[str, ChipEvaluation] | None = None
 
 
-class TraceCommitVerifierRound(Round):
-    """Stage-1 dual of ``TraceCommitRound``: replays the preamble absorb
-    stream via ``PreambleRound`` — the same one Round the prover drives —
+class TraceCommitVerifierStage(Round):
+    """Stage-1 dual of ``TraceCommitStage``: replays the preamble absorb
+    stream via ``PreambleStage`` — the same one Stage the prover drives —
     with the proof's commitment message, and writes the commitment roots
-    onto the carry. No local check: the commitment is validated downstream,
+    onto the bridge. No local check: the commitment is validated downstream,
     by the stacked-open dual's Merkle openings against these roots."""
 
     def __init__(self, *, vk: MachineVerifyingKey, chip_metadata: Array) -> None:
@@ -100,11 +100,11 @@ class TraceCommitVerifierRound(Round):
         self._chip_metadata = chip_metadata
 
     def __call__(
-        self, carry: ShardVerifierCarry, msg: Array, transcript: Transcript
-    ) -> tuple[ShardVerifierCarry, Transcript, Array]:
-        _, transcript, _ = PreambleRound(
+        self, bridge: ShardVerifierBridge, msg: Array, transcript: Transcript
+    ) -> tuple[ShardVerifierBridge, Transcript, Array]:
+        _, transcript, _ = PreambleStage(
             vk=self._vk,
-            public_values=carry.public_values,
+            public_values=bridge.public_values,
             commitment=msg,
             chip_metadata=self._chip_metadata,
         )(None, transcript)
@@ -112,17 +112,17 @@ class TraceCommitVerifierRound(Round):
         # vk's preprocessed commitment, even though the prover keeps
         # ``prep_region`` optional. The stacked-open dual checking openings
         # against these roots is where a no-prep proof would reconcile.
-        carry = replace(
-            carry, commitment_roots=(self._vk.preprocessed_commit, msg)
+        bridge = replace(
+            bridge, commitment_roots=(self._vk.preprocessed_commit, msg)
         )
-        return carry, transcript, jnp.bool_(True)
+        return bridge, transcript, jnp.bool_(True)
 
 
-class LogupGkrVerifierRound(Round):
-    """Stage-2 dual of ``LogupGkrRound``: verifies the LogUp-GKR proof via
+class LogupGkrVerifierStage(Round):
+    """Stage-2 dual of ``LogupGkrStage``: verifies the LogUp-GKR proof via
     ``verify_logup_gkr`` and writes the derived evaluation point plus the
-    proof's leaf-checked chip openings onto the carry — the same seams the
-    prover Round writes on ``ShardCarry`` for the zerocheck stage."""
+    proof's leaf-checked chip openings onto the bridge — the same seams the
+    prover Stage writes on ``ShardBridge`` for the zerocheck stage."""
 
     def __init__(
         self,
@@ -145,40 +145,40 @@ class LogupGkrVerifierRound(Round):
 
     def __call__(
         self,
-        carry: ShardVerifierCarry,
+        bridge: ShardVerifierBridge,
         msg: LogupGkrProof,
         transcript: GrindingTranscript,
-    ) -> tuple[ShardVerifierCarry, GrindingTranscript, Array]:
+    ) -> tuple[ShardVerifierBridge, GrindingTranscript, Array]:
         transcript, eval_point, ok = verify_logup_gkr(
             self._gkr_chips,
             self._chip_names,
             self._chip_heights,
             msg,
             transcript,
-            carry.public_values if self._verify_public_values else None,
+            bridge.public_values if self._verify_public_values else None,
             num_betas=self._num_betas,
             num_row_variables=self._num_row_variables,
             pow_bits=self._pow_bits,
         )
-        carry = replace(
-            carry, gkr_eval_point=eval_point, gkr_chip_openings=msg.chip_openings
+        bridge = replace(
+            bridge, gkr_eval_point=eval_point, gkr_chip_openings=msg.chip_openings
         )
-        return carry, transcript, ok
+        return bridge, transcript, ok
 
 
-class ShardZerocheckVerifierRound(Round):
-    """Stage-3 dual of ``ShardZerocheckRound``: verifies the zerocheck proof
+class ShardZerocheckVerifierStage(Round):
+    """Stage-3 dual of ``ShardZerocheckStage``: verifies the zerocheck proof
     via ``verify_shard_zerocheck``, consuming the GKR point and openings off
-    the carry, and writes the dual's own sumcheck point plus the proof's
-    oracle-checked opened values onto the carry — the same seams the prover
-    Round writes on ``ShardCarry`` for the jagged-eval stage.
+    the bridge, and writes the dual's own sumcheck point plus the proof's
+    oracle-checked opened values onto the bridge — the same seams the prover
+    Stage writes on ``ShardBridge`` for the jagged-eval stage.
 
     The proof's opened values are checked against the statement shapes
     before anything consumes them (SP1's ``verify_opening_shape`` inside
     ``verify_zerocheck``, ``crates/hypercube/src/verifier/shard.rs``) — the
     verifier absorbs the proof's opened values, so a shape lie never
     desyncs Fiat-Shamir and only a statement check rejects it. Downstream
-    duals reading the carry's opened values may trust their shapes."""
+    duals reading the bridge's opened values may trust their shapes."""
 
     def __init__(
         self,
@@ -196,14 +196,14 @@ class ShardZerocheckVerifierRound(Round):
 
     def __call__(
         self,
-        carry: ShardVerifierCarry,
+        bridge: ShardVerifierBridge,
         msg: ZerocheckProof,
         transcript: Transcript,
-    ) -> tuple[ShardVerifierCarry, Transcript, Array]:
-        if carry.gkr_eval_point is None or carry.gkr_chip_openings is None:
+    ) -> tuple[ShardVerifierBridge, Transcript, Array]:
+        if bridge.gkr_eval_point is None or bridge.gkr_chip_openings is None:
             raise ValueError(
                 "the zerocheck dual needs the LogUp-GKR stage's outputs on "
-                "the carry; sequence a LogupGkrVerifierRound before this Round"
+                "the bridge; sequence a LogupGkrVerifierStage before this Stage"
             )
         opened = msg.opened_values
         for n in self._chip_names:
@@ -231,29 +231,29 @@ class ShardZerocheckVerifierRound(Round):
             self._chips,
             self._chip_names,
             self._chip_heights,
-            carry.public_values,
-            carry.gkr_eval_point,
-            carry.gkr_chip_openings,
+            bridge.public_values,
+            bridge.gkr_eval_point,
+            bridge.gkr_chip_openings,
             msg,
             transcript,
             max_log_row_count=self._max_log_row_count,
         )
-        carry = replace(
-            carry, zc_sumcheck_point=point, zc_opened_values=msg.opened_values
+        bridge = replace(
+            bridge, zc_sumcheck_point=point, zc_opened_values=msg.opened_values
         )
-        return carry, transcript, ok
+        return bridge, transcript, ok
 
 
-class ShardJaggedEvalVerifierRound(Round):
-    """Stage-4 dual of ``ShardJaggedEvalRound``: rebuilds the column manifest
-    and per-column claims from the statement plus the carry's oracle-checked
+class ShardJaggedEvalVerifierStage(Round):
+    """Stage-4 dual of ``ShardJaggedEvalStage``: rebuilds the column manifest
+    and per-column claims from the statement plus the bridge's oracle-checked
     opened values, samples ``z_col`` itself, verifies the outer/inner
     sumchecks via ``verify_jagged_eval_msg``, and closes the chain with
-    ``stacked_basefold_verify`` against the carry's skip-level commitment
+    ``stacked_basefold_verify`` against the bridge's skip-level commitment
     roots.
 
     The column manifest is built entirely from the statement shapes; the
-    carry's opened values only supply the claims, their shapes already
+    bridge's opened values only supply the claims, their shapes already
     checked against the same statement by the zerocheck dual. A statement
     with no preprocessed chip states that no preprocessed round exists, so
     a proof carrying one is a structural reject."""
@@ -281,22 +281,22 @@ class ShardJaggedEvalVerifierRound(Round):
 
     def __call__(
         self,
-        carry: ShardVerifierCarry,
+        bridge: ShardVerifierBridge,
         msg: ShardJaggedEvalProof,
         transcript: GrindingTranscript,
-    ) -> tuple[ShardVerifierCarry, GrindingTranscript, Array]:
+    ) -> tuple[ShardVerifierBridge, GrindingTranscript, Array]:
         if (
-            carry.zc_sumcheck_point is None
-            or carry.zc_opened_values is None
-            or carry.commitment_roots is None
+            bridge.zc_sumcheck_point is None
+            or bridge.zc_opened_values is None
+            or bridge.commitment_roots is None
         ):
             raise ValueError(
                 "the jagged-eval dual needs the zerocheck point, opened "
-                "values, and commitment roots on the carry; sequence the "
-                "trace-commit and zerocheck duals before this Round"
+                "values, and commitment roots on the bridge; sequence the "
+                "trace-commit and zerocheck duals before this Stage"
             )
-        opened = carry.zc_opened_values
-        ef = carry.zc_sumcheck_point.dtype
+        opened = bridge.zc_opened_values
+        ef = bridge.zc_sumcheck_point.dtype
         shapes = self._chip_shapes
 
         # [prep, main] manifests from the statement, mirroring the prover's
@@ -360,27 +360,27 @@ class ShardJaggedEvalVerifierRound(Round):
         transcript, z_final, ok_eval = verify_jagged_eval_msg(
             col_heights,
             all_claims,
-            carry.zc_sumcheck_point[::-1],
+            bridge.zc_sumcheck_point[::-1],
             z_col,
             msg.eval,
             transcript,
             dtype=ef,
         )
 
-        bf = carry.commitment_roots[1].dtype
+        bf = bridge.commitment_roots[1].dtype
         code = BitReversedReedSolomon(
             message_len=S, blowup=1 << self._log_blowup, dtype=bf
         )
 
         # The soundness anchor: each round's shape-bound proof commitment,
         # rebound with the statement-derived structure counts, must be the
-        # preamble-observed commitment off the carry (SP1's table-sizes
+        # preamble-observed commitment off the bridge (SP1's table-sizes
         # check) — only then do the open's Merkle checks against the proof
         # commitments bind the openings to the statement.
         statement_roots = (
-            list(carry.commitment_roots)
+            list(bridge.commitment_roots)
             if prep_names
-            else [carry.commitment_roots[1]]
+            else [bridge.commitment_roots[1]]
         )
         if len(msg.open.component_commitments) != len(statement_roots):
             raise ValueError(
@@ -409,7 +409,7 @@ class ShardJaggedEvalVerifierRound(Round):
             num_queries=self._num_queries,
             pow_bits=self._pow_bits,
         )
-        return carry, transcript, ok_eval & ok_bind & ok_open
+        return bridge, transcript, ok_eval & ok_bind & ok_open
 
 
 def verify_shard_chain(
@@ -431,14 +431,14 @@ def verify_shard_chain(
     pow_bits: int = 0,
     verify_public_values: bool = True,
 ) -> VerifyChain:
-    """The ``VerifyChain`` dual of ``prove_shard_chain``: one verifier Round
+    """The ``VerifyChain`` dual of ``prove_shard_chain``: one verifier Stage
     per prover stage, in the prover's order, so the proof's message list
     aligns slot for slot or fails the chain's one-message-per-round check.
 
     ``chip_names`` and ``chip_shapes`` cover every shard chip (the openings
     absorb order, the opening-shape check, the leaf and oracle checks' geq
     thresholds, the jagged column manifest) — the verifier-side statement
-    counterpart of the regions the prover Rounds read off the carry.
+    counterpart of the regions the prover Stages read off the bridge.
     ``log_stacking_height`` and the ``open_*`` parameters mirror the
     prover's stage-4 configuration.
 
@@ -448,8 +448,8 @@ def verify_shard_chain(
     chip_heights = {n: s.main.height for n, s in chip_shapes.items()}
     return VerifyChain(
         [
-            TraceCommitVerifierRound(vk=vk, chip_metadata=chip_metadata),
-            LogupGkrVerifierRound(
+            TraceCommitVerifierStage(vk=vk, chip_metadata=chip_metadata),
+            LogupGkrVerifierStage(
                 gkr_chips,
                 chip_names=chip_names,
                 chip_heights=chip_heights,
@@ -458,13 +458,13 @@ def verify_shard_chain(
                 pow_bits=pow_bits,
                 verify_public_values=verify_public_values,
             ),
-            ShardZerocheckVerifierRound(
+            ShardZerocheckVerifierStage(
                 chips,
                 chip_names=chip_names,
                 chip_shapes=chip_shapes,
                 max_log_row_count=max_log_row_count,
             ),
-            ShardJaggedEvalVerifierRound(
+            ShardJaggedEvalVerifierStage(
                 smcs,
                 log_blowup=log_blowup,
                 num_queries=open_num_queries,
