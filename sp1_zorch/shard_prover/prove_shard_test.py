@@ -35,7 +35,7 @@ from sp1_zorch.poseidon2.koalabear16 import koalabear16_params
 from sp1_zorch.shard_prover.prove_shard import (
     PreambleStage,
     ShardBridge,
-    ShardZerocheckStage,
+    ZerocheckStage,
     _region_mle,
     preamble_chip_metadata,
     prove_shard_chain,
@@ -424,7 +424,7 @@ class ProveShardChainTest(absltest.TestCase):
         self.assertEqual(_region_mle(self.main_region).shape[0], S)
 
     def test_zerocheck_stage_threads_the_eval_point(self) -> None:
-        """ShardZerocheckStage threads its sumcheck point onto the bridge as the
+        """ZerocheckStage threads its sumcheck point onto the bridge as the
         jagged-eval open's z_row (the accumulated per-round challenges, not the
         GKR zeta), so the eval stage opens the trace at the right point."""
         _assert_bytes_equal(
@@ -437,7 +437,7 @@ class ProveShardChainTest(absltest.TestCase):
         )
 
     def test_zerocheck_stage_threads_opened_values(self) -> None:
-        """ShardZerocheckStage threads the stage's per-chip opened values onto
+        """ZerocheckStage threads the stage's per-chip opened values onto
         the bridge — the jagged-eval stage's per-column claims (SP1's
         round_evaluation_claims, the trace evaluations at the zerocheck point,
         NOT the GKR-point openings) and the wire's ShardOpenedValues read
@@ -459,7 +459,7 @@ class ProveShardChainTest(absltest.TestCase):
         _assert_bytes_equal(got, want, "post-chain sample")
 
     def test_zerocheck_stage_rejects_a_chain_without_gkr(self) -> None:
-        stage = ShardZerocheckStage(
+        stage = ZerocheckStage(
             {"alpha": _WitnessChip()}, max_log_row_count=_MAX_LOG_ROW_COUNT
         )
         bridge = ShardBridge(

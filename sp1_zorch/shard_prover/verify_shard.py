@@ -36,7 +36,7 @@ from sp1_zorch.logup_gkr.prover import ChipEvaluation, LogupGkrProof
 from sp1_zorch.logup_gkr.verifier import verify_logup_gkr
 from sp1_zorch.shard_prover.prove_shard import (
     PreambleStage,
-    ShardJaggedEvalProof,
+    JaggedPcsProof,
 )
 from sp1_zorch.shard_prover.types import ChipShape, MachineVerifyingKey
 from sp1_zorch.zerocheck.prover import ZerocheckProof
@@ -80,7 +80,7 @@ class ShardVerifierBridge:
     # the openings are the proof's leaf-checked values.
     gkr_eval_point: Array | None = None
     gkr_chip_openings: Mapping[str, ChipEvaluation] | None = None
-    # Written by ShardZerocheckVerifierStage; read by the jagged-eval dual as
+    # Written by ZerocheckVerifierStage; read by the jagged-eval dual as
     # its z_row (the dual's own sampled challenges) and its per-column claims
     # (the proof's opened values, shape- and oracle-checked by the zerocheck
     # dual).
@@ -166,8 +166,8 @@ class LogupGkrVerifierStage(Round):
         return bridge, transcript, ok
 
 
-class ShardZerocheckVerifierStage(Round):
-    """Stage-3 dual of ``ShardZerocheckStage``: verifies the zerocheck proof
+class ZerocheckVerifierStage(Round):
+    """Stage-3 dual of ``ZerocheckStage``: verifies the zerocheck proof
     via ``verify_shard_zerocheck``, consuming the GKR point and openings off
     the bridge, and writes the dual's own sumcheck point plus the proof's
     oracle-checked opened values onto the bridge — the same seams the prover
@@ -244,8 +244,8 @@ class ShardZerocheckVerifierStage(Round):
         return bridge, transcript, ok
 
 
-class ShardJaggedEvalVerifierStage(Round):
-    """Stage-4 dual of ``ShardJaggedEvalStage``: rebuilds the column manifest
+class JaggedPcsVerifierStage(Round):
+    """Stage-4 dual of ``JaggedPcsStage``: rebuilds the column manifest
     and per-column claims from the statement plus the bridge's oracle-checked
     opened values, samples ``z_col`` itself, verifies the outer/inner
     sumchecks via ``verify_jagged_eval_msg``, and closes the chain with
@@ -282,7 +282,7 @@ class ShardJaggedEvalVerifierStage(Round):
     def __call__(
         self,
         bridge: ShardVerifierBridge,
-        msg: ShardJaggedEvalProof,
+        msg: JaggedPcsProof,
         transcript: GrindingTranscript,
     ) -> tuple[ShardVerifierBridge, GrindingTranscript, Array]:
         if (
@@ -458,13 +458,13 @@ def verify_shard_chain(
                 pow_bits=pow_bits,
                 verify_public_values=verify_public_values,
             ),
-            ShardZerocheckVerifierStage(
+            ZerocheckVerifierStage(
                 chips,
                 chip_names=chip_names,
                 chip_shapes=chip_shapes,
                 max_log_row_count=max_log_row_count,
             ),
-            ShardJaggedEvalVerifierStage(
+            JaggedPcsVerifierStage(
                 smcs,
                 log_blowup=log_blowup,
                 num_queries=open_num_queries,

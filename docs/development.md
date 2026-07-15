@@ -147,7 +147,7 @@ runs the GPU plugin bundled in the pinned `frx-cuda12-pjrt` wheel; to measure a
 *locally built* Fractalyze XLA plugin instead, see [Measure shipped code](#measure-shipped-code).
 
 - Runs `prove_shard_chain` (the `ProveChain` of `TraceCommitStage` → `LogupGkrStage`
-  → `ShardZerocheckStage` → `ShardJaggedEvalStage`) on the real shard.
+  → `ZerocheckStage` → `JaggedPcsStage`) on the real shard.
 - A `_TimedRound` wrapper prints **per-Stage wall-clock** in ms:
   `[stage TraceCommitStage] X.Yms`, and likewise for the other three. `--runs=5`
   proves five times in one process: pass 1 is cold (XLA compiles), passes

@@ -26,7 +26,7 @@ beta-weighted column batch``, scaled by ``eq(zeta, z_row)``, must equal the
 replay's final claim. Trace heights are statement inputs (the same source as
 the GKR dual's); SP1 reads them off the proof's opened-values degrees
 instead. SP1's per-chip opening-width check is the chain round's:
-``ShardZerocheckVerifierStage`` checks every opening against its statement
+``ZerocheckVerifierStage`` checks every opening against its statement
 shape before delegating to this module, so the opened values reaching the
 replay and the oracle check here are statement-shaped already.
 """

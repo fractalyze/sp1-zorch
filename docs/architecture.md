@@ -10,8 +10,8 @@ Stages.
 ## Stage / Round / Bridge in this repo
 
 - **Stage** — one step of the shard's heterogeneous sequence, a `Round` subclass
-  named `*Stage`: `TraceCommitStage`, `LogupGkrStage`, `ShardZerocheckStage`,
-  `ShardJaggedEvalStage`, plus the `PreambleStage` the trace-commit Stage and the
+  named `*Stage`: `TraceCommitStage`, `LogupGkrStage`, `ZerocheckStage`,
+  `JaggedPcsStage`, plus the `PreambleStage` the trace-commit Stage and the
   byte-match replay share. Each Stage runs its own inner Rounds.
 - **Round** — kept for the genuine inner rounds a Stage scans (per-variable
   sumcheck, GKR layers): `JaggedGkrLayerRound`, `OpenedValuesRound`, … Only the
@@ -29,8 +29,8 @@ Stages.
 |---|---|---|---|---|
 | Trace commit (`TraceCommitStage`) | SMCS merkle commit over the jagged dense packing (no sumcheck rounds; transcript observes vk, public values, commitment, chip metadata via `PreambleStage`) | — (seeds the transcript) | `sp1_zorch/commit` | `shard_prover:verify_prove_shard` (`--max_stage=1`) |
 | LogUp-GKR (`LogupGkrStage`) | A chain of layer Rounds (output layer → input layer), each layer a chain of per-variable sumcheck rounds | Per-layer running claim, ending in trace-column openings at the final evaluation point | `sp1_zorch/logup_gkr` | `logup_gkr:verify_first_layer`, `logup_gkr:verify_gkr_prove` |
-| Zerocheck (`ShardZerocheckStage`) | One jagged multi-chip sumcheck: 22 homogeneous per-variable rounds over `eq * (constraint RLC + GKR column term)`, then the per-chip opened values absorbed into the transcript | In: every chip's constraint zero-sum + its GKR opening claim; out: one claim at the sumcheck point + the opened values there (the evaluation Stage's per-column claims) | `sp1_zorch/zerocheck` | `zerocheck:verify_zerocheck` |
-| Jagged evaluation (`ShardJaggedEvalStage`) | Outer/inner sumcheck reducing the committed trace to `D(z_final)`, then the stacked BaseFold open of `D` at that point | In: the zerocheck point + per-column claims off the Bridge; out: the evaluation proof (jagged eval + stacked BaseFold PCS) | `zorch/pcs/jagged` | `shard_prover:verify_prove_shard` |
+| Zerocheck (`ZerocheckStage`) | One jagged multi-chip sumcheck: 22 homogeneous per-variable rounds over `eq * (constraint RLC + GKR column term)`, then the per-chip opened values absorbed into the transcript | In: every chip's constraint zero-sum + its GKR opening claim; out: one claim at the sumcheck point + the opened values there (the evaluation Stage's per-column claims) | `sp1_zorch/zerocheck` | `zerocheck:verify_zerocheck` |
+| Jagged evaluation (`JaggedPcsStage`) | Outer/inner sumcheck reducing the committed trace to `D(z_final)`, then the stacked BaseFold open of `D` at that point | In: the zerocheck point + per-column claims off the Bridge; out: the evaluation proof (jagged eval + stacked BaseFold PCS) | `zorch/pcs/jagged` | `shard_prover:verify_prove_shard` |
 
 Each Stage runnable above gates one Stage's math; `shard_prover:verify_prove_shard`
 gates the *composition* — it runs the assembled `prove_shard_chain` over a dump

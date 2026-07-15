@@ -27,7 +27,7 @@ from zorch.testkit.transcript import cheap_transcript
 from sp1_zorch.shard_prover.types import ChipShape, TraceShape
 from sp1_zorch.shard_prover.verify_shard import (
     ShardVerifierBridge,
-    ShardZerocheckVerifierStage,
+    ZerocheckVerifierStage,
 )
 
 from sp1_zorch.shard_prover.chain_testkit import (
@@ -197,7 +197,7 @@ class VerifyShardChainTest(absltest.TestCase):
         check). The bridge is the post-chain one (every seam written), so the
         call exercises only the shape check, which raises before any
         cryptographic work."""
-        stage = ShardZerocheckVerifierStage(
+        stage = ZerocheckVerifierStage(
             self.fx.chips,
             chip_names=("alpha",),
             chip_shapes={
