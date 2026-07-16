@@ -8,10 +8,10 @@ numpy
 # frx = Field, Ring Accelerated. Pins track zorch's requirements.in
 # at the MODULE.bazel git_override commit — they build against a shared frxlib,
 # so a lagging pin ABI-mismatches and segfaults the GPU tests.
-frx==0.10.0.dev20260715051143
-frxlib==0.10.0.dev20260715051143
-frx-cuda12-pjrt==0.10.0.dev20260715051143
-frx-cuda12-plugin==0.10.0.dev20260715051143
+frx==0.10.0.dev20260716113241
+frxlib==0.10.0.dev20260716113241
+frx-cuda12-pjrt==0.10.0.dev20260716113241
+frx-cuda12-plugin==0.10.0.dev20260716113241
 zk-dtypes==0.0.10
 
 # SP1 chip definitions (constraints + LogUp interactions) exported from
