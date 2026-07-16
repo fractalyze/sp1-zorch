@@ -60,7 +60,7 @@ from sp1_zorch.shard_prover.replay import (
     shard_regions,
     to_u32,
 )
-from sp1_zorch.shard_prover.prove_shard import ShardZerocheckRound
+from sp1_zorch.shard_prover.prove_shard import ZerocheckStage
 from sp1_zorch.zerocheck.jagged import TotalCapClass, pack_flat_arrival
 from sp1_zorch.zerocheck.prover import (
     ZerocheckProof,
@@ -245,7 +245,7 @@ def main(argv) -> None:
         # Traced total-cap class route (the shard-invariance form the prove
         # chain runs): flat jagged arrival packed eagerly with host heights,
         # per-chip statics threaded through — mirrors
-        # ShardZerocheckRound.__call__'s flat prologue.
+        # ZerocheckStage.__call__'s flat prologue.
         with open(_ZC_CLASS_JSON.value) as f:
             c = {k: int(v) for k, v in json.load(f).items()}
         cls = TotalCapClass(area_cap=c["area_cap"], window=c["window"])
@@ -265,7 +265,7 @@ def main(argv) -> None:
         # chain compiles (and the one the persistent compile cache shares
         # across shards). Eagerly the stage materializes every round's
         # intermediates and tips big classes over the card.
-        transcript, fields = ShardZerocheckRound._jit_body_totalcap_traced(
+        transcript, fields = ZerocheckStage._jit_body_totalcap_traced(
             flat,
             shard.main_trace_data.public_values,
             eval_point,

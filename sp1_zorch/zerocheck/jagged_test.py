@@ -691,8 +691,8 @@ class TotalCapTracedTest(absltest.TestCase):
                 jnp.stack(claims),
             )
 
-            # Static per-shard total-cap path (width_caps=None, class derived
-            # from the shard's own heights): the byte oracle.
+            # Static per-shard total-cap path (class derived from the shard's
+            # own heights): the byte oracle.
             _, _, want = prove_jagged_zerocheck(
                 self._summand(alphas, lambdas, beta),
                 exact,

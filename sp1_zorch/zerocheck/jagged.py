@@ -120,20 +120,6 @@ def _zero_extend(arr: Array, width: int) -> Array:
     return jnp.concatenate([arr, jnp.zeros((*arr.shape[:-1], pad), arr.dtype)], axis=-1)
 
 
-def _row_zero_extend(arr: Array, height: int) -> Array:
-    """Zero-extend axis 0 (the row axis of the row-major carry) to `height` --
-    the axis-0 dual of `_zero_extend`. The row-major dense carry
-    (fractalyze/sp1-zorch#242) folds the live prefix by halving the ROW axis,
-    so its re-extension pads rows, not columns; the dead tail stays exact field
-    zeros so full-height reductions match live-prefix-truncated ones."""
-    pad = height - arr.shape[0]
-    if pad < 0:
-        raise ValueError(f"height {height} < axis-0 size {arr.shape[0]}")
-    if pad == 0:
-        return arr
-    return jnp.concatenate([arr, jnp.zeros((pad, *arr.shape[1:]), arr.dtype)], axis=0)
-
-
 def _challenge_limbs(dtype) -> int:
     """Transcript squeezes per challenge of ``dtype``: an extension field
     takes ``degree`` base squeezes reinterpreted (SP1's ``sample_ext_element``
@@ -1022,7 +1008,6 @@ def prove_jagged_zerocheck(
     transcript: Transcript,
     *,
     claims: Sequence[Array],
-    width_caps: Sequence[int] | None = None,
     total_cap_class: TotalCapClass | None = None,
     flat_arrival: Array | None = None,
     num_cols: Sequence[int] | None = None,
@@ -1039,8 +1024,9 @@ def prove_jagged_zerocheck(
     ``num_reals[c]`` entry is either a host int — the trace holds exactly its
     real rows and the driver owns all padding (the zero-tail soundness
     contract is internal) — or a traced int32 scalar, in which case the trace
-    must arrive pre-padded to ``width_caps[c]`` and the CALLER owns the zero
-    tail past the live rows. Which entries are traced is a compile-time
+    must arrive pre-padded to ``2*total_cap_class.window`` rows and the CALLER
+    owns the zero tail past the live rows. Which entries are traced is a
+    compile-time
     property: a host ``0`` statically empties the chip, while a traced height
     keeps the chip's circuit live and only bounds its rows at run time.
     ``zeta`` is the eq point and each of its coordinates gets exactly one
@@ -1050,27 +1036,17 @@ def prove_jagged_zerocheck(
     ``p(1) = claim - p(0)`` identity; the matching column term rides
     ``summand.beta``.
 
-    ``width_caps`` (optional) pins chip ``c``'s fixed buffer width to
-    ``width_caps[c]`` instead of the default exact pin
-    ``((num_reals[c] + 3) // 4) * 4``. Passing the same caps across shards
-    keeps every buffer shape shard-invariant, so proves whose shapes differ
-    only in live row counts share one compile (the cap-class contract of
-    sp1-zorch#230). Byte-transparent: a cap only adds dead zero width past
-    the exact pin — live rows, the vgeq bound, and the eq prefix terms are
-    untouched. Each cap must be a multiple of 4, at least the chip's exact
-    pin, and at most ``2**len(zeta)``.
-
-    ``total_cap_class`` (optional, mutually exclusive with ``width_caps``) routes
-    the single shared-buffer total-Σ-heights-cap round (`_prove_total_cap`) with
-    TRACED heights: the ``TotalCapClass``'s ``area_cap`` / ``window`` size the
-    one flat jagged buffer, the shard's real heights ride as the
-    traced ``num_reals`` vector, and each chip's trace must arrive column-major
-    pre-padded to ``2*window`` rows (zeros past its live height). The compile
-    keys on the class + chip set alone, so two shards of one class share one
-    executable. Either ``width_caps`` or ``total_cap_class`` is required whenever
-    any ``num_reals`` entry is traced — a buffer width cannot derive from a
-    runtime height; with neither, all heights must be host ints and the total-cap
-    round derives its class per shard (per-shard compile).
+    ``total_cap_class`` (optional) routes the single shared-buffer
+    total-Σ-heights-cap round (`_prove_total_cap`) with TRACED heights: the
+    ``TotalCapClass``'s ``area_cap`` / ``window`` size the one flat jagged
+    buffer, the shard's real heights ride as the traced ``num_reals`` vector,
+    and each chip's trace must arrive column-major pre-padded to ``2*window``
+    rows (zeros past its live height). The compile keys on the class + chip
+    set alone, so two shards of one class share one executable.
+    ``total_cap_class`` is required whenever any ``num_reals`` entry is
+    traced — a buffer bound cannot derive from a runtime height; without it,
+    all heights must be host ints and the total-cap round derives its class
+    per shard (per-shard compile).
 
     Returns the final per-chip ``(num_cols_c, h)`` folded traces
     (``h in {0, 2}``; position 0 holds the column's evaluation at the
@@ -1079,7 +1055,6 @@ def prove_jagged_zerocheck(
     eval_fns = summand.eval_fns
     alphas = summand.alphas
     lambdas = summand.lambdas
-    beta = summand.beta
     public_values = summand.public_values
     if (flat_arrival is None) != (num_cols is None):
         raise ValueError("flat_arrival and num_cols must be given together")
@@ -1109,16 +1084,10 @@ def prove_jagged_zerocheck(
     # scalar) switches the chip to runtime height. The split is a
     # compile-time property, so the zero-chip skips below stay static.
     static_nrs = [None if isinstance(nr, Array) else int(nr) for nr in num_reals]
-    if width_caps is not None and total_cap_class is not None:
-        raise ValueError("width_caps and total_cap_class are mutually exclusive")
-    if (
-        width_caps is None
-        and total_cap_class is None
-        and any(nr is None for nr in static_nrs)
-    ):
+    if total_cap_class is None and any(nr is None for nr in static_nrs):
         raise ValueError(
-            "a traced num_reals entry requires width_caps or total_cap_class: "
-            "a buffer width cannot derive from a runtime height"
+            "a traced num_reals entry requires total_cap_class: a buffer "
+            "bound cannot derive from a runtime height"
         )
     for i, (trace, nr) in enumerate(zip(traces, static_nrs)):
         if trace.ndim != 2:
@@ -1164,257 +1133,8 @@ def prove_jagged_zerocheck(
         for i in range(num_chips)
     ]
 
-    # The shard-invariant round carry (fractalyze/sp1-zorch#242): ONE dense
-    # `[ROW_CAP, MAX_COLS]` buffer bounded by the TOTAL Σ live rows, not a
-    # per-chip cap tuple. The per-chip cap path below stays the reference (and
-    # the pre-total-cap shard-invariance mechanism); the total-cap carry keys
-    # the compile on `ROW_CAP` + `W` + `MAX_COLS` alone.
-    if width_caps is None:
-        return _prove_total_cap(
-            summand, traces, static_nrs, list(num_reals), total_cap_class,
-            zeta, transcript, list(claims), adjs, ef, ef_limbs, num_vars,
-            flat_arrival=flat_arrival, num_cols=num_cols,
-        )
-
-    # Fixed-height row-major buffers: each chip's buffer is `[width, num_cols]`
-    # (fractalyze/sp1-zorch#242), the orientation `zorch.constraint_eval` reads
-    # directly with no transpose. `width_caps` pins the height to a static cap
-    # (the sp1-zorch#230 cap class) instead of the per-shard exact pin
-    # `pad4(nr)`, so shards differing only in row counts present identical
-    # shapes and share one compile; the height stays pinned across rounds (folds
-    # re-extend into the same width). `traces[i]` is column-major `(num_cols,
-    # nr)`, so transpose to rows before the axis-0 zero-extend. The buffer rides
-    # the scan carry, so it is promoted to the round's field up front (the
-    # embedding is exact, so the polys are unchanged).
-    if width_caps is not None:
-        if len(width_caps) != num_chips:
-            raise ValueError(
-                f"width_caps must give one cap per chip: got {len(width_caps)} "
-                f"for {num_chips} chips"
-            )
-        for i, cap in enumerate(width_caps):
-            cap = int(cap)
-            if cap % 4:
-                raise ValueError(f"width_caps[{i}] must be a multiple of 4, got {cap}")
-            nr = static_nrs[i]
-            if nr is None:
-                if traces[i].shape[1] != cap:
-                    raise ValueError(
-                        f"traces[{i}] has a runtime height, so it must arrive "
-                        f"pre-padded to its cap: height {traces[i].shape[1]} != {cap}"
-                    )
-            elif cap < ((nr + 3) // 4) * 4:
-                raise ValueError(
-                    f"width_caps[{i}] = {cap} is below its exact pin "
-                    f"{((nr + 3) // 4) * 4} (num_reals[{i}] = {nr})"
-                )
-            if cap > width:
-                raise ValueError(
-                    f"width_caps[{i}] = {cap} exceeds the virtual row space {width}"
-                )
-        widths = [int(cap) for cap in width_caps]
-    else:
-        # All heights are static here (traced entries required caps above).
-        widths = [((int(nr) + 3) // 4) * 4 for nr in static_nrs]
-    # ONE dense buffer (sp1-zorch#230), sized to Σ per-chip cap (`sum of all chip
-    # max`), NOT 33 separate per-chip buffers. Per-chip live heights ride as a
-    # traced int32 vector; each chip's rows live at a RUNTIME element offset
-    # (cumsum of live heights × cols) inside the single flat buffer. The compile
-    # keys on N + the chip set alone, so shards that differ only in row counts
-    # share one executable. N is constant across rounds (the live prefix shrinks
-    # each fold; the buffer does not), keeping the scan-carry shape fixed.
-    cols_arr = [int(t.shape[0]) for t in traces]  # static num_cols per chip
-    elem_caps = [widths[i] * cols_arr[i] for i in range(num_chips)]
-    N = int(sum(elem_caps))
-    cols_j = jnp.asarray(cols_arr, jnp.int32)
-
-    cap_elems_j = jnp.asarray(elem_caps, jnp.int32)
-
-    def _elem_offsets(h: Array) -> Array:
-        # NON-OVERLAPPING cap-based element offset of each chip = cumsum of prior
-        # chips' FULL cap element counts, so a small chip's block can never nest
-        # inside a large-cap chip's block — the overlap that let a chained
-        # `dynamic_update_slice` drop StoreHalf inside StoreDouble on GPU. Since
-        # live <= cap, `max(live_elems, cap_elems) == cap_elems`, but taking the max
-        # off the TRACED heights keeps the offsets a runtime value: a static
-        # Python-int cumsum would specialize the 33 per-chip slices into ~250 CUDA
-        # command buffers (OOM), whereas the traced form keeps the graph compact.
-        # The offsets are h-independent (always the cap layout), so each chip folds
-        # in place within its own fixed segment — no cross-chip re-compaction.
-        elems = jnp.maximum(h.astype(jnp.int32) * cols_j, cap_elems_j)
-        return jnp.concatenate(
-            [jnp.zeros((1,), jnp.int32), jnp.cumsum(elems).astype(jnp.int32)]
-        )[:num_chips]
-
-    def _pack(blocks: list[Array], h: Array) -> Array:
-        # Write each chip's block (`[rows_i, cols_i]`, live rows valid + dead
-        # tail) into its OWN disjoint cap segment of the flat `[N]` buffer at the
-        # cap-based offset. Each chip owns `elem_caps[i]` elements, so the writes
-        # never overlap: a `dynamic_update_slice` can't spill into a neighbour and
-        # the chained writes don't alias (the fix for the StoreHalf-nested-in-
-        # StoreDouble drop). Static-size write at a runtime offset, in bounds since
-        # off_i + block_i ≤ off_i + elem_caps[i] = off_{i+1} ≤ N.
-        off = _elem_offsets(h)
-        buf = jnp.zeros((N,), ef)
-        for i in range(num_chips):
-            buf = lax.dynamic_update_slice(buf, blocks[i].reshape(-1), (off[i],))
-        return buf
-
-    row_ix = [jnp.arange(widths[i])[:, None] for i in range(num_chips)]
-
-    def _window(dense: Array, off_i: Array, i: int, h_i: Array) -> Array:
-        # Chip i's `[cap_i, cols_i]` window: a static-size read at its cap-based
-        # element offset (the chip's own disjoint segment). Rows past the live
-        # height `h_i` read the chip's own dead tail (zero from the initial pack,
-        # stale folded data after a re-pack), so mask them to the field zero —
-        # restoring the zero-extension the fold's stride-2 pairing assumes for an
-        # odd live height (its unpaired last row folds against a zero partner).
-        flat = lax.dynamic_slice(dense, (off_i,), (elem_caps[i],))
-        w = flat.reshape(widths[i], cols_arr[i])
-        return jnp.where(row_ix[i] < h_i, w, jnp.zeros((), ef))
-
-    heights = jnp.stack([jnp.asarray(nr, jnp.int32) for nr in num_reals])
-    dense = _pack(
-        [_row_zero_extend(traces[i].T, widths[i]).astype(ef) for i in range(num_chips)],
-        heights,
+    return _prove_total_cap(
+        summand, traces, static_nrs, list(num_reals), total_cap_class,
+        zeta, transcript, list(claims), adjs, ef, ef_limbs, num_vars,
+        flat_arrival=flat_arrival, num_cols=num_cols,
     )
-    # int32 threshold from the start: as a scan carry it must keep the same
-    # leaf type fix_last_variable produces (it folds to a traced int32).
-    vgeqs = [VirtualGeq(jnp.asarray(nr, jnp.int32), one, zero) for nr in num_reals]
-    chip_claims = jnp.stack(list(claims))
-    # The summand's beta expanded into per-chip column weights, each sliced to
-    # its chip's width.
-    max_cols = max(t.shape[0] for t in traces)
-    gkr_all = gkr_powers(beta, max_cols) if max_cols else jnp.zeros(0, ef)
-    chip_gkr = [gkr_all[: t.shape[0]] for t in traces]
-    eq_adj = one
-    # Only a chip that starts empty is ever empty (see `chip_raw_evals`); the
-    # rest carry their live height as a traced int32 round carry. Zero-height
-    # chips are production, not defensive: an SP1 shard carries its shape's
-    # FULL chip set, and chips the program never exercised ship zero rows
-    # (six of the fibonacci fixture's 35 main chips). A traced height is
-    # statically live — its chip may be empty at run time, where the live
-    # bound and the vgeq correction already zero its terms.
-    is_zero_chip = [nr == 0 for nr in static_nrs]
-
-    # Round-varying scan inputs, all O(1) to build (no per-round constraint
-    # work): `last` is zeta back-to-front (the round binds zeta[n-1-rnd]); the
-    # Gruen matrix maps each round's computed evaluations at the summand's
-    # points plus the two free ones (t=1 from the claim identity, the implicit
-    # zero at the bound eq factor's root) to coefficients, prebuilt per round
-    # outside the scan as `zorch.sumcheck.gruen` prescribes for fixed-shape
-    # drivers; `is_round0` flags the constraint skip at t=0.
-    extra_ts = summand.extra_ts(ef)
-    if len(extra_ts) != summand.degree - 2:
-        raise ValueError(
-            f"a degree-{summand.degree} Gruen round materializes s(0) plus "
-            f"{summand.degree - 2} extra points, got {len(extra_ts)}"
-        )
-    last_xs = zeta[::-1]
-    interp_xs = frx.vmap(lambda z: interp_matrix(extra_ts, z))(last_xs)
-    # A traced flag rather than a peeled first round: unrolling round 0 out
-    # of the scan would put a second copy of every chip circuit in the graph
-    # — the compile cliff the O(1) scan exists to avoid.
-    is_round0_xs = jnp.arange(num_vars) == 0
-
-    # The eq table over the not-yet-bound variables, folded in-carry: summing
-    # adjacent pairs drops the bound variable (expand_eq builds it LSB-last, so
-    # eq_m[2j]+eq_m[2j+1] = eq_{m-1}[j] exactly), so it stays this round's table
-    # without a per-round re-expansion. Width is the widest pair count; chips
-    # slice their own prefix, the dead tail past a chip's live height is zero.
-    eq_buf = expand_eq_to_hypercube(zeta[: num_vars - 1], one)
-    eq_width = eq_buf.shape[0]
-
-    def fold_eq(buf: Array) -> Array:
-        if eq_width < 2:
-            return buf  # single round: no next-round table is needed
-        return _zero_extend(contract_hypercube_step(buf), eq_width)
-
-    def round_step(carry, xs):
-        dense, vgeqs, chip_claims, eq_adj, heights, eq_buf, transcript = carry
-        last, interp, is_round0 = xs
-        off = _elem_offsets(heights)
-
-        # Only constraint_eval (inside `_summand_values`) is shape-divergent,
-        # so the chip loop runs the summand slots unrolled: live chips reduce
-        # through the `zorch.sumcheck.round` marker (variant=zerocheck) —
-        # `zerocheck_round_poly`, byte-transparent on an unclaimed marker
-        # (fractalyze/zorch#394 / sp1-zorch#242) — and zero chips (no rows to
-        # reduce) bypass it for `_zero_chip_poly`'s trivial claim-identity poly.
-        polys_list = []
-        p0s = []
-        diffs = []
-        for i in range(num_chips):
-            # Chip i's `[cap_i, cols_i]` window out of the single dense buffer at
-            # its runtime element offset. The pair fold halves the ROW axis
-            # (axis 0); each cap is a multiple of 4, so the stride-2 row pairing
-            # never straddles a fold boundary. Rows past the chip's live height
-            # spill into adjacent packed data — masked by the summand's live
-            # bound and discarded by the fold's dead tail (byte-identical to the
-            # per-chip buffer on the live prefix).
-            window = _window(dense, off[i], i, heights[i])
-            p0, p1 = window[0::2], window[1::2]
-            diff = p1 - p0
-            p0s.append(p0)
-            diffs.append(diff)
-            eq = eq_buf[: widths[i] // 2]
-            if is_zero_chip[i]:
-                poly_i = _zero_chip_poly(interp, chip_claims[i], ef)
-            else:
-                vals = _summand_values(
-                    summand._term_fns[i], summand.alphas[i], p0, diff,
-                    chip_gkr[i], heights[i], is_round0,
-                )
-                poly_i = zerocheck_round_poly(
-                    vals, eq, interp, chip_claims[i], last, eq_adj, adjs[i],
-                    heights[i], vgeqs[i],
-                )
-            polys_list.append(poly_i)
-
-        # De-batched (per chip, not a batched Gruen matmul over the stacked
-        # chip evals): required by the per-chip marker boundary above — same
-        # `interp`, same field arithmetic, just not batched, so byte-identical
-        # (field ops are exact, and the reassociation gives the same round
-        # polys). `polys` keeps the same (num_chips, DEGREE+1) shape the
-        # former batched-then-transposed form produced, so the RLC + the
-        # post-round `fold_round_scalars` below are unchanged.
-        polys = jnp.stack(polys_list)  # (num_chips, DEGREE+1)
-        rlc = summand.combine_chips(polys)
-
-        # SP1 binds each variable with one extension element (its
-        # ``sample_ext_element``) — the shared ``sample_challenge`` rule.
-        transcript = transcript.observe(rlc)
-        transcript, r = sample_challenge(transcript, ef, ef_limbs)
-
-        # Fold each chip's live rows (`p0 + r·diff`, `[cap_i/2, cols_i]`) and
-        # re-pack into a fresh dense buffer at the halved live offsets. N is
-        # unchanged; the live prefix shrinks.
-        heights = (heights + 1) // 2
-        dense = _pack([p0s[i] + r * diffs[i] for i in range(num_chips)], heights)
-        vgeqs = [vg.fix_last_variable(r) for vg in vgeqs]
-        chip_claims, eq_adj = fold_round_scalars(polys, r, eq_adj, last)
-
-        carry = (
-            dense,
-            vgeqs,
-            chip_claims,
-            eq_adj,
-            heights,
-            fold_eq(eq_buf),
-            transcript,
-        )
-        return carry, RoundMsg(round_poly=rlc, challenge=r)
-
-    init = (dense, vgeqs, chip_claims, eq_adj, heights, eq_buf, transcript)
-    (dense, _vg, _cc, _ea, heights, _eqb, transcript), msgs = lax.scan(
-        round_step, init, (last_xs, interp_xs, is_round0_xs)
-    )
-
-    # The first two rows of each chip's window are the whole fold result; the
-    # rest of the fixed height is dead. Slice each chip's window from the final
-    # dense buffer at its final live offset and transpose back to the
-    # column-major `(num_cols, 2)` folded-trace contract the caller expects.
-    off = _elem_offsets(heights)
-    return [
-        _window(dense, off[i], i, heights[i])[:2, :].T for i in range(num_chips)
-    ], transcript, msgs

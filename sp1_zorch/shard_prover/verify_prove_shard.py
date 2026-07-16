@@ -154,16 +154,6 @@ _ZC_CLASS_JSON = flags.DEFINE_string(
     "field elements — a class bounding a much larger shard prices every "
     "shard at that area.",
 )
-_ZC_CAPS_JSON = flags.DEFINE_string(
-    "zc_caps_json",
-    None,
-    "JSON {chip: cap} switching zerocheck to the per-chip width-caps route "
-    "(sp1-zorch#230): each chip gets its own [cap, cols] buffer, so no chip "
-    "pays another chip's width — the route that fits wide-chip sets on a "
-    "32 GiB card. Same caps file across shards = one zerocheck compile per "
-    "chip set. Keep the cap total under ~11.3M rows (sp1-zorch#265 OOB). "
-    "Mutually exclusive with --zc_class_json.",
-)
 _JAXPROF_DIR = flags.DEFINE_string(
     "jaxprof_dir",
     None,
@@ -218,11 +208,6 @@ class _TimedRound(Round):
 
 def main(argv) -> None:
     del argv
-    if _ZC_CAPS_JSON.value and _ZC_CLASS_JSON.value:
-        raise app.UsageError(
-            "--zc_caps_json (per-chip width caps) and --zc_class_json "
-            "(total-cap class) are mutually exclusive zerocheck routes"
-        )
     shard_dirs = [Path(p) for p in _SHARD_DIR.value.split(",")]
     # One chips mapping per chip set, reused across shards: the zerocheck jit
     # keys statically on the chips tuple, so two fixture loads must present the
@@ -307,18 +292,10 @@ def _verify_shard(
         flush=True,
     )
     tc_class = own_class
-    zc_caps = None
     if _ZC_CLASS_JSON.value:
         with open(_ZC_CLASS_JSON.value) as f:
             c = {k: int(v) for k, v in json.load(f).items()}
         tc_class = TotalCapClass(area_cap=c["area_cap"], window=c["window"])
-    elif _ZC_CAPS_JSON.value:
-        # Per-chip width-caps route: no dense rectangle, so wide-chip sets fit
-        # a 32 GiB card; the caps file is the cross-shard invariance key.
-        with open(_ZC_CAPS_JSON.value) as f:
-            loaded = {k: int(v) for k, v in json.load(f).items()}
-        zc_caps = {name: loaded[name] for name in order}
-        tc_class = None
 
     # The GKR witness is consumed only by LogUp-GKR; a trace-commit-only run
     # (--max_stage=1) slices that stage off, so don't require the gkr fixture.
@@ -347,7 +324,6 @@ def _verify_shard(
         open_pow_bits=_OPEN_POW_BITS.value,
         witness=witness,
         jit=True,
-        zerocheck_width_caps=zc_caps,
         zerocheck_total_cap_class=tc_class,
     )
     # Slice to the first N stages (--max_stage) so the downstream stages' compile
