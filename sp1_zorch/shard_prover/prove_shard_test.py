@@ -29,10 +29,19 @@ from zorch.testkit.transcript import cheap_transcript
 from zorch.pcs.jagged.region import JaggedRegion
 from zorch.commit.smcs import SingleMatrixCommitmentScheme
 from zorch.pcs.jagged.commit import commit_region
-from sp1_zorch.logup_gkr.circuit import GkrChip
-from sp1_zorch.logup_gkr.prover import ChipEvaluation, prove_logup_gkr
+from sp1_zorch.logup_gkr.circuit import (
+    GkrCapClass,
+    GkrChip,
+    _chip_first_layer_capped,
+)
+from sp1_zorch.logup_gkr.prover import (
+    ChipEvaluation,
+    open_traces_capped,
+    prove_logup_gkr,
+)
 from sp1_zorch.poseidon2.koalabear16 import koalabear16_params
 from sp1_zorch.shard_prover.prove_shard import (
+    LogupGkrStage,
     PreambleStage,
     ShardBridge,
     ZerocheckStage,
@@ -542,6 +551,61 @@ class JitPermutationTest(absltest.TestCase):
     def test_distinct_from_a_non_jitpermutation(self) -> None:
         p = Poseidon2(koalabear16_params())
         self.assertNotEqual(JitPermutation(p), p)
+
+
+class LogupGkrStageCapClassTest(absltest.TestCase):
+    """LogupGkrStage's class plumbing (sp1-zorch#272): one Stage with a
+    pinned ``GkrCapClass`` proves two shards of different heights
+    byte-identically to the exact ``prove_logup_gkr``, and the class-keyed
+    inner zones compile once for the class, not once per shard."""
+
+    def test_cap_class_stage_matches_exact_and_shares_compiles(self) -> None:
+        gkr_chips = (GkrChip("alpha", (_interaction(0, 1),)),)
+        stage = LogupGkrStage(
+            gkr_chips,
+            num_betas=_NUM_BETAS,
+            num_row_variables=_NUM_ROW_VARIABLES,
+            gkr_cap_class=GkrCapClass((10,)),
+        )
+        build_before = _chip_first_layer_capped._cache_size()
+        open_before = open_traces_capped._cache_size()
+        for seed, rows in ((60, 6), (70, 10)):
+            main_region = JaggedRegion.from_chips(
+                [_rand_bf(seed, (rows, 2))],
+                log_stacking_height=4,
+                max_log_row_count=_MAX_LOG_ROW_COUNT,
+                chip_names=("alpha",),
+            )
+            public_values = _rand_bf(seed + 1, (8,))
+            bridge = ShardBridge(main_region, None, public_values)
+
+            _, want = prove_logup_gkr(
+                gkr_chips,
+                main_region,
+                None,
+                cheap_transcript(BF),
+                num_betas=_NUM_BETAS,
+                num_row_variables=_NUM_ROW_VARIABLES,
+            )
+            got_bridge, _, got = stage(bridge, cheap_transcript(BF))
+
+            label = f"rows {rows}"
+            _assert_proof_byte_equal(got, want, label)
+            _assert_bytes_equal(
+                got_bridge.gkr_eval_point, want.eval_point, label
+            )
+            _assert_bytes_equal(
+                got_bridge.gkr_chip_openings["alpha"].main,
+                want.chip_openings["alpha"].main,
+                label,
+            )
+        # One first-layer compile per chip and one open compile across both
+        # shards: the class shapes + traced heights keep shard 2 a cache hit.
+        self.assertEqual(
+            _chip_first_layer_capped._cache_size() - build_before,
+            len(gkr_chips),
+        )
+        self.assertEqual(open_traces_capped._cache_size() - open_before, 1)
 
 
 class ZerocheckStageTotalCapTest(absltest.TestCase):
