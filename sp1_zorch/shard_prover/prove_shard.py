@@ -44,7 +44,13 @@ from sp1_zorch.logup_gkr.prover import (
     prove_logup_gkr,
 )
 from sp1_zorch.shard_prover.types import MachineVerifyingKey
-from sp1_zorch.zerocheck.prover import ZerocheckProof, prove_shard_zerocheck
+from sp1_zorch.zerocheck.jagged import TotalCapClass, pack_flat_arrival
+from sp1_zorch.zerocheck.prover import (
+    ZerocheckProof,
+    chip_traces,
+    prove_shard_zerocheck,
+    repack_region_to_caps,
+)
 from zorch.coding.reed_solomon import BitReversedReedSolomon
 from zorch.round import ProveChain, Round
 from zorch.transcript import GrindingTranscript, Transcript
@@ -267,40 +273,80 @@ class ZerocheckStage(Round):
     threads them onto the bridge for the jagged-eval stage's claims and the
     wire's ShardOpenedValues.
 
-    With ``jit=True`` the stage body runs under one cached outer ``@jit``.
-    Eagerly, every prove rebuilds the sumcheck engine's ``lax.scan`` bodies,
-    and JAX's compile cache (keyed on function identity) misses -- every warm
-    prove re-pays the stage compile. Byte-identical either way. ``jit=False``
-    stays as a debugging aid; pv-reading constraint circuits are legal under
-    ``jit=True`` because the statement rides ``constraint_eval``'s declared
-    ``aux_operands`` operand rather than a closure the composite would reject."""
+    The stage body runs under one cached outer ``@jit`` on the cap-class
+    contract. ``width_caps`` (name -> buffer width) sizes the dense round
+    buffer, the main region is cap-repacked in an eager prologue, and the
+    shard's real heights ride as one traced int32 vector, so the body's compile
+    keys on the caps and the chip set alone -- shards that differ only in row
+    counts share one executable (exact heights bust the cache: 22 distinct
+    shape signatures across the 25-shard rsp block). pv-reading constraint
+    circuits are legal because the statement rides ``constraint_eval``'s
+    declared ``aux_operands`` operand, not a closure the composite would reject.
+    Byte-identical to an eager exact-heights prove, and CPU-executable (the
+    former eager-only fallback was a stale fractalyze/frx#168 workaround)."""
 
     def __init__(
         self,
         chips: Mapping[str, Chip],
         *,
         max_log_row_count: int,
-        jit: bool = True,
+        width_caps: Mapping[str, int] | None = None,
+        total_cap_class: TotalCapClass | None = None,
     ) -> None:
+        if width_caps is not None and total_cap_class is not None:
+            raise ValueError("width_caps and total_cap_class are mutually exclusive")
         self._chips = chips
         self._max_log_row_count = max_log_row_count
-        # Class-level jitted body for the same reason as LogupGkrStage: the
-        # wrapper (and its compile cache) is shared by every instance, so a
-        # rebuilt chain reuses the executable. `chips` keys the cache by the
-        # loaded Chip objects' identities (stable for a process-held machine).
-        self._body = (
-            partial(
-                self._jit_body,
-                chips=tuple(chips.items()),
-                max_log_row_count=max_log_row_count,
-            )
-            if jit
-            else None
+        self._width_caps = width_caps
+        self._total_cap_class = total_cap_class
+
+    @staticmethod
+    @partial(
+        frx.jit, static_argnames=("chips", "max_log_row_count", "width_caps")
+    )
+    def _jit_body_capped(
+        capped_main,
+        prep_region,
+        public_values,
+        eval_point,
+        chip_openings,
+        num_reals,
+        transcript,
+        *,
+        chips,
+        max_log_row_count,
+        width_caps,
+    ):
+        # The cap-class body: the main region arrives cap-repacked (class-stable
+        # shapes) and the shard's real heights ride in `num_reals` (one traced
+        # int32 vector), so the compile keys on (chips, caps) alone and shards
+        # of a cap class share the executable.
+        transcript, proof = prove_shard_zerocheck(
+            dict(chips),
+            capped_main,
+            prep_region,
+            public_values,
+            eval_point,
+            chip_openings,
+            transcript,
+            max_log_row_count=max_log_row_count,
+            num_reals=[num_reals[i] for i in range(len(width_caps))],
+            width_caps=width_caps,
+        )
+        return transcript, (
+            proof.batching_challenge,
+            proof.gkr_opening_batch_challenge,
+            proof.lambda_,
+            proof.zeta,
+            proof.claimed_sum,
+            proof.finals,
+            proof.opened_values,
+            proof.msgs,
         )
 
     @staticmethod
     @partial(frx.jit, static_argnames=("chips", "max_log_row_count"))
-    def _jit_body(
+    def _jit_body_totalcap(
         main_region,
         prep_region,
         public_values,
@@ -311,8 +357,11 @@ class ZerocheckStage(Round):
         chips,
         max_log_row_count,
     ):
-        # ZerocheckProof is not a registered pytree; return its fields (all
-        # pytree-crossable) and let `__call__` rebuild it.
+        # The total-Σheights-cap body (sp1-zorch#242): no width_caps, no cap
+        # repack — `prove_shard_zerocheck` reads the region's STATIC chip heights
+        # and `prove_jagged_zerocheck` stacks one dense `[ROW_CAP, MAX_COLS]`
+        # buffer. Heights are static, so this compiles per shard (the shard-
+        # invariant total-cap keying is the traced-offset follow-up).
         transcript, proof = prove_shard_zerocheck(
             dict(chips),
             main_region,
@@ -334,6 +383,65 @@ class ZerocheckStage(Round):
             proof.msgs,
         )
 
+    @staticmethod
+    @partial(
+        frx.jit,
+        static_argnames=(
+            "chips", "max_log_row_count", "total_cap_class", "chip_names",
+            "num_cols", "main_widths", "prep_widths",
+        ),
+    )
+    def _jit_body_totalcap_traced(
+        flat_arrival,
+        public_values,
+        eval_point,
+        chip_openings,
+        num_reals,
+        transcript,
+        *,
+        chips,
+        max_log_row_count,
+        total_cap_class,
+        chip_names,
+        num_cols,
+        main_widths,
+        prep_widths,
+    ):
+        # The shard-invariant total-cap body (sp1-zorch#242): the arrival is
+        # the ONE class-shaped flat jagged buffer (`pack_flat_arrival`) and
+        # the shard's real heights ride in `num_reals` (one traced int32
+        # vector); every other per-chip datum is a class-level static. The
+        # compile keys on (chips, total_cap_class, the static tuples) alone —
+        # shards of one class share the executable, and no per-shard region
+        # shape enters the cache key.
+        transcript, proof = prove_shard_zerocheck(
+            dict(chips),
+            None,
+            None,
+            public_values,
+            eval_point,
+            chip_openings,
+            transcript,
+            max_log_row_count=max_log_row_count,
+            num_reals=[num_reals[i] for i in range(len(chip_names))],
+            total_cap_class=total_cap_class,
+            flat_arrival=flat_arrival,
+            num_cols=num_cols,
+            main_widths=main_widths,
+            prep_widths=prep_widths,
+            chip_names=chip_names,
+        )
+        return transcript, (
+            proof.batching_challenge,
+            proof.gkr_opening_batch_challenge,
+            proof.lambda_,
+            proof.zeta,
+            proof.claimed_sum,
+            proof.finals,
+            proof.opened_values,
+            proof.msgs,
+        )
+
     def __call__(
         self, bridge: ShardBridge, transcript: Transcript
     ) -> tuple[ShardBridge, Transcript, ZerocheckProof]:
@@ -342,46 +450,105 @@ class ZerocheckStage(Round):
                 "zerocheck needs the LogUp-GKR stage's outputs on the bridge; "
                 "sequence a LogupGkrStage before this Stage"
             )
-        if self._body is not None:
-            transcript, fields = self._body(
+        if self._width_caps is None and self._total_cap_class is None:
+            # Total-Σheights-cap route: static heights, no cap repack.
+            transcript, fields = self._jit_body_totalcap(
                 bridge.main_region,
                 bridge.prep_region,
                 bridge.public_values,
                 bridge.gkr_eval_point,
                 bridge.gkr_chip_openings,
                 transcript,
-            )
-            (
-                batching_challenge,
-                gkr_batch,
-                lambda_,
-                zeta,
-                claimed_sum,
-                finals,
-                opened_values,
-                msgs,
-            ) = fields
-            proof = ZerocheckProof(
-                batching_challenge=batching_challenge,
-                gkr_opening_batch_challenge=gkr_batch,
-                lambda_=lambda_,
-                zeta=zeta,
-                claimed_sum=claimed_sum,
-                finals=finals,
-                opened_values=opened_values,
-                msgs=msgs,
-            )
-        else:
-            transcript, proof = prove_shard_zerocheck(
-                self._chips,
-                bridge.main_region,
-                bridge.prep_region,
-                bridge.public_values,
-                bridge.gkr_eval_point,
-                bridge.gkr_chip_openings,
-                transcript,
+                chips=tuple(self._chips.items()),
                 max_log_row_count=self._max_log_row_count,
             )
+        elif self._total_cap_class is not None:
+            # Shard-invariant flat prologue (sp1-zorch#242): pack the
+            # class-shaped flat jagged arrival EAGERLY from the exact-height
+            # traces — heights are host ints here, and the pack mirrors the
+            # cols*evenpad(h) cumsum the traced body derives, so the layouts
+            # agree. No chip pads to the class window (a wide class made that
+            # uniform 2W padding overflow int32 element indexing and dwarf the
+            # live area); the arrival is live rows + zeros, in the base field.
+            names = bridge.main_region.chip_names
+            heights_host = [int(h) for h in bridge.main_region.chip_heights]
+            traces = chip_traces(
+                names, heights_host, bridge.main_region, bridge.prep_region
+            )
+            flat = pack_flat_arrival(
+                traces, heights_host, self._total_cap_class
+            )
+            prep_w = (
+                {
+                    n: int(w)
+                    for n, w in zip(
+                        bridge.prep_region.chip_names,
+                        bridge.prep_region.chip_widths,
+                    )
+                }
+                if bridge.prep_region is not None
+                else {}
+            )
+            transcript, fields = self._jit_body_totalcap_traced(
+                flat,
+                bridge.public_values,
+                bridge.gkr_eval_point,
+                bridge.gkr_chip_openings,
+                jnp.asarray(heights_host, jnp.int32),
+                transcript,
+                chips=tuple(self._chips.items()),
+                max_log_row_count=self._max_log_row_count,
+                total_cap_class=self._total_cap_class,
+                chip_names=tuple(names),
+                num_cols=tuple(int(t.shape[0]) for t in traces),
+                main_widths=tuple(int(w) for w in bridge.main_region.chip_widths),
+                prep_widths=tuple(prep_w.get(n, 0) for n in names),
+            )
+        else:
+            # Cap-class prologue: repack per-shard shapes to caps eagerly
+            # (everything past here sees cap-class shapes only), then run the
+            # capped body under one cached @jit.
+            names = bridge.main_region.chip_names
+            missing = [n for n in names if n not in self._width_caps]
+            if missing:
+                raise ValueError(f"width_caps is missing chips {missing}")
+            caps = tuple(int(self._width_caps[n]) for n in names)
+            capped = repack_region_to_caps(
+                bridge.main_region, caps, max_log_row_count=self._max_log_row_count
+            )
+            num_reals = jnp.asarray(bridge.main_region.chip_heights, jnp.int32)
+            transcript, fields = self._jit_body_capped(
+                capped,
+                bridge.prep_region,
+                bridge.public_values,
+                bridge.gkr_eval_point,
+                bridge.gkr_chip_openings,
+                num_reals,
+                transcript,
+                chips=tuple(self._chips.items()),
+                max_log_row_count=self._max_log_row_count,
+                width_caps=caps,
+            )
+        (
+            batching_challenge,
+            gkr_batch,
+            lambda_,
+            zeta,
+            claimed_sum,
+            finals,
+            opened_values,
+            msgs,
+        ) = fields
+        proof = ZerocheckProof(
+            batching_challenge=batching_challenge,
+            gkr_opening_batch_challenge=gkr_batch,
+            lambda_=lambda_,
+            zeta=zeta,
+            claimed_sum=claimed_sum,
+            finals=finals,
+            opened_values=opened_values,
+            msgs=msgs,
+        )
         bridge = replace(
             bridge,
             zc_sumcheck_point=proof.msgs.challenge,
@@ -645,6 +812,8 @@ def prove_shard_chain(
     pow_bits: int = 0,
     witness: Array | None = None,
     jit: bool = True,
+    zerocheck_width_caps: Mapping[str, int] | None,
+    zerocheck_total_cap_class: TotalCapClass | None = None,
 ) -> ProveChain:
     """The SP1 shard chain. One definition for the stage wiring so the
     benchmark, the byte-match runnables, and proof assembly cannot drift
@@ -676,7 +845,10 @@ def prove_shard_chain(
                 witness=witness,
             ),
             ZerocheckStage(
-                chips, max_log_row_count=max_log_row_count, jit=jit
+                chips,
+                max_log_row_count=max_log_row_count,
+                width_caps=zerocheck_width_caps,
+                total_cap_class=zerocheck_total_cap_class,
             ),
             JaggedPcsStage(
                 smcs,

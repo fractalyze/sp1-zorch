@@ -36,6 +36,8 @@ from sp1_zorch.logup_gkr.prover import (
 )
 from sp1_zorch.zerocheck.jagged import (
     JaggedZerocheckSummand,
+    TotalCapClass,
+    _zero_extend,
     prove_jagged_zerocheck,
 )
 from sp1_zorch.zerocheck.coeffs import gkr_powers, rlc_coeffs
@@ -136,6 +138,49 @@ def export_order_eval_fn(
         return fn(export_rows, public_values)
 
     return eval_fn
+
+
+def repack_region_to_caps(
+    region: JaggedRegion, width_caps: Sequence[int], *, max_log_row_count: int
+) -> JaggedRegion:
+    """Rebuild ``region`` with each chip zero-padded to its cap height.
+
+    The eager prologue of the cap-class jit path: the padded region's dense
+    length, chip starts, and heights derive from the caps alone, so every
+    shard of a cap class presents identical (compile-keying) shapes to the
+    jitted zerocheck body; the shard's real heights ride separately as traced
+    operands. Rows past a chip's real height are exactly zero — the round
+    driver's zero-tail contract."""
+    if len(width_caps) != len(region.chip_heights):
+        raise ValueError(
+            f"width_caps must give one cap per chip: got {len(width_caps)} "
+            f"for {len(region.chip_heights)} chips"
+        )
+    chips = []
+    for i, (nr, cap) in enumerate(zip(region.chip_heights, width_caps, strict=True)):
+        nr, cap = int(nr), int(cap)
+        if cap < nr:
+            raise ValueError(
+                f"width_caps[{i}] = {cap} drops real rows (chip height {nr})"
+            )
+        mw = int(region.chip_widths[i])
+        start = region.chip_starts[i]
+        block = region.dense[start : start + nr * mw].reshape(mw, nr)
+        chips.append(_zero_extend(block, cap).T)
+    return JaggedRegion.from_chips(
+        chips,
+        log_stacking_height=region.log_stacking_height,
+        max_log_row_count=max_log_row_count,
+        chip_names=region.chip_names,
+    )
+
+
+def bind_pv(chip: Chip, public_values: Array) -> Callable[[Array], Array]:
+    """Bind the public-values vector; ``eval_constraints`` ignores it for
+    constraints that declare no ``pv_arg``. Shared by the stage and its
+    verifier dual — the one definition of how a chip's constraint circuit
+    sees the statement."""
+    return lambda trace: chip.eval_constraints(trace, public_values)
 
 
 def probe_num_constraints(
@@ -266,6 +311,14 @@ def prove_shard_zerocheck(
     transcript: Transcript,
     *,
     max_log_row_count: int,
+    num_reals: Sequence[Array] | None = None,
+    width_caps: Sequence[int] | None = None,
+    total_cap_class: TotalCapClass | None = None,
+    flat_arrival: Array | None = None,
+    num_cols: Sequence[int] | None = None,
+    main_widths: Sequence[int] | None = None,
+    prep_widths: Sequence[int] | None = None,
+    chip_names: Sequence[str] | None = None,
 ) -> tuple[Transcript, ZerocheckProof]:
     """Reduce every chip's constraint zero-sum and GKR opening claim to one
     point claim via the jagged sumcheck.
@@ -275,6 +328,17 @@ def prove_shard_zerocheck(
     variables), and each chip's claim is its openings RLC'd under the GKR
     opening-batch challenge — computed here from the same ``gkr_powers``
     weights the round engine applies, bit-for-bit.
+
+    ``num_reals`` (optional, traced int32 scalars) switches to a shard-invariant
+    jit path where the shard's real heights only bound the live rows at run time,
+    so the whole stage body's compile keys on the buffer class + chip set, never
+    a shard's exact heights (byte-identical to the exact-heights path):
+    - with ``width_caps``: the per-chip cap-class buffers — ``main_region``
+      arrives cap-repacked (``repack_region_to_caps``) and ``width_caps`` slices
+      the traces;
+    - with ``total_cap_class``: the single shared total-Σ-heights-cap buffer
+      (fractalyze/sp1-zorch#242) — ``main_region`` arrives repacked to
+      ``2*window`` rows per chip and each trace is that wide.
     """
     ef = eval_point.dtype
 
@@ -284,9 +348,119 @@ def prove_shard_zerocheck(
 
     zeta = eval_point[-max_log_row_count:]
 
-    chip_names = main_region.chip_names
-    num_reals = list(main_region.chip_heights)
-    traces = chip_traces(chip_names, num_reals, main_region, prep_region)
+    chip_names = (
+        list(chip_names) if chip_names is not None else main_region.chip_names
+    )
+    if flat_arrival is not None:
+        # Flat jagged arrival (pack_flat_arrival): no per-chip trace buffers
+        # exist — the constraint seams read column counts / main widths from
+        # the statics the caller threads through.
+        if num_reals is None or total_cap_class is None:
+            raise ValueError(
+                "flat_arrival rides the traced total_cap_class path"
+            )
+        if num_cols is None or main_widths is None:
+            raise ValueError("flat_arrival needs num_cols and main_widths")
+        eval_fns = [
+            export_order_eval_fn(chips[name], int(main_widths[i]), int(num_cols[i]))
+            for i, name in enumerate(chip_names)
+        ]
+        claims = gkr_opening_claims(
+            [chip_openings[name] for name in chip_names], gkr_batch
+        )
+        alphas = [
+            rlc_coeffs(
+                batching_challenge,
+                probe_num_constraints(fn, int(nc), ef, public_values),
+            )
+            for fn, nc in zip(eval_fns, num_cols, strict=True)
+        ]
+        lambdas = rlc_coeffs(lambda_, len(chip_names))
+        finals, transcript, msgs = prove_jagged_zerocheck(
+            JaggedZerocheckSummand(
+                eval_fns=eval_fns,
+                alphas=alphas,
+                lambdas=lambdas,
+                beta=gkr_batch,
+                public_values=public_values,
+            ),
+            [],
+            list(num_reals),
+            zeta,
+            transcript,
+            claims=claims,
+            total_cap_class=total_cap_class,
+            flat_arrival=flat_arrival,
+            num_cols=num_cols,
+        )
+        # The opened-values split needs only per-chip widths — statics on the
+        # flat path (no region object enters the jit body: a per-shard region
+        # shape would poison the class-keyed compile cache).
+        pw_list = (
+            [int(w) for w in prep_widths]
+            if prep_widths is not None
+            else [0] * len(chip_names)
+        )
+        opened_values = {}
+        for i, name in enumerate(chip_names):
+            final = finals[i]
+            evals = (
+                final[:, 0]
+                if final.shape[1] > 0
+                else jnp.zeros((final.shape[0],), dtype=final.dtype)
+            )
+            mw = int(main_widths[i])
+            pw = pw_list[i]
+            opened_values[name] = ChipEvaluation(
+                main=evals[:mw],
+                preprocessed=evals[mw : mw + pw] if pw else None,
+            )
+        _, transcript, _ = OpenedValuesRound(opened_values, chip_names)(
+            None, transcript
+        )
+        claimed_sum = jnp.sum(claims * lambdas)
+        return transcript, ZerocheckProof(
+            batching_challenge=batching_challenge,
+            gkr_opening_batch_challenge=gkr_batch,
+            lambda_=lambda_,
+            zeta=zeta,
+            claimed_sum=claimed_sum,
+            finals=finals,
+            opened_values=opened_values,
+            msgs=msgs,
+        )
+    if num_reals is None:
+        num_reals = list(main_region.chip_heights)
+        traces = chip_traces(chip_names, num_reals, main_region, prep_region)
+    else:
+        if (width_caps is None) == (total_cap_class is None):
+            raise ValueError(
+                "runtime (traced) num_reals require exactly one of width_caps or "
+                "total_cap_class: the trace slicing cannot derive from a traced "
+                "height"
+            )
+        # Both routes present a shard-invariant per-chip cap for the trace slice:
+        # the per-chip width_caps, or the single `2*window` for the total-cap
+        # shared buffer. The region must already be repacked to those caps.
+        caps = (
+            list(width_caps)
+            if width_caps is not None
+            else [2 * total_cap_class.window] * len(chip_names)
+        )
+        if tuple(main_region.chip_heights) != tuple(int(c) for c in caps):
+            raise ValueError(
+                "runtime num_reals expect a cap-repacked main region "
+                "(repack_region_to_caps): chip heights "
+                f"{main_region.chip_heights} != caps {tuple(caps)}"
+            )
+        traces = chip_traces(chip_names, caps, main_region, prep_region)
+        # The cap slice keeps real preprocessed rows past a shard's live
+        # height; zero them — the round driver's zero-tail contract is
+        # load-bearing (the fold touches the full buffer width).
+        traces = [
+            jnp.where(jnp.arange(t.shape[1]) < nr, t, jnp.zeros((), t.dtype))
+            for t, nr in zip(traces, num_reals, strict=True)
+        ]
     # The chip's 2-ary ``eval_constraints`` is the eval_fn; the statement is
     # threaded through ``constraint_eval``'s ``aux_operands`` at the fold sites,
     # not closed over — a closure would carry a tracer into the composite under
@@ -320,6 +494,8 @@ def prove_shard_zerocheck(
         zeta,
         transcript,
         claims=claims,
+        width_caps=width_caps,
+        total_cap_class=total_cap_class,
     )
 
     # The stage's transcript tail: absorb the opened values so every stage

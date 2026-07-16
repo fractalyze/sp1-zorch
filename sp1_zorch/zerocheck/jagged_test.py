@@ -37,9 +37,11 @@ from zorch.sumcheck.gruen import interp_matrix, round_coeffs_from_matrix
 from zorch.testkit.transcript import cheap_transcript
 from zorch.transcript import sample_challenge
 
+from sp1_zorch.zerocheck import jagged
 from sp1_zorch.zerocheck.jagged import (
     DEGREE,
     JaggedZerocheckSummand,
+    TotalCapClass,
     _reduce_and_assemble,
     _summand_values,
     prove_jagged_zerocheck,
@@ -360,40 +362,54 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
         return calls, bounded
 
     def test_constraint_markers_are_bounded_and_round_invariant(self) -> None:
-        # The compile-time contract the fixed-width buffers + lax.scan exist
-        # for: every per-pair constraint evaluation rides a live-width-bounded
-        # marker whose trace operand keeps ONE shape, so a recognizing compiler
-        # reuses one kernel per chip across all rounds.
+        # The compile-time contract the shared total-cap buffer + shrink prefix
+        # + lax.scan exist for: every per-pair constraint evaluation rides a
+        # live-width-bounded marker whose trace operand keeps ONE shape per
+        # round — the shared TALL half `[row_cap_r/2, MAX_COLS]` out of
+        # `shrink_schedule` (fractalyze/sp1-zorch#242), so a recognizing
+        # compiler reuses one kernel across all chips and t-points of a round.
         num_reals = [5, 2]
         nchips = len(num_reals)
-        calls, bounded = self._constraint_markers(3, num_reals)
+        num_vars = 3
+        unroll = min(jagged._SHRINK_ROUNDS, num_vars)
+        calls, bounded = self._constraint_markers(num_vars, num_reals)
         # EVERY constraint_eval marker is live-width-bounded — including the
         # per-chip C_alpha(0_row) probe, so it routes to the loop-form emitter
         # instead of the monolithic CSE unroll (the Global compile cliff,
         # fractalyze/zkx#702).
         self.assertEqual(len(calls), len(bounded), calls)
-        # One rolled round body: the 3 t-points per chip run as separate
-        # live-width-bounded launches (the round-0 t=0 drop zeroes alpha per
-        # t-point, so they cannot share one batched circuit), plus the one
-        # C_alpha(0_row) probe per chip — 4 markers per chip, never one per
-        # round.
-        self.assertEqual(len(bounded), 4 * nchips)
-        shapes = {re.search(r"tensor<(\d+x\d+)x", c).group(1) for c in bounded}  # type: ignore[union-attr]
-        # Each t-point trace is the chip's [pair, nc] block — pad4(5)/2 = 4
-        # and pad4(2)/2 = 2 rows. The C_alpha(0_row) probe is a clean 1-row
-        # block (the loop-form emitter engages on a single-row trace as of
-        # fractalyze/zkx#704).
-        self.assertEqual(shapes, {"4x3", "2x3", "1x3"})
+        # 3 t-point markers per chip per compiled round body (the round-0 t=0
+        # drop zeroes alpha per t-point, so they cannot share one batched
+        # circuit): one body per unrolled shrink round plus one rolled tail
+        # scan, plus the one C_alpha(0_row) probe per chip.
+        round_bodies = unroll + (1 if num_vars > unroll else 0)
+        self.assertEqual(len(bounded), (3 * round_bodies + 1) * nchips)
+        shapes = {re.search(r"tensor<(\d+(?:x\d+)?)x", c).group(1) for c in bounded}  # type: ignore[union-attr]
+        # Every t-point trace is the round's shared FLAT jagged half
+        # `[area_cap_r/2]`, halving per shrink round; each chip reads its
+        # `[W_r, cols]` window IN PLACE via constraint_eval's
+        # start_offset/col_stride (both runtime — the operand stays the one
+        # flat buffer, so it keeps ONE shape across chips within a round). The
+        # C_alpha(0_row) probe stays a clean rank-2 1-row block (the loop-form
+        # emitter engages on a single-row trace, fractalyze/zkx#704).
+        cls = TotalCapClass.from_heights(num_reals, [_NUM_COLS] * nchips)
+        caps_r, _ = cls.shrink_schedule(nchips * _NUM_COLS, jagged._SHRINK_ROUNDS)
+        want_shapes = {
+            f"{caps_r[r] // 2}" for r in range(round_bodies)
+        } | {f"1x{_NUM_COLS}"}
+        self.assertEqual(shapes, want_shapes)
 
     def test_round_loop_stays_rolled(self) -> None:
-        # The regression guard for the scan: the constraint-marker count (the
-        # term that drove the unrolled compile wall) must be invariant in
-        # num_vars. An accidental return to a Python round loop would scale it
-        # with the round count.
+        # The regression guard for the scan tail: past the `_SHRINK_ROUNDS`
+        # unrolled prefix the constraint-marker count must be invariant in
+        # num_vars. An accidental return to a full Python round loop would
+        # scale it with the round count.
         num_reals = [5, 2]
-        calls3, bounded3 = self._constraint_markers(3, num_reals)
-        calls6, bounded6 = self._constraint_markers(6, num_reals)
-        self.assertEqual((len(calls6), len(bounded6)), (len(calls3), len(bounded3)))
+        tail3 = self._constraint_markers(jagged._SHRINK_ROUNDS + 3, num_reals)
+        tail1 = self._constraint_markers(jagged._SHRINK_ROUNDS + 1, num_reals)
+        self.assertEqual(
+            (len(tail3[0]), len(tail3[1])), (len(tail1[0]), len(tail1[1]))
+        )
 
     def _tail_dot_count(self, num_vars: int, num_reals) -> int:
         """``dot_general`` op count in the lowered prove. The GKR column term
@@ -444,13 +460,20 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
         # a per-chip marker boundary (`jagged.py`'s `round_step`). Each added
         # constrained chip therefore brings its three t-point composite
         # decompositions (the in-body column dot, 3 dots/chip, by design)
-        # PLUS one Gruen dot inside its own round marker: 4 dots/chip, always
-        # growing linearly with the chip count (never O(1), unlike the old
-        # batched tail this replaces). The cross-chip λ-RLC stays a single
-        # dot regardless of chip count, contributing zero extra growth.
+        # PLUS one Gruen dot inside its own round marker: 4 dots/chip per
+        # compiled round body (each unrolled shrink round plus the rolled
+        # tail), always growing linearly with the chip count (never O(1),
+        # unlike the old batched tail this replaces). The cross-chip λ-RLC
+        # stays a single dot per round body regardless of chip count,
+        # contributing zero extra growth.
+        num_vars = 3
+        round_bodies = min(jagged._SHRINK_ROUNDS, num_vars) + (
+            1 if num_vars > jagged._SHRINK_ROUNDS else 0
+        )
         self.assertEqual(
-            self._tail_dot_count(3, [5, 2, 3, 4, 1]) - self._tail_dot_count(3, [5, 2]),
-            4 * 3,
+            self._tail_dot_count(num_vars, [5, 2, 3, 4, 1])
+            - self._tail_dot_count(num_vars, [5, 2]),
+            4 * 3 * round_bodies,
         )
 
     def test_gkr_claim_threading(self) -> None:
@@ -600,6 +623,130 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
                 cheap_transcript(KB),
                 claims=[jnp.zeros((), KB)] * 2,
             )
+
+
+class TotalCapTracedTest(absltest.TestCase):
+    """The sp1-zorch#242 deliverable: the total-Σ-heights-cap round with TRACED
+    heights is shard-invariant — two shards whose per-chip heights differ but
+    whose ``TotalCapClass`` matches trace ONCE (the row offsets are the cumsum of
+    the traced heights; every buffer shape is a class constant). And it stays
+    byte-exact: each traced prove matches the static per-shard total-cap path
+    (itself reference-checked above), so the runtime-offset packing is correct."""
+
+    _NUM_VARS = 4
+    _NCHIPS = 2
+    # A class bounding both shards below: W = max ceil(h/2) over {5,2} and {3,4}
+    # is 3; each 3-column `_witness_trace` chip's area is 3*evenpad(h), so
+    # Σ areas = 24 for both shards and area_cap ≥ 24 + 2W = 30 — 32 is a valid
+    # class bound.
+    _CLASS = TotalCapClass(area_cap=32, window=3)
+
+    def _summand(self, alphas, lambdas, beta):
+        return JaggedZerocheckSummand(
+            eval_fns=[_eval_fn] * self._NCHIPS,
+            alphas=alphas,
+            lambdas=lambdas,
+            beta=beta,
+            public_values=_PV,
+        )
+
+    @staticmethod
+    def _pad_rows(trace, height):
+        """Column-major ``[cols, nr]`` -> ``[cols, height]``, zeros past nr."""
+        return jnp.pad(trace, ((0, 0), (0, height - trace.shape[1])))
+
+    def test_traced_total_cap_shares_one_compile_and_byte_matches(self) -> None:
+        num_vars, nchips = self._NUM_VARS, self._NCHIPS
+        row_block = 2 * self._CLASS.window
+        alphas = [rlc_coeffs(_rand(99 + i, ()), _K) for i in range(nchips)]
+        lambdas = _rand(55, (nchips,))
+        beta = _rand(77, ())
+        zeta = _rand(7, (num_vars,))
+        challenges = [_rand(1000 + r, ()) for r in range(num_vars)]
+
+        # Inputs ride as jitted arrays (not closed-over constants), so two
+        # different-height shards hit the SAME executable iff their shapes match.
+        def run(traces, heights, claims):  # type: ignore[no-untyped-def]
+            _, _, msgs = prove_jagged_zerocheck(
+                self._summand(alphas, lambdas, beta),
+                [traces[i] for i in range(nchips)],
+                [heights[i] for i in range(nchips)],
+                zeta,
+                _ScriptedTranscript.replaying(challenges),
+                claims=[claims[i] for i in range(nchips)],
+                total_cap_class=self._CLASS,
+            )
+            return msgs.round_poly, msgs.challenge
+
+        jrun = frx.jit(run)
+
+        for shard_heights in ([5, 2], [3, 4]):
+            exact = [_witness_trace(i, nr) for i, nr in enumerate(shard_heights)]
+            _, claims = _gkr_inputs(beta, exact, zeta)
+            padded = [self._pad_rows(t, row_block) for t in exact]
+
+            got_poly, got_chal = jrun(
+                padded,
+                jnp.asarray(shard_heights, jnp.int32),
+                jnp.stack(claims),
+            )
+
+            # Static per-shard total-cap path (width_caps=None, class derived
+            # from the shard's own heights): the byte oracle.
+            _, _, want = prove_jagged_zerocheck(
+                self._summand(alphas, lambdas, beta),
+                exact,
+                shard_heights,
+                zeta,
+                _ScriptedTranscript.replaying(challenges),
+                claims=claims,
+            )
+            label = f"heights {shard_heights}"
+            _assert_bytes_equal(got_poly, want.round_poly, f"{label} round_poly")
+            _assert_bytes_equal(got_chal, want.challenge, f"{label} challenge")
+
+        # THE shard-invariance assertion: distinct traced-height shards of one
+        # class compiled exactly once.
+        self.assertEqual(jrun._cache_size(), 1)
+
+    def test_traced_total_cap_handles_runtime_empty_chip(self) -> None:
+        # A chip live at compile time but empty at run time (height 0) must fall
+        # to the trivial claim identity and zero finals, sharing the compile.
+        num_vars, nchips = self._NUM_VARS, self._NCHIPS
+        row_block = 2 * self._CLASS.window
+        alphas = [rlc_coeffs(_rand(99 + i, ()), _K) for i in range(nchips)]
+        lambdas = _rand(55, (nchips,))
+        beta = _rand(77, ())
+        zeta = _rand(7, (num_vars,))
+        challenges = [_rand(1000 + r, ()) for r in range(num_vars)]
+
+        for shard_heights in ([5, 0], [0, 4]):
+            exact = [_witness_trace(i, nr) for i, nr in enumerate(shard_heights)]
+            _, claims = _gkr_inputs(beta, exact, zeta)
+            padded = [self._pad_rows(t, row_block) for t in exact]
+
+            finals_t, _, msgs_t = prove_jagged_zerocheck(
+                self._summand(alphas, lambdas, beta),
+                padded,
+                [jnp.asarray(nr, jnp.int32) for nr in shard_heights],
+                zeta,
+                _ScriptedTranscript.replaying(challenges),
+                claims=claims,
+                total_cap_class=self._CLASS,
+            )
+            # Static reference with the same (host-int) heights.
+            finals_s, _, msgs_s = prove_jagged_zerocheck(
+                self._summand(alphas, lambdas, beta),
+                exact,
+                shard_heights,
+                zeta,
+                _ScriptedTranscript.replaying(challenges),
+                claims=claims,
+            )
+            label = f"heights {shard_heights}"
+            _assert_bytes_equal(msgs_t.round_poly, msgs_s.round_poly, label)
+            for i, (ft, fs) in enumerate(zip(finals_t, finals_s, strict=True)):
+                _assert_bytes_equal(ft, fs, f"{label} finals[{i}]")
 
 
 if __name__ == "__main__":

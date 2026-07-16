@@ -5,15 +5,16 @@
 #     --extra-index-url https://fractalyze.github.io/pypi/simple/
 absl-py
 numpy
-# frx = Field, Ring Accelerated. Pins track zorch's requirements.in
-# at the MODULE.bazel git_override commit — they build against a shared frxlib,
-# so a lagging pin ABI-mismatches and segfaults the GPU tests.
-frx==0.10.0.dev20260715051143
-frxlib==0.10.0.dev20260715051143
-frx-cuda12-pjrt==0.10.0.dev20260715051143
-frx-cuda12-plugin==0.10.0.dev20260715051143
+jax==0.10.0.dev20260713024812
+jaxlib==0.10.0.dev20260713024812
+jax-cuda12-pjrt==0.10.0.dev20260713024812
+jax-cuda12-plugin==0.10.0.dev20260713024812
 zk-dtypes==0.0.10
 
 # SP1 chip definitions (constraints + LogUp interactions) exported from
 # riscv-witness; consumed by the shard fixture loader. Same pin as whir-zorch.
 rw-constraints @ https://github.com/fractalyze/pypi/releases/download/riscv-witness-dev-20260703070602/rw_constraints-0.1.0.dev20260703070602-py3-none-any.whl
+
+# Benchmark harness (shared across fractalyze repos); used only by the
+# //sp1_zorch/...:*bench* py_binary targets, not by the sp1-zorch wheel itself.
+zkbench==0.4.0

@@ -441,27 +441,591 @@ def _reduce_and_assemble(vals, eq, interp, claim, last, eq_adj, padded_row_adj,
     decomposition body (`_round_composite._decomp` mirrors it)."""
     ef = last.dtype
     y_raw = tuple(jnp.sum(v * eq) for v in vals)
-    threshold_half = (nr_live + 1) // 2 - 1
+    # A runtime-empty chip (nr_live == 0 — a cap-class chip the program never
+    # exercised) has no live row: the last-live-row index (nr_live+1)//2 - 1 is
+    # -1, which corrupts the padding correction and leaks a spurious term for a
+    # constraint that is nonzero on an all-zero row (e.g. DivRem). Clamp the
+    # index and vanish the reduce to the trivial claim identity — byte-identical
+    # to the exact path's static `is_zero_chip` branch (its width-0 buffer
+    # reaches _zero_chip_poly by another route), at no extra Gruen dot.
+    empty = nr_live == 0
+    threshold_half = jnp.maximum((nr_live + 1) // 2 - 1, 0)
     msb_lagrange = eq_adj * eq[threshold_half]
 
     def corr(y, t_val):
         eq_last = eq_factor(t_val, last)
         vg = vgeq.fix_last_variable(t_val).eval_at(threshold_half)
-        return eq_last * (y * eq_adj - padded_row_adj * vg * msb_lagrange)
+        val = eq_last * (y * eq_adj - padded_row_adj * vg * msb_lagrange)
+        return jnp.where(empty, jnp.zeros((), ef), val)
 
     zero, two, four = jnp.zeros((), ef), jnp.array(2, ef), jnp.array(4, ef)
     y0, y2, y4 = corr(y_raw[0], zero), corr(y_raw[1], two), corr(y_raw[2], four)
     return round_coeffs_from_matrix(interp, y0, claim, (y2, y4))
 
 
+@dataclass(frozen=True)
+class TotalCapClass:
+    """The static shard-invariance class of the total-cap zerocheck round
+    (fractalyze/sp1-zorch#242): the two buffer bounds every shard of one chip
+    set shares, so shards that differ only in per-chip row counts compile ONCE.
+
+    - ``area_cap`` bounds the JAGGED-PACKED round buffer: chips sit in one flat
+      column-major buffer, chip ``c`` occupying ``num_cols_c`` segments of its
+      even-padded live height, so the live area is
+      ``Σ_c num_cols_c * evenpad(num_real_c)`` — no chip pays another chip's
+      column count (the dense-rectangle form priced every chip at the widest
+      chip's width and blew past device memory on wide-chip sets). The
+      ``+ 2*window`` tail keeps the last column's window read in bounds on the
+      halved buffer.
+    - ``window`` (``W``) bounds any chip's round-0 live pair count
+      (``ceil(num_real / 2)``): the per-column window height every chip's
+      constraint reads through, and (as ``2*window``) the per-chip block height
+      each pre-padded trace arrives at.
+
+    Neither derives from a specific shard's heights — those ride as a traced
+    ``int32`` vector, and the segment offsets are their cumsum — so the round
+    body's compile keys on this class plus the chip set alone. ``from_heights``
+    builds the a-priori-tight class of ONE shard (the static per-shard-compile
+    fallback); a whole block passes a class bounding every shard it contains."""
+
+    area_cap: int
+    window: int
+
+    @classmethod
+    def from_heights(
+        cls, num_reals: Sequence[int], num_cols: Sequence[int]
+    ) -> "TotalCapClass":
+        window = max([1, *((nr + 1) // 2 for nr in num_reals)])
+        area = sum(
+            nc * (nr + nr % 2)
+            for nr, nc in zip(num_reals, num_cols, strict=True)
+        )
+        return cls(area_cap=area + 2 * window, window=window)
+
+    def shrink_schedule(
+        self, sum_cols: int, rounds: int
+    ) -> tuple[list[int], list[int]]:
+        """Static per-round buffer bounds for the shrinking round prefix: at
+        round ``r`` every chip's live height is ``ceil(h / 2^r)``, so the
+        packed area halves per round while these bounds stay static.
+        ``evenpad(ceil(h/2)) <= evenpad(h)/2 + 1`` per COLUMN gives the
+        packed-area recurrence ``area' = area/2 + sum_cols`` (rounded up to
+        even, so segment offsets stay pair-aligned), and the window bound
+        halves exactly (``ceil(ceil(h/2^r)/2) = ceil(h/2^{r+1})``). Returns
+        ``rounds + 1`` entries of ``(area_cap_r, window_r)``; entry 0 is the
+        class itself. Every value derives from the class + the chip set's
+        static total column count alone, never a shard's heights, so a compile
+        keyed on these stays keyed on the class."""
+        caps, wins = [self.area_cap], [self.window]
+        area = self.area_cap - 2 * self.window
+        for _ in range(rounds):
+            # WORKAROUND (floor 2, byte-neutral — the extra row is masked dead):
+            # a width-1 window makes eval_fn's scalar-constant lift a RESHAPE
+            # (scalar -> [1]; any wider width is a broadcast), and XLA layout
+            # normalization mis-folds reshape(bitcast-convert(s32[] constant))
+            # into an s32[1] constant whose literal stays rank-0 — the verifier
+            # then rejects the module. Real fix: the constant-literal handling
+            # in XLA layout normalization; drop the floor once that lands.
+            w = max((wins[-1] + 1) // 2, 2)
+            area = area // 2 + sum_cols
+            area += area % 2
+            caps.append(area + 2 * w)
+            wins.append(w)
+        return caps, wins
+
+
+def pack_flat_arrival(
+    traces: Sequence[Array],
+    num_reals: Sequence[int],
+    cap_class: TotalCapClass,
+) -> Array:
+    """The class-shaped flat jagged arrival, packed EAGERLY with host-known
+    heights: chip c's exact-height columns as ``evenpad(h_c)``-row segments at
+    the same ``cols*evenpad(h)`` cumsum offsets ``_prove_total_cap`` derives
+    from the traced heights (the two layouts MUST agree), zeros to
+    ``area_cap``. Stays in the traces' own (base) field — the body lifts per
+    element. No chip is padded to the class window, so the arrival is the live
+    area, not ``2W`` per chip (a wide class made that uniform padding overflow
+    int32 element indexing and dwarf the packed buffer itself).
+
+    Heights are host ints here, so this ALSO closes the traced-path validation
+    gap: an under-bounding class fails loud at pack time instead of silently
+    corrupting in the body."""
+    need = TotalCapClass.from_heights(
+        [int(nr) for nr in num_reals], [int(t.shape[0]) for t in traces]
+    )
+    if cap_class.area_cap < need.area_cap or cap_class.window < need.window:
+        raise ValueError(
+            f"total_cap_class {cap_class} does not bound this shard "
+            f"(needs area_cap >= {need.area_cap}, window >= {need.window})"
+        )
+    dtype = traces[0].dtype if traces else jnp.int32
+    pieces = []
+    used = 0
+    for t, nr in zip(traces, num_reals, strict=True):
+        h = int(nr)
+        if h == 0 or t.shape[0] == 0:
+            continue
+        if t.shape[1] != h:
+            raise ValueError(
+                f"pack_flat_arrival wants exact-height traces: got "
+                f"{t.shape[1]} rows for height {h}"
+            )
+        if h % 2:
+            t = jnp.pad(t, ((0, 0), (0, 1)))
+        pieces.append(t.reshape(-1))
+        used += t.shape[0] * t.shape[1]
+    pieces.append(jnp.zeros((cap_class.area_cap - used,), dtype))
+    return jnp.concatenate(pieces)
+
+
+# Rounds unrolled at statically halving buffer bounds before the fixed-shape
+# tail scan (see the shrink-prefix comment in `_prove_total_cap`). Work decays
+# ~2x per unrolled round, so past ~5 the tail is already <4% of round-0 and
+# another round only buys compile time (each prefix round compiles its own
+# body).
+_SHRINK_ROUNDS = 5
+
+
+def _prove_total_cap(
+    summand: JaggedZerocheckSummand,
+    traces: Sequence[Array],
+    static_nrs: Sequence[int | None],
+    num_reals: Sequence[int | Array],
+    cap_class: TotalCapClass | None,
+    zeta: Array,
+    transcript: Transcript,
+    claims: Sequence[Array],
+    adjs: Sequence[Array],
+    ef,
+    ef_limbs: int,
+    num_vars: int,
+    flat_arrival: Array | None = None,
+    num_cols: Sequence[int] | None = None,
+) -> tuple[list[Array], Transcript, RoundMsg]:
+    """The total-cap round carry: ONE flat JAGGED-PACKED buffer
+    (fractalyze/sp1-zorch#242), chip ``c`` occupying ``num_cols_c``
+    column-major segments of its even-padded live height at a runtime element
+    offset (cumsum of ``cols_j * evenpad(h_j)``). Every column segment is even,
+    so a whole-buffer stride-2 fold never crosses a segment boundary, and no
+    chip pays another chip's column count — the memory property the dense
+    ``[ROW_CAP, MAX_COLS]`` rectangle form lacked (one wide chip priced every
+    chip at its width and blew past device memory on wide-chip sets).
+
+    Heights are TRACED: ``num_reals`` rides as an ``int32`` vector, segment
+    offsets are cumsums of it, and every shape (``area_cap``, ``W``) is a
+    static class constant, so shards of one ``TotalCapClass`` + chip set share
+    one executable. When ``cap_class`` is ``None`` every height is a host int
+    and the class is derived from them (the static per-shard-compile
+    fallback); when a class is passed, each chip's trace must arrive
+    column-major pre-padded to ``2*window`` rows (zeros past its live height).
+
+    The fold, the ``constraint_eval`` per-row summand, the geq zero-extension
+    correction, and the Gruen assembly are unchanged from the per-chip driver —
+    only the buffer layout/windowing differs. Each live chip's constraint reads
+    its ``[W, cols_c]`` window IN PLACE via ``constraint_eval``'s
+    ``start_offset``/``col_stride`` (column ``c`` at
+    ``flat[off + c*stride + row]``), masking past its live pairs; the pack and
+    the per-round fold re-pack are whole-buffer gathers driven by the traced
+    segment starts, so no per-chip slice/update materializes."""
+    num_chips = len(num_cols) if num_cols is not None else len(traces)
+    one = jnp.ones((), ef)
+    zero = jnp.zeros((), ef)
+
+    cols_arr = (
+        [int(c) for c in num_cols]
+        if num_cols is not None
+        else [int(t.shape[0]) for t in traces]
+    )
+    sum_cols = sum(cols_arr)
+    traced = any(nr is None for nr in static_nrs)
+    if cap_class is None:
+        # Static heights (the per-shard-compile fallback): derive this shard's
+        # own a-priori-tight class. A traced height cannot size a static buffer,
+        # so `prove_jagged_zerocheck` rejects it before reaching here.
+        cap_class = TotalCapClass.from_heights(
+            [int(nr) for nr in static_nrs], cols_arr  # type: ignore[arg-type]
+        )
+    # W ≥ every chip's round-0 live pair count (ceil(nr/2)); the per-column
+    # window height every chip's constraint reads through. The +2W area tail
+    # keeps the last column's W-window read in bounds on the halved buffer;
+    # area_cap and every segment are even, so the whole-buffer stride-2 fold
+    # stays pair-aligned.
+    W = cap_class.window
+    area_cap = cap_class.area_cap
+    row_block = 2 * W  # each chip's even-padded UNFOLDED arrival height
+    if not traced:
+        # Static heights can check the class bound; traced heights cannot (a
+        # runtime value cannot gate a compile), so an under-bounding class on
+        # the traced path silently corrupts — the caller owns the bound, built
+        # from the per-shard ZC_CLASS maxima.
+        need = TotalCapClass.from_heights(
+            [int(nr) for nr in static_nrs], cols_arr  # type: ignore[arg-type]
+        )
+        if area_cap < need.area_cap or W < need.window:
+            raise ValueError(
+                f"total_cap_class {cap_class} does not bound this shard "
+                f"(needs area_cap >= {need.area_cap}, window >= {need.window})"
+            )
+    if traced and flat_arrival is None:
+        for i, t in enumerate(traces):
+            if t.shape[1] != row_block:
+                raise ValueError(
+                    f"traces[{i}] has a runtime height, so it must arrive "
+                    f"pre-padded to 2*window = {row_block} rows: got {t.shape[1]}"
+                )
+    # Only a STATICALLY empty chip skips; a traced chip stays live (its runtime
+    # emptiness rides the `nr_live == 0` clamp inside `zerocheck_round_poly`).
+    is_zero_chip = [nr == 0 for nr in static_nrs]
+
+    # Per-chip column weights, exactly the chip's own columns — jagged packing
+    # has no padded columns to weight.
+    widest = max(cols_arr) if cols_arr else 0
+    gkr_all = gkr_powers(summand.beta, widest) if widest else jnp.zeros(0, ef)
+    chip_gkr = [gkr_all[: cols_arr[i]] for i in range(num_chips)]
+
+    # Static segment maps: the flat buffer is sum_cols column segments in chip
+    # order; a whole-buffer gather resolves (chip, column) per element from
+    # these compile-time tables plus the traced segment starts.
+    cols_v = jnp.asarray(cols_arr, jnp.int32)
+    chip_of_seg = jnp.asarray(
+        [i for i, nc in enumerate(cols_arr) for _ in range(nc)], jnp.int32
+    )
+    col_of_seg = jnp.asarray(
+        [c for nc in cols_arr for c in range(nc)], jnp.int32
+    )
+
+    def _evenpad(h: Array) -> Array:
+        return h + (h % 2)
+
+    def _area_offsets(h: Array) -> Array:
+        """Each chip's runtime element offset in the flat buffer: cumsum of the
+        prior chips' areas ``cols_j * evenpad(h_j)``. Every term is even, so
+        offsets stay pair-aligned for the whole-buffer stride-2 fold."""
+        per_chip = cols_v * _evenpad(h)
+        return jnp.concatenate([jnp.zeros((1,), jnp.int32), jnp.cumsum(per_chip)])[
+            :num_chips
+        ]
+
+    def _gather_halves(
+        area_out: int,
+        live_rows: Array,
+        src_off: Array,
+        src_stride: Array,
+        fetch,
+    ) -> tuple[Array, Array]:
+        """Build the packed buffer of static UNFOLDED size ``area_out``
+        directly as its stride-2 halves ``(p0h, diffh)`` — the unfolded buffer
+        never materializes, which is what keeps the round-0 arena at ~1.5x the
+        live area instead of 2x (the unfolded+both-halves peak OOMs the big
+        classes). Half element ``j`` lands in segment ``s`` (traced starts,
+        ``evenpad(live_rows[chip])/2`` rows each) at half-row ``rh``; its
+        unfolded pair rows are ``2*rh`` / ``2*rh + 1``, each reading
+        ``fetch(src_off[chip] + col*src_stride[chip] + row)`` when
+        ``row < live_rows[chip]`` and exact field zero otherwise (the even-pad
+        partner, the class tail, and every dead element) — so
+        ``p0h[j] = v0`` and ``diffh[j] = v1 - v0`` match the unfolded pack's
+        stride-2 slices byte for byte."""
+        seg_lens = (_evenpad(live_rows) // 2)[chip_of_seg]
+        seg_starts = jnp.concatenate(
+            [jnp.zeros((1,), jnp.int32), jnp.cumsum(seg_lens)]
+        )
+        j = jnp.arange(area_out // 2, dtype=jnp.int32)
+        seg = jnp.clip(
+            jnp.searchsorted(seg_starts, j, side="right") - 1, 0, sum_cols - 1
+        )
+        rh = j - seg_starts[seg]
+        chip = chip_of_seg[seg]
+        base = src_off[chip] + col_of_seg[seg] * src_stride[chip]
+        live = live_rows[chip]
+
+        def at(row):
+            src = jnp.clip(base + row, 0, None)
+            return jnp.where(row < live, fetch(src), zero)
+
+        v0 = at(2 * rh)
+        v1 = at(2 * rh + 1)
+        return v0, v1 - v0
+
+    # Initial pack: one gather from the concatenated column-major arrival
+    # blocks (chip i's trace [cols_i, arrival_rows_i] flattens to cols_i
+    # arrival-height segments; arrival offsets/strides are static). Rows past
+    # a chip's live height read the arrival zero-pad or are masked to zero, so
+    # the packed buffer is live rows + exact field zeros.
+    heights = jnp.stack([jnp.asarray(nr, jnp.int32) for nr in num_reals])
+    if flat_arrival is not None:
+        # The prologue already packed the class layout eagerly
+        # (`pack_flat_arrival`, same cumsum offsets the traced heights derive),
+        # so the initial halves are two strided slices. The base-field
+        # subtract embeds exactly into the extension field (the embedding is a
+        # ring homomorphism on the base subfield), byte-matching the
+        # convert-then-subtract order.
+        if flat_arrival.shape != (area_cap,):
+            raise ValueError(
+                f"flat_arrival must be the class-shaped [{area_cap}] buffer, "
+                f"got {flat_arrival.shape}"
+            )
+        p0h0 = flat_arrival[0::2].astype(ef)
+        diffh0 = (flat_arrival[1::2] - flat_arrival[0::2]).astype(ef)
+    else:
+        arr_rows = [int(t.shape[1]) for t in traces]
+        arr_off_list: list[int] = []
+        acc = 0
+        for i in range(num_chips):
+            arr_off_list.append(acc)
+            acc += cols_arr[i] * arr_rows[i]
+        # The arrival stays in ITS OWN field (base for real traces); the lift
+        # to the round's extension field happens per gathered element, fused
+        # into the pack — an eager `.astype(ef)` would materialize a 4x-wider
+        # copy of the whole arrival.
+        arr_flat = (
+            jnp.concatenate([t.reshape(-1) for t in traces])
+            if num_chips
+            else jnp.zeros((0,), ef)
+        )
+        p0h0, diffh0 = _gather_halves(
+            area_cap,
+            live_rows=heights,
+            src_off=jnp.asarray(arr_off_list, jnp.int32),
+            src_stride=jnp.asarray(arr_rows, jnp.int32),
+            fetch=lambda src: jnp.take(arr_flat, src, mode="clip").astype(ef),
+        )
+
+    vgeqs = [VirtualGeq(jnp.asarray(nr, jnp.int32), one, zero) for nr in num_reals]
+    chip_claims = jnp.stack(list(claims))
+    eq_adj = one
+
+    extra_ts = summand.extra_ts(ef)
+    if len(extra_ts) != summand.degree - 2:
+        raise ValueError(
+            f"a degree-{summand.degree} Gruen round materializes s(0) plus "
+            f"{summand.degree - 2} extra points, got {len(extra_ts)}"
+        )
+    last_xs = zeta[::-1]
+    interp_xs = frx.vmap(lambda z: interp_matrix(extra_ts, z))(last_xs)
+    is_round0_xs = jnp.arange(num_vars) == 0
+
+    eq_buf = expand_eq_to_hypercube(zeta[: num_vars - 1], one)
+    eq_width = eq_buf.shape[0]
+    if W > eq_width:
+        raise ValueError(
+            f"total_cap_class.window {W} exceeds the round-0 half-width "
+            f"{eq_width} (2**(num_vars-1)); a pair count cannot exceed it"
+        )
+
+    two, four = jnp.array(2, ef), jnp.array(4, ef)
+
+    def _jagged_window(flat: Array, off: Array, stride: Array, n_rows: int,
+                       n_cols: int) -> Array:
+        """A chip's ``[n_rows, n_cols]`` window out of the flat halved buffer:
+        column ``c`` is the rank-1 slice at ``off + c*stride`` (unmasked — the
+        caller owns the dead-row zeroing)."""
+        return jnp.stack(
+            [
+                lax.dynamic_slice(flat, (off + c * stride,), (n_rows,))
+                for c in range(n_cols)
+            ],
+            axis=1,
+        )
+
+    def make_round_step(w_in: int, cap_out: int, shrink_eq: bool):
+        """One round at static window height ``w_in``, re-packing the fold into
+        a flat ``[cap_out]`` buffer. ``shrink_eq`` lets the eq table halve
+        (the unrolled shrink prefix); the scan tail keeps every carry shape
+        fixed instead (``cap_out`` = the input cap, eq zero-extended back)."""
+        rows_w = jnp.arange(w_in, dtype=jnp.int32)
+
+        def fold_eq(buf: Array) -> Array:
+            if buf.shape[0] < 2:
+                return buf
+            contracted = contract_hypercube_step(buf)
+            if not shrink_eq:
+                return _zero_extend(contracted, buf.shape[0])
+            # Keep at least the floored window's rows (see `shrink_schedule`):
+            # the zero rows pair with masked dead rows, so the eq-weighted
+            # reduce is untouched.
+            return _zero_extend(contracted, max(contracted.shape[0], 2))
+
+        def round_step(carry, xs):
+            p0h, diffh, vgeqs, chip_claims, eq_adj, heights, eq_buf, transcript = carry
+            last, interp, is_round0 = xs
+            # Each chip's element offset / per-column stride on the HALVED flat
+            # buffer: segments are even, so halving the offsets and strides
+            # lands exactly on the folded segments. The carry IS the halves —
+            # the unfolded buffer never exists (see `_gather_halves`), so
+            # there is no per-round slice/subtract either.
+            folded_off = _area_offsets(heights) // 2
+            half_stride = _evenpad(heights) // 2
+            eq_slice = eq_buf[:w_in]
+            # The 3 sumcheck t-points are p0h + t*diffh for t in {0,2,4}. Pass p0h
+            # (base) and diffh (delta) as the two shared flat halves + t as a RUNTIME
+            # fold coefficient, so constraint_eval folds `base+t*delta` per live row
+            # INSIDE the kernel (no full-buffer `p0h+t*diffh` materialization) and one
+            # compiled kernel serves every t-point. t=0 still carries delta (coeff 0)
+            # so all three markers share one kernel shape. diffh stays materialized:
+            # it is SHARED across the 3 t-points, so one full-buffer subtract is cheaper
+            # than folding `p1h-p0h` in-kernel 3x (measured: fold-in was +68ms).
+            t_coeffs = (zero, two, four)
+
+            polys_list = []
+            for i in range(num_chips):
+                if is_zero_chip[i]:
+                    polys_list.append(_zero_chip_poly(interp, chip_claims[i], ef))
+                    continue
+                live_pair = (heights[i] + 1) // 2
+                off_i = folded_off[i]
+                stride_i = half_stride[i]
+                if summand.alphas[i].shape[-1] > 0:
+                    alpha = summand.alphas[i]
+                    # Round 0 drops the constraint at t=0 (that term IS the zerocheck
+                    # statement) by zeroing alpha; the column term stays.
+                    a0 = jnp.where(is_round0, jnp.zeros_like(alpha), alpha)
+                    vals = tuple(
+                        constraint_eval(
+                            summand.eval_fns[i],
+                            p0h,
+                            a0 if k == 0 else alpha,
+                            live_width=live_pair,
+                            start_offset=off_i,
+                            window_rows=w_in,
+                            col_stride=stride_i,
+                            num_cols=cols_arr[i],
+                            delta=diffh,
+                            fold_coeff=t_coeffs[k],
+                            column_weights=chip_gkr[i],
+                            aux_operands=(summand.public_values,),
+                        )
+                        for k in range(3)
+                    )
+                else:
+                    # Lookup-only chip (no transition constraints): just the GKR
+                    # column term, on explicitly masked windows (dead rows
+                    # straddle the next segment, so they are NOT zero in place).
+                    mask = (rows_w < live_pair)[:, None]  # [w_in, 1]
+                    win_p0 = jnp.where(
+                        mask,
+                        _jagged_window(p0h, off_i, stride_i, w_in, cols_arr[i]),
+                        zero,
+                    )
+                    win_diff = jnp.where(
+                        mask,
+                        _jagged_window(diffh, off_i, stride_i, w_in, cols_arr[i]),
+                        zero,
+                    )
+                    t_traces = (
+                        win_p0, win_p0 + two * win_diff, win_p0 + four * win_diff
+                    )
+                    vals = tuple(t_traces[k] @ chip_gkr[i] for k in range(3))
+                polys_list.append(
+                    zerocheck_round_poly(
+                        vals, eq_slice, interp, chip_claims[i], last, eq_adj, adjs[i],
+                        heights[i], vgeqs[i],
+                    )
+                )
+
+            polys = jnp.stack(polys_list)
+            rlc = summand.combine_chips(polys)
+            transcript = transcript.observe(rlc)
+            transcript, r = sample_challenge(transcript, ef, ef_limbs)
+
+            # Fold every chip's live pairs (`p0 + r·diff`) and re-compact
+            # straight into the next round's halves at the halved even-padded
+            # segment offsets — one whole-buffer gather (no per-chip
+            # window/update chain, no unfolded intermediate). A folded row's
+            # source row index equals its index in the old half column
+            # (evenpad(h)/2 == ceil(h/2) exactly), so `src_stride` is the old
+            # half stride.
+            new_heights = (heights + 1) // 2
+            new_p0h, new_diffh = _gather_halves(
+                cap_out,
+                live_rows=new_heights,
+                src_off=folded_off,
+                src_stride=half_stride,
+                fetch=lambda src: (
+                    jnp.take(p0h, src, mode="clip")
+                    + r * jnp.take(diffh, src, mode="clip")
+                ),
+            )
+
+            vgeqs = [vg.fix_last_variable(r) for vg in vgeqs]
+            chip_claims, eq_adj = fold_round_scalars(polys, r, eq_adj, last)
+            carry = (
+                new_p0h, new_diffh, vgeqs, chip_claims, eq_adj, new_heights,
+                fold_eq(eq_buf), transcript,
+            )
+            return carry, RoundMsg(round_poly=rlc, challenge=r)
+
+        return round_step
+
+    # Shrinking round prefix + fixed-shape tail scan: every chip's live height
+    # halves per round, so a single fixed-shape scan does full class-shaped
+    # work `num_vars` times over rows that are ~all dead after the first few
+    # folds. Unrolling the first `_SHRINK_ROUNDS` rounds at the statically
+    # halving class bounds (`shrink_schedule`) makes the round work decay
+    # geometrically — Σ 2^-r ≈ 2 round-0 units — and the tail scan then runs at
+    # 2^-k scale. Byte-identical: only dead-zero buffer tails shrink, and field
+    # zero-adds are exact. Each prefix round compiles its own body (shapes
+    # differ), still keyed on the class alone; kernel sharing across chips and
+    # t-points within a round is untouched.
+    caps_r, wins_r = cap_class.shrink_schedule(sum_cols, _SHRINK_ROUNDS)
+    unroll = min(_SHRINK_ROUNDS, num_vars)
+    carry = (p0h0, diffh0, vgeqs, chip_claims, eq_adj, heights, eq_buf, transcript)
+    prefix_msgs = []
+    for rnd in range(unroll):
+        step = make_round_step(wins_r[rnd], caps_r[rnd + 1], shrink_eq=True)
+        carry, msg = step(carry, (last_xs[rnd], interp_xs[rnd], is_round0_xs[rnd]))
+        prefix_msgs.append(msg)
+    if prefix_msgs:
+        msgs = frx.tree.map(lambda *ls: jnp.stack(ls), *prefix_msgs)
+    if unroll < num_vars or not prefix_msgs:
+        step = make_round_step(wins_r[unroll], caps_r[unroll], shrink_eq=False)
+        carry, tail_msgs = lax.scan(
+            step, carry, (last_xs[unroll:], interp_xs[unroll:], is_round0_xs[unroll:])
+        )
+        msgs = (
+            frx.tree.map(lambda a, b: jnp.concatenate([a, b]), msgs, tail_msgs)
+            if prefix_msgs
+            else tail_msgs
+        )
+    (p0h, diffh, _vg, _cc, _ea, heights, _eqb, transcript) = carry
+
+    # The first two rows of each chip's final segments hold the fold result
+    # (rows past the live height are the invariant even-pad zeros); transpose
+    # back to the column-major `(num_cols, 2)` folded-trace contract. Rows past
+    # the final live height are masked to zero — a no-op for a live chip, and
+    # the guard a traced runtime-empty chip needs (its zero-length segments
+    # would otherwise read the next chip's rows). A statically empty chip owns
+    # no elements at all.
+    off = _area_offsets(heights) // 2
+    stride = _evenpad(heights) // 2
+    row2 = jnp.arange(2, dtype=jnp.int32)[:, None]
+    finals = []
+    for i in range(num_chips):
+        if is_zero_chip[i]:
+            finals.append(jnp.zeros((cols_arr[i], 2), ef))
+            continue
+        # Row 0 of a chip's final column is p0, row 1 is p0 + diff — the
+        # halves hold the final fold pair directly.
+        p0row = _jagged_window(p0h, off[i], stride[i], 1, cols_arr[i])
+        drow = _jagged_window(diffh, off[i], stride[i], 1, cols_arr[i])
+        win = jnp.concatenate([p0row, p0row + drow], axis=0)
+        win = jnp.where(row2 < heights[i], win, zero)
+        finals.append(win.T)
+    return finals, transcript, msgs
+
+
 def prove_jagged_zerocheck(
     summand: JaggedZerocheckSummand,
     traces: Sequence[Array],
-    num_reals: Sequence[int],
+    num_reals: Sequence[int | Array],
     zeta: Array,
     transcript: Transcript,
     *,
     claims: Sequence[Array],
+    width_caps: Sequence[int] | None = None,
+    total_cap_class: TotalCapClass | None = None,
+    flat_arrival: Array | None = None,
+    num_cols: Sequence[int] | None = None,
 ) -> tuple[list[Array], Transcript, RoundMsg]:
     """Run the SP1-schedule jagged multi-chip zerocheck sumcheck.
 
@@ -471,14 +1035,42 @@ def prove_jagged_zerocheck(
     SP1-schedule plumbing: the fixed-width buffers, the scan, the Gruen
     assembly, the Fiat-Shamir thread, and the per-round fold.
 
-    ``traces[c]`` is chip ``c``'s column-major ``(num_cols_c, num_reals[c])``
-    trace — exactly its real rows; the driver owns all padding (the zero-tail
-    soundness contract is internal). ``zeta`` is the eq point and each of its
-    coordinates gets exactly one round.
+    ``traces[c]`` is chip ``c``'s column-major trace. A chip's
+    ``num_reals[c]`` entry is either a host int — the trace holds exactly its
+    real rows and the driver owns all padding (the zero-tail soundness
+    contract is internal) — or a traced int32 scalar, in which case the trace
+    must arrive pre-padded to ``width_caps[c]`` and the CALLER owns the zero
+    tail past the live rows. Which entries are traced is a compile-time
+    property: a host ``0`` statically empties the chip, while a traced height
+    keeps the chip's circuit live and only bounds its rows at run time.
+    ``zeta`` is the eq point and each of its coordinates gets exactly one
+    round.
 
     ``claims[c]`` — chip ``c``'s GKR opening at ``zeta`` — seeds its
     ``p(1) = claim - p(0)`` identity; the matching column term rides
     ``summand.beta``.
+
+    ``width_caps`` (optional) pins chip ``c``'s fixed buffer width to
+    ``width_caps[c]`` instead of the default exact pin
+    ``((num_reals[c] + 3) // 4) * 4``. Passing the same caps across shards
+    keeps every buffer shape shard-invariant, so proves whose shapes differ
+    only in live row counts share one compile (the cap-class contract of
+    sp1-zorch#230). Byte-transparent: a cap only adds dead zero width past
+    the exact pin — live rows, the vgeq bound, and the eq prefix terms are
+    untouched. Each cap must be a multiple of 4, at least the chip's exact
+    pin, and at most ``2**len(zeta)``.
+
+    ``total_cap_class`` (optional, mutually exclusive with ``width_caps``) routes
+    the single shared-buffer total-Σ-heights-cap round (`_prove_total_cap`) with
+    TRACED heights: the ``TotalCapClass``'s ``area_cap`` / ``window`` size the
+    one flat jagged buffer, the shard's real heights ride as the
+    traced ``num_reals`` vector, and each chip's trace must arrive column-major
+    pre-padded to ``2*window`` rows (zeros past its live height). The compile
+    keys on the class + chip set alone, so two shards of one class share one
+    executable. Either ``width_caps`` or ``total_cap_class`` is required whenever
+    any ``num_reals`` entry is traced — a buffer width cannot derive from a
+    runtime height; with neither, all heights must be host ints and the total-cap
+    round derives its class per shard (per-shard compile).
 
     Returns the final per-chip ``(num_cols_c, h)`` folded traces
     (``h in {0, 2}``; position 0 holds the column's evaluation at the
@@ -489,7 +1081,11 @@ def prove_jagged_zerocheck(
     lambdas = summand.lambdas
     beta = summand.beta
     public_values = summand.public_values
-    num_chips = len(traces)
+    if (flat_arrival is None) != (num_cols is None):
+        raise ValueError("flat_arrival and num_cols must be given together")
+    if flat_arrival is not None and total_cap_class is None:
+        raise ValueError("flat_arrival is the total_cap_class arrival form")
+    num_chips = len(num_cols) if num_cols is not None else len(traces)
     if num_chips == 0:
         raise ValueError("at least one chip is required")
     if lambdas.ndim != 1:
@@ -509,10 +1105,26 @@ def prove_jagged_zerocheck(
         )
     num_vars = int(zeta.shape[0])
     width = 1 << num_vars
-    nrs = [int(nr) for nr in num_reals]
-    for i, (trace, nr) in enumerate(zip(traces, nrs)):
+    # A host-int height keeps the exact-rows contract; a traced entry (int32
+    # scalar) switches the chip to runtime height. The split is a
+    # compile-time property, so the zero-chip skips below stay static.
+    static_nrs = [None if isinstance(nr, Array) else int(nr) for nr in num_reals]
+    if width_caps is not None and total_cap_class is not None:
+        raise ValueError("width_caps and total_cap_class are mutually exclusive")
+    if (
+        width_caps is None
+        and total_cap_class is None
+        and any(nr is None for nr in static_nrs)
+    ):
+        raise ValueError(
+            "a traced num_reals entry requires width_caps or total_cap_class: "
+            "a buffer width cannot derive from a runtime height"
+        )
+    for i, (trace, nr) in enumerate(zip(traces, static_nrs)):
         if trace.ndim != 2:
             raise ValueError(f"traces[{i}] must be 2-D, got shape {trace.shape}")
+        if nr is None:
+            continue  # runtime height: the shape is pinned to its cap below
         if not 0 <= nr <= width:
             raise ValueError(f"num_reals[{i}] must be within [0, {width}], got {nr}")
         if trace.shape[1] != nr:
@@ -535,12 +1147,16 @@ def prove_jagged_zerocheck(
     # cold-compile cliff. The loop-form emitter engages on a single-row
     # ([1, nc]) trace as of fractalyze/zkx#704; the same circuit then lowers to
     # ~785 instrs and Global cold-compiles in a few seconds.
+    probe_cols = (
+        list(num_cols) if num_cols is not None
+        else [t.shape[0] for t in traces]
+    )
     adjs = [
         zero
-        if nrs[i] == 0 or alphas[i].shape[-1] == 0
+        if static_nrs[i] == 0 or alphas[i].shape[-1] == 0
         else constraint_eval(
             eval_fns[i],
-            jnp.zeros((1, traces[i].shape[0]), dtype=ef),
+            jnp.zeros((1, probe_cols[i]), dtype=ef),
             alphas[i],
             live_width=1,
             aux_operands=(public_values,),
@@ -548,23 +1164,123 @@ def prove_jagged_zerocheck(
         for i in range(num_chips)
     ]
 
-    # Fixed-height row-major buffers: each chip's buffer is `[pad4(nr), num_cols]`
+    # The shard-invariant round carry (fractalyze/sp1-zorch#242): ONE dense
+    # `[ROW_CAP, MAX_COLS]` buffer bounded by the TOTAL Σ live rows, not a
+    # per-chip cap tuple. The per-chip cap path below stays the reference (and
+    # the pre-total-cap shard-invariance mechanism); the total-cap carry keys
+    # the compile on `ROW_CAP` + `W` + `MAX_COLS` alone.
+    if width_caps is None:
+        return _prove_total_cap(
+            summand, traces, static_nrs, list(num_reals), total_cap_class,
+            zeta, transcript, list(claims), adjs, ef, ef_limbs, num_vars,
+            flat_arrival=flat_arrival, num_cols=num_cols,
+        )
+
+    # Fixed-height row-major buffers: each chip's buffer is `[width, num_cols]`
     # (fractalyze/sp1-zorch#242), the orientation `zorch.constraint_eval` reads
-    # directly (and the one its follow-on `start_offset` window will read out of
-    # a shared class buffer) with no transpose. The height is pinned once at
-    # the padded round-0 height and never shrinks; folds re-extend into the same
-    # height so every per-chip op (and its compiled kernel) is round-invariant.
-    # `traces[i]` is column-major `(num_cols, nr)`, so transpose to rows before
-    # the axis-0 zero-extend. The buffer rides the scan carry, so it is promoted
-    # to the round's field up front: a base-field trace would otherwise change
-    # dtype the first time it folds against an extension-field challenge, which a
-    # fixed-shape carry forbids (the embedding is exact, so the polys are
-    # unchanged).
-    widths = [((nr + 3) // 4) * 4 for nr in nrs]
-    bufs = [_row_zero_extend(traces[i].T, widths[i]).astype(ef) for i in range(num_chips)]
+    # directly with no transpose. `width_caps` pins the height to a static cap
+    # (the sp1-zorch#230 cap class) instead of the per-shard exact pin
+    # `pad4(nr)`, so shards differing only in row counts present identical
+    # shapes and share one compile; the height stays pinned across rounds (folds
+    # re-extend into the same width). `traces[i]` is column-major `(num_cols,
+    # nr)`, so transpose to rows before the axis-0 zero-extend. The buffer rides
+    # the scan carry, so it is promoted to the round's field up front (the
+    # embedding is exact, so the polys are unchanged).
+    if width_caps is not None:
+        if len(width_caps) != num_chips:
+            raise ValueError(
+                f"width_caps must give one cap per chip: got {len(width_caps)} "
+                f"for {num_chips} chips"
+            )
+        for i, cap in enumerate(width_caps):
+            cap = int(cap)
+            if cap % 4:
+                raise ValueError(f"width_caps[{i}] must be a multiple of 4, got {cap}")
+            nr = static_nrs[i]
+            if nr is None:
+                if traces[i].shape[1] != cap:
+                    raise ValueError(
+                        f"traces[{i}] has a runtime height, so it must arrive "
+                        f"pre-padded to its cap: height {traces[i].shape[1]} != {cap}"
+                    )
+            elif cap < ((nr + 3) // 4) * 4:
+                raise ValueError(
+                    f"width_caps[{i}] = {cap} is below its exact pin "
+                    f"{((nr + 3) // 4) * 4} (num_reals[{i}] = {nr})"
+                )
+            if cap > width:
+                raise ValueError(
+                    f"width_caps[{i}] = {cap} exceeds the virtual row space {width}"
+                )
+        widths = [int(cap) for cap in width_caps]
+    else:
+        # All heights are static here (traced entries required caps above).
+        widths = [((int(nr) + 3) // 4) * 4 for nr in static_nrs]
+    # ONE dense buffer (sp1-zorch#230), sized to Σ per-chip cap (`sum of all chip
+    # max`), NOT 33 separate per-chip buffers. Per-chip live heights ride as a
+    # traced int32 vector; each chip's rows live at a RUNTIME element offset
+    # (cumsum of live heights × cols) inside the single flat buffer. The compile
+    # keys on N + the chip set alone, so shards that differ only in row counts
+    # share one executable. N is constant across rounds (the live prefix shrinks
+    # each fold; the buffer does not), keeping the scan-carry shape fixed.
+    cols_arr = [int(t.shape[0]) for t in traces]  # static num_cols per chip
+    elem_caps = [widths[i] * cols_arr[i] for i in range(num_chips)]
+    N = int(sum(elem_caps))
+    cols_j = jnp.asarray(cols_arr, jnp.int32)
+
+    cap_elems_j = jnp.asarray(elem_caps, jnp.int32)
+
+    def _elem_offsets(h: Array) -> Array:
+        # NON-OVERLAPPING cap-based element offset of each chip = cumsum of prior
+        # chips' FULL cap element counts, so a small chip's block can never nest
+        # inside a large-cap chip's block — the overlap that let a chained
+        # `dynamic_update_slice` drop StoreHalf inside StoreDouble on GPU. Since
+        # live <= cap, `max(live_elems, cap_elems) == cap_elems`, but taking the max
+        # off the TRACED heights keeps the offsets a runtime value: a static
+        # Python-int cumsum would specialize the 33 per-chip slices into ~250 CUDA
+        # command buffers (OOM), whereas the traced form keeps the graph compact.
+        # The offsets are h-independent (always the cap layout), so each chip folds
+        # in place within its own fixed segment — no cross-chip re-compaction.
+        elems = jnp.maximum(h.astype(jnp.int32) * cols_j, cap_elems_j)
+        return jnp.concatenate(
+            [jnp.zeros((1,), jnp.int32), jnp.cumsum(elems).astype(jnp.int32)]
+        )[:num_chips]
+
+    def _pack(blocks: list[Array], h: Array) -> Array:
+        # Write each chip's block (`[rows_i, cols_i]`, live rows valid + dead
+        # tail) into its OWN disjoint cap segment of the flat `[N]` buffer at the
+        # cap-based offset. Each chip owns `elem_caps[i]` elements, so the writes
+        # never overlap: a `dynamic_update_slice` can't spill into a neighbour and
+        # the chained writes don't alias (the fix for the StoreHalf-nested-in-
+        # StoreDouble drop). Static-size write at a runtime offset, in bounds since
+        # off_i + block_i ≤ off_i + elem_caps[i] = off_{i+1} ≤ N.
+        off = _elem_offsets(h)
+        buf = jnp.zeros((N,), ef)
+        for i in range(num_chips):
+            buf = lax.dynamic_update_slice(buf, blocks[i].reshape(-1), (off[i],))
+        return buf
+
+    row_ix = [jnp.arange(widths[i])[:, None] for i in range(num_chips)]
+
+    def _window(dense: Array, off_i: Array, i: int, h_i: Array) -> Array:
+        # Chip i's `[cap_i, cols_i]` window: a static-size read at its cap-based
+        # element offset (the chip's own disjoint segment). Rows past the live
+        # height `h_i` read the chip's own dead tail (zero from the initial pack,
+        # stale folded data after a re-pack), so mask them to the field zero —
+        # restoring the zero-extension the fold's stride-2 pairing assumes for an
+        # odd live height (its unpaired last row folds against a zero partner).
+        flat = lax.dynamic_slice(dense, (off_i,), (elem_caps[i],))
+        w = flat.reshape(widths[i], cols_arr[i])
+        return jnp.where(row_ix[i] < h_i, w, jnp.zeros((), ef))
+
+    heights = jnp.stack([jnp.asarray(nr, jnp.int32) for nr in num_reals])
+    dense = _pack(
+        [_row_zero_extend(traces[i].T, widths[i]).astype(ef) for i in range(num_chips)],
+        heights,
+    )
     # int32 threshold from the start: as a scan carry it must keep the same
     # leaf type fix_last_variable produces (it folds to a traced int32).
-    vgeqs = [VirtualGeq(jnp.asarray(nr, jnp.int32), one, zero) for nr in nrs]
+    vgeqs = [VirtualGeq(jnp.asarray(nr, jnp.int32), one, zero) for nr in num_reals]
     chip_claims = jnp.stack(list(claims))
     # The summand's beta expanded into per-chip column weights, each sliced to
     # its chip's width.
@@ -576,9 +1292,10 @@ def prove_jagged_zerocheck(
     # rest carry their live height as a traced int32 round carry. Zero-height
     # chips are production, not defensive: an SP1 shard carries its shape's
     # FULL chip set, and chips the program never exercised ship zero rows
-    # (six of the fibonacci fixture's 35 main chips).
-    is_zero_chip = [nr == 0 for nr in nrs]
-    nrs_live = [jnp.asarray(nr, jnp.int32) for nr in nrs]
+    # (six of the fibonacci fixture's 35 main chips). A traced height is
+    # statically live — its chip may be empty at run time, where the live
+    # bound and the vgeq correction already zero its terms.
+    is_zero_chip = [nr == 0 for nr in static_nrs]
 
     # Round-varying scan inputs, all O(1) to build (no per-round constraint
     # work): `last` is zeta back-to-front (the round binds zeta[n-1-rnd]); the
@@ -614,8 +1331,9 @@ def prove_jagged_zerocheck(
         return _zero_extend(contract_hypercube_step(buf), eq_width)
 
     def round_step(carry, xs):
-        bufs, vgeqs, chip_claims, eq_adj, nrs_live, eq_buf, transcript = carry
+        dense, vgeqs, chip_claims, eq_adj, heights, eq_buf, transcript = carry
         last, interp, is_round0 = xs
+        off = _elem_offsets(heights)
 
         # Only constraint_eval (inside `_summand_values`) is shape-divergent,
         # so the chip loop runs the summand slots unrolled: live chips reduce
@@ -627,11 +1345,15 @@ def prove_jagged_zerocheck(
         p0s = []
         diffs = []
         for i in range(num_chips):
-            # Row-major carry: the pair fold halves the ROW axis (axis 0). Each
-            # chip block height is pad4(nr) — a multiple of 4, hence even — so
-            # the stride-2 row pairing never straddles a fold boundary (the
-            # axis-0 dual of the last-axis `split_pairs`, fractalyze/sp1-zorch#242).
-            p0, p1 = bufs[i][0::2], bufs[i][1::2]
+            # Chip i's `[cap_i, cols_i]` window out of the single dense buffer at
+            # its runtime element offset. The pair fold halves the ROW axis
+            # (axis 0); each cap is a multiple of 4, so the stride-2 row pairing
+            # never straddles a fold boundary. Rows past the chip's live height
+            # spill into adjacent packed data — masked by the summand's live
+            # bound and discarded by the fold's dead tail (byte-identical to the
+            # per-chip buffer on the live prefix).
+            window = _window(dense, off[i], i, heights[i])
+            p0, p1 = window[0::2], window[1::2]
             diff = p1 - p0
             p0s.append(p0)
             diffs.append(diff)
@@ -641,11 +1363,11 @@ def prove_jagged_zerocheck(
             else:
                 vals = _summand_values(
                     summand._term_fns[i], summand.alphas[i], p0, diff,
-                    chip_gkr[i], nrs_live[i], is_round0,
+                    chip_gkr[i], heights[i], is_round0,
                 )
                 poly_i = zerocheck_round_poly(
                     vals, eq, interp, chip_claims[i], last, eq_adj, adjs[i],
-                    nrs_live[i], vgeqs[i],
+                    heights[i], vgeqs[i],
                 )
             polys_list.append(poly_i)
 
@@ -664,29 +1386,35 @@ def prove_jagged_zerocheck(
         transcript = transcript.observe(rlc)
         transcript, r = sample_challenge(transcript, ef, ef_limbs)
 
-        bufs = [_row_zero_extend(p0s[i] + r * diffs[i], widths[i]) for i in range(num_chips)]
+        # Fold each chip's live rows (`p0 + r·diff`, `[cap_i/2, cols_i]`) and
+        # re-pack into a fresh dense buffer at the halved live offsets. N is
+        # unchanged; the live prefix shrinks.
+        heights = (heights + 1) // 2
+        dense = _pack([p0s[i] + r * diffs[i] for i in range(num_chips)], heights)
         vgeqs = [vg.fix_last_variable(r) for vg in vgeqs]
-        nrs_live = [(nr + 1) // 2 for nr in nrs_live]
         chip_claims, eq_adj = fold_round_scalars(polys, r, eq_adj, last)
 
         carry = (
-            bufs,
+            dense,
             vgeqs,
             chip_claims,
             eq_adj,
-            nrs_live,
+            heights,
             fold_eq(eq_buf),
             transcript,
         )
         return carry, RoundMsg(round_poly=rlc, challenge=r)
 
-    init = (bufs, vgeqs, chip_claims, eq_adj, nrs_live, eq_buf, transcript)
-    (bufs, *_, transcript), msgs = lax.scan(
+    init = (dense, vgeqs, chip_claims, eq_adj, heights, eq_buf, transcript)
+    (dense, _vg, _cc, _ea, heights, _eqb, transcript), msgs = lax.scan(
         round_step, init, (last_xs, interp_xs, is_round0_xs)
     )
 
-    # The first two rows of each row-major buffer are the whole fold result; the
-    # rest of the fixed height is dead zeros. Transpose back to the column-major
-    # `(num_cols, 2)` folded-trace contract the caller expects (position 0 holds
-    # the column's evaluation at the sumcheck point).
-    return [b[:2, :].T for b in bufs], transcript, msgs
+    # The first two rows of each chip's window are the whole fold result; the
+    # rest of the fixed height is dead. Slice each chip's window from the final
+    # dense buffer at its final live offset and transpose back to the
+    # column-major `(num_cols, 2)` folded-trace contract the caller expects.
+    off = _elem_offsets(heights)
+    return [
+        _window(dense, off[i], i, heights[i])[:2, :].T for i in range(num_chips)
+    ], transcript, msgs

@@ -30,7 +30,7 @@ from zorch.pcs.jagged.region import JaggedRegion
 from zorch.commit.smcs import SingleMatrixCommitmentScheme
 from zorch.pcs.jagged.commit import commit_region
 from sp1_zorch.logup_gkr.circuit import GkrChip
-from sp1_zorch.logup_gkr.prover import prove_logup_gkr
+from sp1_zorch.logup_gkr.prover import ChipEvaluation, prove_logup_gkr
 from sp1_zorch.poseidon2.koalabear16 import koalabear16_params
 from sp1_zorch.shard_prover.prove_shard import (
     PreambleStage,
@@ -42,6 +42,7 @@ from sp1_zorch.shard_prover.prove_shard import (
 )
 from sp1_zorch.shard_prover.replay import JitPermutation
 from sp1_zorch.shard_prover.types import MachineVerifyingKey
+from sp1_zorch.zerocheck.jagged import TotalCapClass
 from sp1_zorch.zerocheck.prover import prove_shard_zerocheck
 from zorch.utils.bits import log2_ceil_usize
 
@@ -216,6 +217,13 @@ class ProveShardChainTest(absltest.TestCase):
         # below exercise it). This executed reference stays eager because CPU
         # cannot execute the jitted field dots (fractalyze/frx#168); the jitted
         # prove is GPU's, byte-checked there.
+        # The zerocheck stage is always cap-class (jitted+capped, CPU-runnable);
+        # exact heights rounded to the buffer-width multiple of 4 are a valid
+        # per-shard cap and stay byte-identical to an eager exact prove.
+        zc_caps = {
+            n: ((int(h) + 3) // 4) * 4
+            for n, h in zip(main_region.chip_names, main_region.chip_heights)
+        }
         chain = prove_shard_chain(
             smcs=smcs,
             log_blowup=_LOG_BLOWUP,
@@ -228,6 +236,7 @@ class ProveShardChainTest(absltest.TestCase):
             max_log_row_count=_MAX_LOG_ROW_COUNT,
             open_num_queries=_OPEN_NUM_QUERIES,
             jit=False,
+            zerocheck_width_caps=zc_caps,
         )
         # A jit=True twin for the lowering smoke (sp1-zorch#119): same wiring,
         # with the commit/zerocheck/jagged-eval stages jitted (LogUp-GKR stays eager).
@@ -243,6 +252,7 @@ class ProveShardChainTest(absltest.TestCase):
             max_log_row_count=_MAX_LOG_ROW_COUNT,
             open_num_queries=_OPEN_NUM_QUERIES,
             jit=True,
+            zerocheck_width_caps=zc_caps,
         )
         # The full four-stage chain runs eagerly on CPU: the jagged-eval
         # stage's base->extension embeds keep its EF->PF converts off the CPU
@@ -460,7 +470,9 @@ class ProveShardChainTest(absltest.TestCase):
 
     def test_zerocheck_stage_rejects_a_chain_without_gkr(self) -> None:
         stage = ZerocheckStage(
-            {"alpha": _WitnessChip()}, max_log_row_count=_MAX_LOG_ROW_COUNT
+            {"alpha": _WitnessChip()},
+            max_log_row_count=_MAX_LOG_ROW_COUNT,
+            width_caps={"alpha": 8},
         )
         bridge = ShardBridge(
             self.bridge.main_region, self.bridge.prep_region, self.bridge.public_values
@@ -536,6 +548,153 @@ class JitPermutationTest(absltest.TestCase):
     def test_distinct_from_a_non_jitpermutation(self) -> None:
         p = Poseidon2(koalabear16_params())
         self.assertNotEqual(JitPermutation(p), p)
+
+
+class ZerocheckStageCapClassTest(absltest.TestCase):
+    """ZerocheckStage's cap-class plumbing: the name-keyed caps mapping
+    is reordered to the region's chip order, the eager repack + traced
+    heights feed the class-level capped jit body, and two shards of one cap
+    class share its compile while byte-matching an eager exact-heights prove
+    (``prove_shard_zerocheck`` with per-shard heights)."""
+
+    class _PvFreeChip:
+        def eval_constraints(self, trace, public_values):
+            a, b = trace[:, 0], trace[:, 1]
+            one = jnp.ones((), trace.dtype)
+            return jnp.stack([(a - one) * (b - one)], axis=-1)
+
+    def _rand_ef(self, seed: int, shape) -> jnp.ndarray:
+        return _rand_bf(seed, tuple(shape) + (4,)).view(EF).reshape(shape)
+
+    def test_capped_stage_matches_exact_and_shares_one_compile(self) -> None:
+        chips = {"alpha": self._PvFreeChip()}
+        capped = ZerocheckStage(
+            chips,
+            max_log_row_count=_MAX_LOG_ROW_COUNT,
+            width_caps={"alpha": 16},
+        )
+        before = ZerocheckStage._jit_body_capped._cache_size()
+        for seed, rows in ((40, 5), (50, 9)):
+            main_region = JaggedRegion.from_chips(
+                [
+                    jnp.concatenate(
+                        [jnp.ones((rows, 1), dtype=BF), _rand_bf(seed, (rows, 1))],
+                        axis=1,
+                    )
+                ],
+                log_stacking_height=4,
+                max_log_row_count=_MAX_LOG_ROW_COUNT,
+                chip_names=("alpha",),
+            )
+            public_values = _rand_bf(seed + 1, (8,))
+            gkr_eval_point = self._rand_ef(seed + 2, (7,))
+            gkr_chip_openings = {
+                "alpha": ChipEvaluation(
+                    main=self._rand_ef(seed + 3, (2,)), preprocessed=None
+                )
+            }
+            bridge = replace(
+                ShardBridge(main_region, None, public_values),
+                gkr_eval_point=gkr_eval_point,
+                gkr_chip_openings=gkr_chip_openings,
+            )
+            # Reference: the eager exact-heights prove (same byte contract).
+            _, want = prove_shard_zerocheck(
+                chips,
+                main_region,
+                None,
+                public_values,
+                gkr_eval_point,
+                gkr_chip_openings,
+                cheap_transcript(BF),
+                max_log_row_count=_MAX_LOG_ROW_COUNT,
+            )
+            got_bridge, _, got = capped(bridge, cheap_transcript(BF))
+
+            label = f"rows {rows}"
+            _assert_bytes_equal(got.msgs.round_poly, want.msgs.round_poly, label)
+            _assert_bytes_equal(got.msgs.challenge, want.msgs.challenge, label)
+            _assert_bytes_equal(got.claimed_sum, want.claimed_sum, label)
+            _assert_bytes_equal(got.finals[0], want.finals[0], label)
+            _assert_bytes_equal(
+                got.opened_values["alpha"].main,
+                want.opened_values["alpha"].main,
+                label,
+            )
+            _assert_bytes_equal(
+                got_bridge.zc_sumcheck_point, got.msgs.challenge, label
+            )
+        self.assertEqual(
+            ZerocheckStage._jit_body_capped._cache_size() - before, 1
+        )
+
+    def test_total_cap_stage_matches_exact_and_shares_one_compile(self) -> None:
+        # The sp1-zorch#242 stage-level deliverable: a `total_cap_class` Stage
+        # repacks each chip to `2*window` rows, rides the shard's heights as one
+        # traced int32 vector into the single shared-buffer stage, and two shards
+        # of one class share its compile while byte-matching an exact-heights
+        # prove. Class bounds both shards: window >= max ceil(rows/2) over {5, 9}
+        # = 5; the 2-column chip's area is 2*evenpad(rows) <= 20, so
+        # area_cap >= 20 + 2*window = 30.
+        chips = {"alpha": self._PvFreeChip()}
+        total = ZerocheckStage(
+            chips,
+            max_log_row_count=_MAX_LOG_ROW_COUNT,
+            total_cap_class=TotalCapClass(area_cap=30, window=5),
+        )
+        before = ZerocheckStage._jit_body_totalcap_traced._cache_size()
+        for seed, rows in ((40, 5), (50, 9)):
+            main_region = JaggedRegion.from_chips(
+                [
+                    jnp.concatenate(
+                        [jnp.ones((rows, 1), dtype=BF), _rand_bf(seed, (rows, 1))],
+                        axis=1,
+                    )
+                ],
+                log_stacking_height=4,
+                max_log_row_count=_MAX_LOG_ROW_COUNT,
+                chip_names=("alpha",),
+            )
+            public_values = _rand_bf(seed + 1, (8,))
+            gkr_eval_point = self._rand_ef(seed + 2, (7,))
+            gkr_chip_openings = {
+                "alpha": ChipEvaluation(
+                    main=self._rand_ef(seed + 3, (2,)), preprocessed=None
+                )
+            }
+            bridge = replace(
+                ShardBridge(main_region, None, public_values),
+                gkr_eval_point=gkr_eval_point,
+                gkr_chip_openings=gkr_chip_openings,
+            )
+            _, want = prove_shard_zerocheck(
+                chips,
+                main_region,
+                None,
+                public_values,
+                gkr_eval_point,
+                gkr_chip_openings,
+                cheap_transcript(BF),
+                max_log_row_count=_MAX_LOG_ROW_COUNT,
+            )
+            got_bridge, _, got = total(bridge, cheap_transcript(BF))
+
+            label = f"rows {rows}"
+            _assert_bytes_equal(got.msgs.round_poly, want.msgs.round_poly, label)
+            _assert_bytes_equal(got.msgs.challenge, want.msgs.challenge, label)
+            _assert_bytes_equal(got.claimed_sum, want.claimed_sum, label)
+            _assert_bytes_equal(got.finals[0], want.finals[0], label)
+            _assert_bytes_equal(
+                got.opened_values["alpha"].main,
+                want.opened_values["alpha"].main,
+                label,
+            )
+            _assert_bytes_equal(
+                got_bridge.zc_sumcheck_point, got.msgs.challenge, label
+            )
+        self.assertEqual(
+            ZerocheckStage._jit_body_totalcap_traced._cache_size() - before, 1
+        )
 
 
 if __name__ == "__main__":

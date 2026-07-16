@@ -139,7 +139,14 @@ def small_shard_chain_fixture() -> ShardChainFixture:
         num_row_variables=MAX_LOG_ROW_COUNT - 1,
         max_log_row_count=MAX_LOG_ROW_COUNT,
     )
-    prove_chain = prove_shard_chain(open_num_queries=2, **shared)
+    prove_chain = prove_shard_chain(
+        open_num_queries=2,
+        zerocheck_width_caps={
+            n: ((int(h) + 3) // 4) * 4
+            for n, h in zip(main_region.chip_names, main_region.chip_heights)
+        },
+        **shared,
+    )
     # Synthetic shard, 8-element random public values, no real public-values
     # bus: the structural / stage-dual mirror these suites pin is orthogonal
     # to the output-layer balance leg, which is covered on a real shard in

@@ -60,6 +60,7 @@ mismatch aborts in ~one trace-commit, not after the whole chain.
 from __future__ import annotations
 
 import gc
+import json
 import sys
 import time
 from pathlib import Path
@@ -92,6 +93,7 @@ from sp1_zorch.shard_prover.replay import (
 )
 from sp1_zorch.shard_prover.serialize import encode_shard_proof, encode_vk
 from sp1_zorch.shard_prover.sp1_ffi import sp1_verify_shard
+from sp1_zorch.zerocheck.jagged import TotalCapClass
 from zorch.hash.compression import Compression, CompressionParams
 from zorch.hash.poseidon2.poseidon2 import Poseidon2
 from zorch.hash.sponge import Sponge, SpongeParams
@@ -102,7 +104,13 @@ from zorch.round import Round
 _LOG_BLOWUP = 2
 
 _SHARD_DIR = flags.DEFINE_string(
-    "shard_dir", None, "rsp shard dump directory (e.g. .../rsp_dump/shardN)."
+    "shard_dir",
+    None,
+    "rsp shard dump directory (e.g. .../rsp_dump/shardN). Comma-separate "
+    "several to prove them sequentially in ONE process: jitted stage bodies "
+    "whose static keys match are then compiled once and reused — with "
+    "--zc_class_json this is the shard-invariance check (the second "
+    "same-class shard's zerocheck must skip the cold compile).",
 )
 _GKR_POW_BITS = flags.DEFINE_integer(
     "gkr_pow_bits", 12, "GKR grind bits (SP1 hardcodes GKR_GRINDING_BITS = 12)."
@@ -135,6 +143,32 @@ _MAX_STAGE = flags.DEFINE_integer(
     "stages' multi-minute compile for a cheaper iteration loop; golden checks "
     "for stages beyond N are skipped.",
 )
+_ZC_CLASS_JSON = flags.DEFINE_string(
+    "zc_class_json",
+    None,
+    'JSON {"area_cap", "window"} pinning the shard-invariant zerocheck '
+    "TotalCapClass; every shard of one class shares ONE zerocheck compile. "
+    "Default: each shard's own a-priori-tight class (per-shard compile). "
+    "Assemble a cross-shard class as the per-field max of the printed "
+    "ZC_CLASS lines. The jagged-packed round buffer costs area_cap extension-"
+    "field elements — a class bounding a much larger shard prices every "
+    "shard at that area.",
+)
+_ZC_CAPS_JSON = flags.DEFINE_string(
+    "zc_caps_json",
+    None,
+    "JSON {chip: cap} switching zerocheck to the per-chip width-caps route "
+    "(sp1-zorch#230): each chip gets its own [cap, cols] buffer, so no chip "
+    "pays another chip's width — the route that fits wide-chip sets on a "
+    "32 GiB card. Same caps file across shards = one zerocheck compile per "
+    "chip set. Keep the cap total under ~11.3M rows (sp1-zorch#265 OOB). "
+    "Mutually exclusive with --zc_class_json.",
+)
+_JAXPROF_DIR = flags.DEFINE_string(
+    "jaxprof_dir",
+    None,
+    "Write a jax profiler trace of the last (warm) prove pass here.",
+)
 class _TimedRound(Round):
     """Print each stage's wall-clock so the compile-vs-runtime split is
     visible on every run (async dispatch makes unblocked timings lie, so
@@ -159,8 +193,15 @@ class _TimedRound(Round):
         out = self._inner(carry, transcript)
         frx.block_until_ready(out)
         label = type(self._inner).__name__
+        elapsed_ms = (time.monotonic() - t0) * 1e3
+        # Device-pool telemetry per stage boundary: `mem` is resident after the
+        # stage, `peak` the pool high-water so far. On a mid-stage OOM the
+        # PREVIOUS stage's line is the resident set the failing alloc fought.
+        stats = frx.local_devices()[0].memory_stats() or {}
         print(
-            f"[stage {label}] {(time.monotonic() - t0) * 1e3:.1f}ms",
+            f"[stage {label}] {elapsed_ms:.1f}ms"
+            f" mem={stats.get('bytes_in_use', 0) / 2**30:.2f}GiB"
+            f" peak={stats.get('peak_bytes_in_use', 0) / 2**30:.2f}GiB",
             flush=True,
         )
         # out is (carry, transcript, msg); check the stage's message and abort
@@ -177,7 +218,47 @@ class _TimedRound(Round):
 
 def main(argv) -> None:
     del argv
-    shard_dir = Path(_SHARD_DIR.value)
+    if _ZC_CAPS_JSON.value and _ZC_CLASS_JSON.value:
+        raise app.UsageError(
+            "--zc_caps_json (per-chip width caps) and --zc_class_json "
+            "(total-cap class) are mutually exclusive zerocheck routes"
+        )
+    shard_dirs = [Path(p) for p in _SHARD_DIR.value.split(",")]
+    # One chips mapping per chip set, reused across shards: the zerocheck jit
+    # keys statically on the chips tuple, so two fixture loads must present the
+    # SAME objects for the second shard to hit the first's compile. The SMCS is
+    # a static key of the commit/eval bodies for the same reason — one instance
+    # for the whole run.
+    shared_chips: dict[tuple[str, ...], object] = {}
+    perm = Poseidon2(koalabear16_params())
+    smcs = SingleMatrixCommitmentScheme(
+        Sponge(perm, SpongeParams(rate=8, out=8)),
+        Compression(perm, CompressionParams(arity=2, chunk=8)),
+    )
+    failed: list[str] = []
+    for shard_dir in shard_dirs:
+        if len(shard_dirs) > 1:
+            print(f"===== shard {shard_dir.name} =====", flush=True)
+        try:
+            _verify_shard(shard_dir, smcs, shared_chips)
+        except SystemExit:
+            # A stage byte-mismatch fail-fasts the SHARD; keep sweeping the
+            # rest — later shards share the compile cache either way.
+            failed.append(shard_dir.name)
+            print(f"===== {shard_dir.name} FAILED: byte-mismatch =====", flush=True)
+        except Exception as e:  # OOM / lowering limits: report, keep sweeping
+            failed.append(shard_dir.name)
+            print(
+                f"===== {shard_dir.name} FAILED: {type(e).__name__}: {e} =====",
+                flush=True,
+            )
+    if failed:
+        sys.exit(f"failed shards: {', '.join(failed)}")
+
+
+def _verify_shard(
+    shard_dir: Path, smcs: SingleMatrixCommitmentScheme, shared_chips: dict
+) -> None:
     shard = load_fixture_shard(shard_dir)
     main_region, prep_region = shard_regions(shard)
 
@@ -185,24 +266,60 @@ def main(argv) -> None:
     order = main.traces.chip_order
     num_reals = [main.traces.per_chip[name].num_real for name in order]
 
-    # Drop the shard once its raw trace arrays are copied into the region dense:
-    # the duplicate would otherwise stay resident through the GKR pyramid and
-    # overflow the memory budget on wide shards. vk/chips/public_values are
-    # metadata and pin no trace data.
+    # Drop the shard once its raw trace arrays are copied into the region
+    # dense: the duplicate would otherwise stay resident through the GKR
+    # pyramid and overflow the memory budget on wide shards. vk / chips /
+    # public_values are metadata and pin no trace data. The chips/gkr_chips
+    # pair is shared per chip set across shards (the stage jits key statically
+    # on object identity).
     vk = shard.vk
-    chips = main.chips
+    chips, gkr_chips = shared_chips.setdefault(
+        tuple(order), (main.chips, build_gkr_chips(main.chips, order))
+    )
     public_values = main.public_values
-    gkr_chips = build_gkr_chips(chips, order)
     chip_metadata = preamble_chip_metadata(order, num_reals, dtype=F)
     num_betas = num_beta_values(chips)
     del shard, main
     gc.collect()
 
-    perm = Poseidon2(koalabear16_params())
-    smcs = SingleMatrixCommitmentScheme(
-        Sponge(perm, SpongeParams(rate=8, out=8)),
-        Compression(perm, CompressionParams(arity=2, chunk=8)),
+    # zerocheck rides the traced total-Σheights-cap round (sp1-zorch#242):
+    # buffer bounds come from a TotalCapClass, the shard's real heights ride as
+    # one traced int32 vector, and the compile keys on the class + chip set —
+    # shards of one class share the executable. Default class: this shard's
+    # own a-priori-tight bounds; --zc_class_json pins a cross-shard class
+    # (assemble it as the per-field max of the ZC_CLASS lines printed here).
+    print("CHIP_HEIGHTS " + " ".join(f"{n}:{int(r)}" for n, r in zip(order, num_reals)), flush=True)
+    prep_widths = (
+        {n: int(prep_region.chip_widths[k]) for k, n in enumerate(prep_region.chip_names)}
+        if prep_region is not None
+        else {}
     )
+    chip_cols = [
+        int(main_region.chip_widths[i]) + prep_widths.get(name, 0)
+        for i, name in enumerate(order)
+    ]
+    own_class = TotalCapClass.from_heights([int(r) for r in num_reals], chip_cols)
+    print(
+        "ZC_CLASS "
+        + json.dumps(
+            {"area_cap": own_class.area_cap, "window": own_class.window}
+        ),
+        flush=True,
+    )
+    tc_class = own_class
+    zc_caps = None
+    if _ZC_CLASS_JSON.value:
+        with open(_ZC_CLASS_JSON.value) as f:
+            c = {k: int(v) for k, v in json.load(f).items()}
+        tc_class = TotalCapClass(area_cap=c["area_cap"], window=c["window"])
+    elif _ZC_CAPS_JSON.value:
+        # Per-chip width-caps route: no dense rectangle, so wide-chip sets fit
+        # a 32 GiB card; the caps file is the cross-shard invariance key.
+        with open(_ZC_CAPS_JSON.value) as f:
+            loaded = {k: int(v) for k, v in json.load(f).items()}
+        zc_caps = {name: loaded[name] for name in order}
+        tc_class = None
+
     # The GKR witness is consumed only by LogUp-GKR; a trace-commit-only run
     # (--max_stage=1) slices that stage off, so don't require the gkr fixture.
     n = max(1, min(4, _MAX_STAGE.value))
@@ -212,6 +329,9 @@ def main(argv) -> None:
             (shard_dir / "gpu_gkr_state.txt").read_text(), skip_unkeyed=True
         )
         witness = jnp.array(int(gkr_state["witness"]), F)
+    # The zerocheck and GKR jits key statically on the chips / gkr_chips
+    # tuples, so a multi-shard run must present the SAME objects to every
+    # same-chip-set shard — a fresh fixture load's chips would miss the
     chain = prove_shard_chain(
         smcs=smcs,
         log_blowup=_LOG_BLOWUP,
@@ -227,6 +347,8 @@ def main(argv) -> None:
         open_pow_bits=_OPEN_POW_BITS.value,
         witness=witness,
         jit=True,
+        zerocheck_width_caps=zc_caps,
+        zerocheck_total_cap_class=tc_class,
     )
     # Slice to the first N stages (--max_stage) so the downstream stages' compile
     # is skipped for a cheaper loop. ProveChain collects one message per round,
@@ -301,12 +423,16 @@ def main(argv) -> None:
     # number use nsys kernel-active time on the warm pass (#124).
     runs = _RUNS.value
     chain.rounds = [_TimedRound(rnd, check) for rnd, check in zip(rounds, stage_checks)]
+    _prof_dir = _JAXPROF_DIR.value
     for i in range(runs):
         kind = "cold" if i == 0 else "warm"
         print(
             f"=== prove pass {i + 1}/{runs} ({kind}, stages 1..{n}) ===",
             flush=True,
         )
+        _prof = _prof_dir and i == runs - 1  # profile the last (warm) pass only
+        if _prof:
+            frx.profiler.start_trace(_prof_dir)
         t0 = time.monotonic()
         # Release the prior pass's device buffers before this pass allocates. The
         # bridge pins the shard's trace regions plus the GKR openings; holding a
@@ -317,7 +443,11 @@ def main(argv) -> None:
             ShardBridge(main_region, prep_region, public_values),
             fresh_transcript(),
         )
+        frx.block_until_ready((carry, msgs))
         print(f"chain run: {(time.monotonic() - t0) * 1e3:.1f}ms", flush=True)
+        if _prof:
+            frx.profiler.stop_trace()
+            print(f"jaxprof written to {_prof_dir}", flush=True)
     # Each stage's golden check already ran inside the round wrapper and exits
     # on a mismatch, so reaching here means stages 1..n all byte-matched.
     print(f"prove_shard chain (stages 1..{n}) byte-match: ALL OK")
