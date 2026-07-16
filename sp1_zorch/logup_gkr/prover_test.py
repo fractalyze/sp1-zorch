@@ -20,7 +20,7 @@ from zk_dtypes import koalabear_mont as F
 from zk_dtypes import koalabearx4_mont as EF
 
 from zorch.pcs.jagged.region import JaggedRegion
-from sp1_zorch.logup_gkr.circuit import GkrChip
+from sp1_zorch.logup_gkr.circuit import GkrCapClass, GkrChip
 from sp1_zorch.logup_gkr.head import (
     EF_LIMBS,
     GrindRound,
@@ -32,7 +32,9 @@ from sp1_zorch.logup_gkr.prover import (
     ChipOpeningsRound,
     extract_sp1_outputs,
     num_beta_values,
+    open_traces_capped,
     prove_logup_gkr,
+    prove_logup_gkr_capped,
     resolve_witness_and_grind,
 )
 from sp1_zorch.shard_prover.chip_loader import make_chip_stub
@@ -287,6 +289,127 @@ class ProveLogupGkrTest(absltest.TestCase):
         # challenges -- and the eval_point they drive -- diverge from the
         # zero-witness run.
         self.assertFalse(bool(jnp.all(proof.eval_point == zero.eval_point)))
+
+
+class CappedProveTest(absltest.TestCase):
+    """The class-shaped prove against the exact prove — the linchpin of the
+    sp1-zorch#272 contract: the class layout only adds fold-neutral slots,
+    so every proof field, opening, and the transcript must be byte-identical
+    on every shard the class admits."""
+
+    _CHIPS = [
+        GkrChip("A", (_interaction(0, 1),)),
+        GkrChip("B", (_interaction(0, 1, kind=5),)),
+    ]
+
+    def _shards(self):
+        return [
+            _region(_main(24), _main(4, offset=100), names=("A", "B")),
+            _region(_main(6, offset=7), _main(16, offset=50), names=("A", "B")),
+        ]
+
+    def _class_of(self, shards):
+        return GkrCapClass.union(
+            *(
+                GkrCapClass.from_heights([int(h) for h in s.chip_heights])
+                for s in shards
+            )
+        )
+
+    def _assert_proofs_byte_equal(self, got, want) -> None:
+        self.assertEqual(_proof_digest(got), _proof_digest(want))
+        # The digest skips prep openings and the witness; compare directly.
+        for name, ev in want.chip_openings.items():
+            got_prep = got.chip_openings[name].preprocessed
+            if ev.preprocessed is None:
+                self.assertIsNone(got_prep)
+            else:
+                self.assertTrue(bool(jnp.all(got_prep == ev.preprocessed)))
+        self.assertTrue(bool(jnp.all(got.witness == want.witness)))
+
+    def test_capped_prove_matches_exact_across_one_class(self) -> None:
+        shards = self._shards()
+        cap_class = self._class_of(shards)
+        for shard in shards:
+            _, exact = prove_logup_gkr(
+                self._CHIPS,
+                shard,
+                None,
+                cheap_transcript(F),
+                num_betas=3,
+                num_row_variables=4,
+            )
+            capped_t, capped = prove_logup_gkr_capped(
+                self._CHIPS,
+                shard,
+                None,
+                cheap_transcript(F),
+                num_betas=3,
+                num_row_variables=4,
+                cap_class=cap_class,
+            )
+            self._assert_proofs_byte_equal(capped, exact)
+            # The advanced transcripts agree too: same next challenge.
+            exact_t, _ = prove_logup_gkr(
+                self._CHIPS,
+                shard,
+                None,
+                cheap_transcript(F),
+                num_betas=3,
+                num_row_variables=4,
+            )
+            _, c_exact = exact_t.sample(1)
+            _, c_capped = capped_t.sample(1)
+            self.assertTrue(bool(jnp.all(c_exact == c_capped)))
+
+    def test_capped_open_shares_one_compile_across_the_class(self) -> None:
+        shards = self._shards()
+        cap_class = self._class_of(shards)
+        before = open_traces_capped._cache_size()
+        for shard in shards:
+            prove_logup_gkr_capped(
+                self._CHIPS,
+                shard,
+                None,
+                cheap_transcript(F),
+                num_betas=3,
+                num_row_variables=4,
+                cap_class=cap_class,
+            )
+        self.assertEqual(open_traces_capped._cache_size() - before, 1)
+
+    def test_capped_prove_with_prep_matches_exact(self) -> None:
+        # A prep chip under a class wider than the shard: the class bound
+        # stands in for the exact build's trim-to-main and the prep opens at
+        # its keygen height on both paths.
+        prep = _main(8, width=1, offset=200)
+        inter = Interaction(
+            values=(VirtualPairCol(constant=0, column_weights=((0, True, 1),)),),
+            multiplicity=VirtualPairCol.single_main(0),
+            kind=2,
+            is_send=True,
+        )
+        chips = [GkrChip("A", (inter,))]
+        shard = _region(_main(4), names=("A",))
+        prep_region = _region(prep, names=("A",))
+        _, exact = prove_logup_gkr(
+            chips,
+            shard,
+            prep_region,
+            cheap_transcript(F),
+            num_betas=3,
+            num_row_variables=3,
+        )
+        _, capped = prove_logup_gkr_capped(
+            chips,
+            shard,
+            prep_region,
+            cheap_transcript(F),
+            num_betas=3,
+            num_row_variables=3,
+            cap_class=GkrCapClass((6,)),
+        )
+        self._assert_proofs_byte_equal(capped, exact)
 
 
 class ChipOpeningsRoundTest(absltest.TestCase):
