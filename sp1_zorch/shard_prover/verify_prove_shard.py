@@ -443,7 +443,7 @@ def _verify_shard(
             ShardBridge(main_region, prep_region, public_values),
             fresh_transcript(),
         )
-        frx.block_until_ready((carry, msgs))
+        frx.block_until_ready((bridge, msgs))
         print(f"chain run: {(time.monotonic() - t0) * 1e3:.1f}ms", flush=True)
         if _prof:
             frx.profiler.stop_trace()
