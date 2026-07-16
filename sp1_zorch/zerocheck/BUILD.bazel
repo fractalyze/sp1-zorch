@@ -128,6 +128,29 @@ py_binary(
     ],
 )
 
+# Multi-shard zero-recompile check for the traced total-cap zerocheck route:
+# proves each --shard-dirs shard through one ZerocheckStage(total_cap_class=...)
+# and asserts a single stage compile across the group. Full-shard dumps stay
+# external (too large to vendor); GKR caches are the replay module's npz.
+#   bazel run //sp1_zorch/zerocheck:verify_zerocheck_recompile -- \
+#       --shard-dirs="$PWD/dump/shard17,$PWD/dump/shard18" \
+#       --gkr-cache-dir="$PWD/gkr_caches" \
+#       --zc_class_json="$PWD/zc_class.json"
+py_binary(
+    name = "verify_zerocheck_recompile",
+    srcs = ["verify_zerocheck_recompile.py"],
+    deps = [
+        ":zerocheck",
+        "//sp1_zorch/logup_gkr",
+        "//sp1_zorch/shard_prover",
+        "//sp1_zorch/shard_prover:replay",
+        requirement("frx"),
+        requirement("frx_cuda12_plugin"),
+        requirement("numpy"),
+        requirement("zk_dtypes"),
+        requirement("frx_cuda12_pjrt"),
+    ],
+)
 py_test(
     name = "verify_zerocheck_test",
     size = "medium",

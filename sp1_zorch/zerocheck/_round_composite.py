@@ -36,13 +36,22 @@ def _decomp(v0, v2, v4, eq, interp, claim, last, eq_adj, padded_row_adj,
     # — see zorch/poly/geq.py; built in jagged.py as VirtualGeq(nr, one, zero).
     vgeq = VirtualGeq(vgeq_threshold, vgeq_geq_coeff, vgeq_eq_coeff)
     y_raw = (jnp.sum(v0 * eq), jnp.sum(v2 * eq), jnp.sum(v4 * eq))
-    threshold_half = (nr_live + 1) // 2 - 1
+    # A runtime-empty chip (nr_live == 0 — a cap-class chip the program never
+    # exercised) has no live row: the last-live-row index (nr_live+1)//2 - 1 is
+    # -1, which corrupts the padding correction and leaks a spurious term for a
+    # constraint that is nonzero on an all-zero row (e.g. DivRem). Clamp the
+    # index and vanish the reduce to the trivial claim identity — byte-identical
+    # to the exact path's static `is_zero_chip` branch (its width-0 buffer
+    # reaches _zero_chip_poly by another route), at no extra Gruen dot.
+    empty = nr_live == 0
+    threshold_half = jnp.maximum((nr_live + 1) // 2 - 1, 0)
     msb_lagrange = eq_adj * eq[threshold_half]
 
     def corr(y, t_val):
         eq_last = eq_factor(t_val, last)
         vg = vgeq.fix_last_variable(t_val).eval_at(threshold_half)
-        return eq_last * (y * eq_adj - padded_row_adj * vg * msb_lagrange)
+        val = eq_last * (y * eq_adj - padded_row_adj * vg * msb_lagrange)
+        return jnp.where(empty, jnp.zeros((), ef), val)
 
     zero, two, four = jnp.zeros((), ef), jnp.array(2, ef), jnp.array(4, ef)
     y0, y2, y4 = corr(y_raw[0], zero), corr(y_raw[1], two), corr(y_raw[2], four)

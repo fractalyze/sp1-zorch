@@ -124,9 +124,9 @@ JAX_PLATFORMS=cuda \
 ```
 
 Use `--runs=5`, not `--runs=2`: the **first** warm pass (pass 2) has not fully
-settled — LogUp-GKR's eager host-dispatch driver reads ~58 ms on pass 2 but
-converges to ~38 ms by passes 3–5, so reading pass 2 overstates it ~50%. Take a
-converged steady-state pass. Pin to an idle card on a shared box
+settled — LogUp-GKR's eager host-dispatch driver reads ~38 ms on pass 2 but
+converges to ~34 ms by passes 3–5, so reading pass 2 overstates it ~10–15%.
+Take a converged steady-state pass. Pin to an idle card on a shared box
 (`CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=<idx>`) — contending with
 another prove during CUDA init can hard-kill the run.
 
@@ -196,18 +196,20 @@ an ELF + stdin) the tool uses `CpuShardProver`: useful as the injection-validity
 | Stage | SP1 GPU | sp1-zorch GPU | ratio | golden |
 |---|---|---|---|---|
 | trace commit | 16.6 ms | 18.2 ms | 1.10× | byte-match |
-| LogUp-GKR | 19.9 ms | 38.2 ms | 1.92× | byte-match |
-| zerocheck | 156.9 ms | **141.7 ms** | **0.90×** | byte-match |
-| jagged eval (PCS open) | 41.1 ms | **37.4 ms** | **0.91×** | byte-match |
-| full chain | 234.8 ms | 242.6 ms | 1.03× | `sp1_verify_shard` ACCEPTED |
+| LogUp-GKR | 19.9 ms | 34.0 ms | 1.71× | byte-match |
+| zerocheck | 156.9 ms | **74.2 ms** | **0.47×** | byte-match |
+| jagged eval (PCS open) | 41.1 ms | **36.5 ms** | **0.89×** | byte-match |
+| full chain | 234.8 ms | **168.4 ms** | **0.72×** | `sp1_verify_shard` ACCEPTED |
 
 The two wall-clock columns are warm, byte-matched runs of the two tools above:
 the sp1-zorch column is the converged warm steady state (passes 3–5 of the
-`--runs=5` command, on an idle RTX 5090 — all four Stages byte-match and
-`--ffi_verify` reports `sp1_verify_shard: ACCEPTED`); the SP1 column is the SP1
-GPU NoExec run. zerocheck (0.90×) and the jagged-eval PCS open (0.91×) now edge
-out SP1; the full chain is at ~parity (1.03×), with LogUp-GKR the one remaining
-gap.
+`--runs=5` command, on an idle RTX 5090, published `frx` wheels — no locally
+built plugin — with the shard-invariant jagged total-cap zerocheck route; all
+four Stages byte-match and `--ffi_verify` reports `sp1_verify_shard:
+ACCEPTED`); the SP1 column is the SP1 GPU NoExec run. zerocheck (0.47×) runs
+at over twice SP1's speed — the jagged-packed shared round buffer with the
+shrink prefix and in-kernel folds — the PCS open edges SP1 out (0.89×), and
+the full chain lands at 0.72×, with LogUp-GKR (1.71×) the one remaining gap.
 
 ### Measure shipped code
 

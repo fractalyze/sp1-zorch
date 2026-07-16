@@ -36,6 +36,9 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import json
+
+import frx
 import frx.numpy as jnp
 import numpy as np
 from absl import app, flags
@@ -57,7 +60,13 @@ from sp1_zorch.shard_prover.replay import (
     shard_regions,
     to_u32,
 )
-from sp1_zorch.zerocheck.prover import ZerocheckProof, prove_shard_zerocheck
+from sp1_zorch.shard_prover.prove_shard import ZerocheckStage
+from sp1_zorch.zerocheck.jagged import TotalCapClass, pack_flat_arrival
+from sp1_zorch.zerocheck.prover import (
+    ZerocheckProof,
+    chip_traces,
+    prove_shard_zerocheck,
+)
 from zorch.poly.univariate import eval_coeffs
 
 _SHARD_DIR = flags.DEFINE_string(
@@ -73,6 +82,14 @@ _GKR_POW_BITS = flags.DEFINE_integer(
     "gkr_pow_bits",
     12,
     "GKR grind bits (SP1 hardcodes GKR_GRINDING_BITS = 12).",
+)
+_ZC_CLASS_JSON = flags.DEFINE_string(
+    "zc_class_json",
+    None,
+    'JSON {"area_cap", "window"} pinning the shard-invariant zerocheck '
+    "TotalCapClass (sp1-zorch#242): the stage runs the traced flat-arrival "
+    "route, so every shard of one class shares one zerocheck compile. Unset "
+    "runs the static per-shard path (this shard's own class).",
 )
 
 
@@ -191,6 +208,16 @@ def _report_univariate_encoding(zc: ZerocheckProof, shard_dir: Path) -> None:
     print("univariate: no candidate encoding matched (informational)")
 
 
+def _print_mem(label: str) -> None:
+    """Device-pool telemetry: resident bytes + pool high-water so far."""
+    stats = frx.local_devices()[0].memory_stats() or {}
+    print(
+        f"[mem {label}] in_use={stats.get('bytes_in_use', 0) / 2**30:.2f}GiB"
+        f" peak={stats.get('peak_bytes_in_use', 0) / 2**30:.2f}GiB",
+        flush=True,
+    )
+
+
 def main(argv) -> None:
     del argv
     shard_dir = Path(_SHARD_DIR.value)
@@ -212,18 +239,70 @@ def main(argv) -> None:
         if cache is not None:
             save_gkr_cache(cache, eval_point, openings, transcript)
             print(f"saved GKR outputs to {cache}")
+    _print_mem("post-gkr")
 
-    transcript, zc = prove_shard_zerocheck(
-        shard.main_trace_data.chips,
-        main_region,
-        prep_region,
-        shard.main_trace_data.public_values,
-        eval_point,
-        openings,
-        transcript,
-        max_log_row_count=MAX_LOG_ROW_COUNT,
-    )
+    if _ZC_CLASS_JSON.value:
+        # Traced total-cap class route (the shard-invariance form the prove
+        # chain runs): flat jagged arrival packed eagerly with host heights,
+        # per-chip statics threaded through — mirrors
+        # ZerocheckStage.__call__'s flat prologue.
+        with open(_ZC_CLASS_JSON.value) as f:
+            c = {k: int(v) for k, v in json.load(f).items()}
+        cls = TotalCapClass(area_cap=c["area_cap"], window=c["window"])
+        order = main_region.chip_names
+        heights_host = [int(h) for h in main_region.chip_heights]
+        traces = chip_traces(order, heights_host, main_region, prep_region)
+        flat = pack_flat_arrival(traces, heights_host, cls)
+        prep_w = (
+            {
+                n: int(w)
+                for n, w in zip(prep_region.chip_names, prep_region.chip_widths)
+            }
+            if prep_region is not None
+            else {}
+        )
+        # Run the Round's OWN jitted body — the same executable the prove
+        # chain compiles (and the one the persistent compile cache shares
+        # across shards). Eagerly the stage materializes every round's
+        # intermediates and tips big classes over the card.
+        transcript, fields = ZerocheckStage._jit_body_totalcap_traced(
+            flat,
+            shard.main_trace_data.public_values,
+            eval_point,
+            openings,
+            jnp.asarray(heights_host, jnp.int32),
+            transcript,
+            chips=tuple(shard.main_trace_data.chips.items()),
+            max_log_row_count=MAX_LOG_ROW_COUNT,
+            total_cap_class=cls,
+            chip_names=tuple(order),
+            num_cols=tuple(int(t.shape[0]) for t in traces),
+            main_widths=tuple(int(w) for w in main_region.chip_widths),
+            prep_widths=tuple(prep_w.get(n, 0) for n in order),
+        )
+        zc = ZerocheckProof(
+            batching_challenge=fields[0],
+            gkr_opening_batch_challenge=fields[1],
+            lambda_=fields[2],
+            zeta=fields[3],
+            claimed_sum=fields[4],
+            finals=fields[5],
+            opened_values=fields[6],
+            msgs=fields[7],
+        )
+    else:
+        transcript, zc = prove_shard_zerocheck(
+            shard.main_trace_data.chips,
+            main_region,
+            prep_region,
+            shard.main_trace_data.public_values,
+            eval_point,
+            openings,
+            transcript,
+            max_log_row_count=MAX_LOG_ROW_COUNT,
+        )
 
+    _print_mem("post-zerocheck")
     state = _parse_kv_lines(
         (shard_dir / "gpu_zerocheck_state.txt").read_text().split("\nchip ")[0]
     )
