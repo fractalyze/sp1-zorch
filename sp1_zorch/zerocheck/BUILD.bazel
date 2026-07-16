@@ -143,7 +143,7 @@ py_binary(
         "//sp1_zorch/logup_gkr",
         "//sp1_zorch/shard_prover",
         "//sp1_zorch/shard_prover:replay",
-        requirement("jax"),
+        requirement("frx"),
         requirement("jax_cuda12_plugin"),
         requirement("numpy"),
         requirement("zk_dtypes"),

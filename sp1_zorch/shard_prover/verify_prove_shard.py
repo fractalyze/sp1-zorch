@@ -167,7 +167,7 @@ _ZC_CAPS_JSON = flags.DEFINE_string(
 _JAXPROF_DIR = flags.DEFINE_string(
     "jaxprof_dir",
     None,
-    "Write a jax profiler trace of the last (warm) prove pass here.",
+    "Write an frx profiler trace of the last (warm) prove pass here.",
 )
 class _TimedRound(Round):
     """Print each stage's wall-clock so the compile-vs-runtime split is

@@ -1145,7 +1145,7 @@ def prove_jagged_zerocheck(
     # of the monolithic CSE unroll a non-bounded wide circuit triggers — which
     # on the koalabear Global chip is a 271k-instr kernel and a >660s
     # cold-compile cliff. The loop-form emitter engages on a single-row
-    # ([1, nc]) trace as of fractalyze/zkx#704; the same circuit then lowers to
+    # ([1, nc]) trace as of fractalyze/xla#704; the same circuit then lowers to
     # ~785 instrs and Global cold-compiles in a few seconds.
     probe_cols = (
         list(num_cols) if num_cols is not None

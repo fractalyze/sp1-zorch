@@ -376,7 +376,7 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
         # EVERY constraint_eval marker is live-width-bounded — including the
         # per-chip C_alpha(0_row) probe, so it routes to the loop-form emitter
         # instead of the monolithic CSE unroll (the Global compile cliff,
-        # fractalyze/zkx#702).
+        # fractalyze/xla#702).
         self.assertEqual(len(calls), len(bounded), calls)
         # 3 t-point markers per chip per compiled round body (the round-0 t=0
         # drop zeroes alpha per t-point, so they cannot share one batched
@@ -391,7 +391,7 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
         # start_offset/col_stride (both runtime — the operand stays the one
         # flat buffer, so it keeps ONE shape across chips within a round). The
         # C_alpha(0_row) probe stays a clean rank-2 1-row block (the loop-form
-        # emitter engages on a single-row trace, fractalyze/zkx#704).
+        # emitter engages on a single-row trace, fractalyze/xla#704).
         cls = TotalCapClass.from_heights(num_reals, [_NUM_COLS] * nchips)
         caps_r, _ = cls.shrink_schedule(nchips * _NUM_COLS, jagged._SHRINK_ROUNDS)
         want_shapes = {
