@@ -31,10 +31,10 @@ from zorch.pcs.jagged.open import (
     stacked_basefold_open,
 )
 from zorch.pcs.jagged.prover import (
-    JaggedEvalInputs,
     JaggedEvalMsg,
-    JaggedEvalRound,
     assemble_columns,
+    eval_column_arrays,
+    eval_round_core,
     sample_z_col,
 )
 from sp1_zorch.logup_gkr.circuit import GkrCapClass, GkrChip
@@ -51,6 +51,7 @@ from sp1_zorch.zerocheck.prover import (
     prove_shard_zerocheck,
 )
 from zorch.coding.reed_solomon import BitReversedReedSolomon
+from zorch.poly.eq import expand_eq_to_hypercube
 from zorch.round import ProveChain, Round
 from zorch.transcript import GrindingTranscript, Transcript
 from zorch.utils.bits import log2_ceil_usize
@@ -457,18 +458,54 @@ class JaggedPcsProof:
     open: StackedOpenProof
 
 
+@partial(frx.jit, static_argnames=("num_columns", "dtype"))
+def _jagged_eval_jit(
+    offsets: Array,
+    merged: Array,
+    all_claims: Array,
+    dense: Array,
+    zc_sumcheck_point: Array,
+    transcript: GrindingTranscript,
+    *,
+    num_columns: int,
+    dtype: Any,
+) -> tuple[GrindingTranscript, JaggedEvalMsg]:
+    """The eval half (outer/inner sumcheck) as one shard-invariant ``@jit``
+    zone: per-shard column heights ride only as the VALUES of the traced
+    ``offsets``/``merged`` arrays and ``dense`` arrives pre-padded to its
+    power-of-two tier, so the compile keys on the layout class alone
+    (chip set + area tier) — shards differing only in heights share the
+    executable."""
+    transcript, z_col = sample_z_col(transcript, num_columns, dtype)
+    weights = expand_eq_to_hypercube(z_col, jnp.ones((), dtype))[:num_columns]
+    # z_row is the zerocheck sumcheck point in SP1's insert-at-front
+    # (reversed) order.
+    eval_msg, transcript = eval_round_core(
+        offsets,
+        merged,
+        weights,
+        all_claims,
+        dense,
+        zc_sumcheck_point[::-1],
+        z_col,
+        transcript,
+        dtype=dtype,
+    )
+    return transcript, eval_msg
+
+
 class JaggedPcsStage(Round):
     """Jagged evaluation proof (SP1 Phase 4): reduce the committed trace to
     ``D(z_final)`` via the outer/inner sumcheck, then open ``D`` at ``z_final``
     with the stacked BaseFold FRI. Reads the zerocheck point, the per-chip
     opened values at it, and the committed stacked witness off the bridge.
 
-    With ``jit=True`` the stage body (column assembly, the outer/inner
-    sumchecks, and the stacked BaseFold open) runs under one cached outer
-    ``@jit``. Eagerly, every prove rebuilds the ``fused_region`` marker
-    closures and the FRI/grind ``lax.while_loop`` bodies, and JAX's compile
-    cache (keyed on function identity) misses -- every warm prove re-pays the
-    stage compile. Byte-identical either way."""
+    Eager orchestration over shard-invariant jitted zones (the LogupGkrStage
+    pattern, sp1-zorch#274): the prologue folds per-shard heights into traced
+    array values and pads the combined dense to its power-of-two tier, so the
+    eval zone's compile keys on the layout class alone; the stacked open runs
+    zorch's zoned ``stacked_basefold_open`` (dominant fold zone K-independent).
+    Byte-identical to the eager path."""
 
     def __init__(
         self,
@@ -483,61 +520,7 @@ class JaggedPcsStage(Round):
         self._log_blowup = log_blowup
         self._num_queries = num_queries
         self._pow_bits = pow_bits
-        # Class-level jitted body (the LogupGkrStage pattern); `smcs` keys the
-        # cache by identity, stable for the chain-held scheme instance.
-        self._body = (
-            partial(
-                self._jit_body,
-                smcs=smcs,
-                log_blowup=log_blowup,
-                num_queries=num_queries,
-                pow_bits=pow_bits,
-            )
-            if jit
-            else None
-        )
-
-    @staticmethod
-    @partial(
-        frx.jit,
-        static_argnames=("smcs", "log_blowup", "num_queries", "pow_bits"),
-    )
-    def _jit_body(
-        main_region,
-        prep_region,
-        opened_values,
-        zc_sumcheck_point,
-        commit_digest_layers,
-        transcript,
-        *,
-        smcs,
-        log_blowup,
-        num_queries,
-        pow_bits,
-    ):
-        transcript, eval_msg, open_proof = _jagged_eval_body(
-            main_region,
-            prep_region,
-            opened_values,
-            zc_sumcheck_point,
-            commit_digest_layers,
-            transcript,
-            smcs=smcs,
-            log_blowup=log_blowup,
-            num_queries=num_queries,
-            pow_bits=pow_bits,
-        )
-        # JaggedEvalMsg is not a registered pytree; return its fields (all
-        # arrays) and let `__call__` rebuild it. StackedOpenProof crosses as-is.
-        return transcript, (
-            eval_msg.outer_sumcheck_claim,
-            eval_msg.outer_sumcheck_polys,
-            eval_msg.outer_sumcheck_point,
-            eval_msg.dense_eval,
-            eval_msg.inner_sumcheck_polys,
-            eval_msg.inner_point,
-            eval_msg.inner_claimed_sum,
-        ), open_proof
+        self._jit = jit
 
     def __call__(
         self, bridge: ShardBridge, transcript: GrindingTranscript
@@ -552,29 +535,109 @@ class JaggedPcsStage(Round):
                 "digest layers, and zerocheck opened values on the bridge; sequence "
                 "the commit, LogUp-GKR, and zerocheck Stages before it"
             )
-        if self._body is not None:
-            transcript, msg_fields, open_proof = self._body(
-                bridge.main_region,
-                bridge.prep_region,
-                bridge.zc_opened_values,
-                bridge.zc_sumcheck_point,
-                bridge.commit_digest_layers,
-                transcript,
+        main = bridge.main_region
+        openings = bridge.zc_opened_values
+        # The jagged eval runs in the extension field — the upstream sumcheck
+        # points are EF challenge lists (one extension sample per variable).
+        ef = koalabearx4_mont
+
+        # Per-round (row/column counts, real per-column claims) in [prep, main]
+        # order — each chip's opened-values field at the zerocheck point is its
+        # columns' claims (SP1's round_evaluation_claims) — plus each region's
+        # stacking-aligned dense for the combined committed D.
+        rc_rounds: list[Sequence[int]] = []
+        cc_rounds: list[Sequence[int]] = []
+        claims_rounds: list[Array] = []
+        denses: list[Array] = []
+        prep = bridge.prep_region
+        regions = ([(prep, "preprocessed")] if prep is not None else []) + [
+            (main, "main")
+        ]
+        for region, claim_field in regions:
+            rc_rounds.append(region.row_counts)
+            cc_rounds.append(region.column_counts)
+            claims_rounds.append(
+                jnp.concatenate(
+                    [getattr(openings[n], claim_field) for n in region.chip_names]
+                )
             )
-            eval_msg = JaggedEvalMsg(*msg_fields)
+            # Full region buffer, stacking pad included: col_heights counts each
+            # region's pad pair, so the indicator J̃ (and the stacked open) place
+            # the next region at the padded offset -- region.dense[:raw_size]
+            # would misalign it against J̃.
+            denses.append(region.dense)
+
+        col_heights, all_claims = assemble_columns(
+            rc_rounds, cc_rounds, claims_rounds, dtype=ef
+        )
+        # Heights become traced-array VALUES here, off the eval zone's
+        # compile key.
+        offsets, merged = eval_column_arrays(col_heights, dtype=ef)
+
+        # Pad the combined dense to its power-of-two tier eagerly: raw region
+        # lengths vary within a class, the padded tier does not — only the
+        # padded form may cross the jit boundary.
+        dense = jnp.concatenate(denses)
+        target = 1 << log2_ceil_usize(dense.shape[0])
+        dense = jnp.pad(dense, (0, target - dense.shape[0]))
+
+        if self._jit:
+            transcript, eval_msg = _jagged_eval_jit(
+                offsets,
+                merged,
+                all_claims,
+                dense,
+                bridge.zc_sumcheck_point,
+                transcript,
+                num_columns=len(col_heights),
+                dtype=ef,
+            )
+            # Free the eval leg's buffers (padded dense is GiB-scale) before
+            # the open allocates its [N, K] round codewords.
+            del dense, offsets, merged, all_claims
         else:
-            transcript, eval_msg, open_proof = _jagged_eval_body(
-                bridge.main_region,
-                bridge.prep_region,
-                bridge.zc_opened_values,
-                bridge.zc_sumcheck_point,
-                bridge.commit_digest_layers,
+            transcript, z_col = sample_z_col(transcript, len(col_heights), ef)
+            weights = expand_eq_to_hypercube(z_col, jnp.ones((), ef))[
+                : len(col_heights)
+            ]
+            eval_msg, transcript = eval_round_core(
+                offsets,
+                merged,
+                weights,
+                all_claims,
+                dense,
+                bridge.zc_sumcheck_point[::-1],
+                z_col,
                 transcript,
-                smcs=self._smcs,
-                log_blowup=self._log_blowup,
-                num_queries=self._num_queries,
-                pow_bits=self._pow_bits,
+                dtype=ef,
             )
+
+        code = BitReversedReedSolomon(
+            message_len=1 << main.log_stacking_height,
+            blowup=1 << self._log_blowup,
+            dtype=main.dense.dtype,
+        )
+        # Rebuild each StackedRound: the mle is recomputed from the region dense,
+        # joined to the carried digest tree, in the same [prep, main] order.
+        # stacked_basefold_open re-encodes the codeword from the mle -- no
+        # host<->device round-trip.
+        commit_rounds = tuple(
+            StackedRound(_region_mle(region), digests)
+            for (region, _), digests in zip(
+                regions, bridge.commit_digest_layers, strict=True
+            )
+        )
+        open_proof, transcript = stacked_basefold_open(
+            self._smcs,
+            code,
+            commit_rounds,
+            eval_msg.outer_sumcheck_point,
+            eval_msg.dense_eval,
+            main.log_stacking_height,
+            num_queries=self._num_queries,
+            pow_bits=self._pow_bits,
+            transcript=transcript,
+        )
         return bridge, transcript, JaggedPcsProof(eval=eval_msg, open=open_proof)
 
 
@@ -587,103 +650,6 @@ def _region_mle(region: JaggedRegion) -> Array:
     S = 1 << region.log_stacking_height
     K = region.dense.shape[0] // S
     return region.dense.reshape(K, S).T
-
-
-def _jagged_eval_body(
-    main_region,
-    prep_region,
-    opened_values,
-    zc_sumcheck_point,
-    commit_digest_layers,
-    transcript: GrindingTranscript,
-    *,
-    smcs: SingleMatrixCommitmentScheme,
-    log_blowup: int,
-    num_queries: int,
-    pow_bits: int,
-) -> tuple[GrindingTranscript, JaggedEvalMsg, StackedOpenProof]:
-    """The jagged-eval stage's traceable body -- the single source both the
-    eager path and ``JaggedPcsStage``'s ``@jit`` run."""
-    main = main_region
-    openings = opened_values
-    # The jagged eval runs in the extension field — the upstream sumcheck
-    # points are EF challenge lists (one extension sample per variable).
-    ef = koalabearx4_mont
-
-    # Per-round (row/column counts, real per-column claims) in [prep, main]
-    # order — each chip's opened-values field at the zerocheck point is its
-    # columns' claims (SP1's round_evaluation_claims) — plus each region's
-    # stacking-aligned dense for the combined committed D.
-    rc_rounds: list[Sequence[int]] = []
-    cc_rounds: list[Sequence[int]] = []
-    claims_rounds: list[Array] = []
-    denses: list[Array] = []
-    prep = prep_region
-    regions = ([(prep, "preprocessed")] if prep is not None else []) + [
-        (main, "main")
-    ]
-    for region, claim_field in regions:
-        rc_rounds.append(region.row_counts)
-        cc_rounds.append(region.column_counts)
-        claims_rounds.append(
-            jnp.concatenate(
-                [getattr(openings[n], claim_field) for n in region.chip_names]
-            )
-        )
-        # Full region buffer, stacking pad included: col_heights counts each
-        # region's pad pair, so the indicator J̃ (and the stacked open) place the
-        # next region at the padded offset -- region.dense[:raw_size] would
-        # misalign it against J̃.
-        denses.append(region.dense)
-
-    col_heights, all_claims = assemble_columns(
-        rc_rounds, cc_rounds, claims_rounds, dtype=ef
-    )
-
-    # The outer Hadamard sumcheck folds D variable by variable, so the
-    # combined dense pads to a power of two.
-    dense = jnp.concatenate(denses)
-    target = 1 << log2_ceil_usize(dense.shape[0])
-    dense = jnp.pad(dense, (0, target - dense.shape[0]))
-
-    transcript, z_col = sample_z_col(transcript, len(col_heights), ef)
-
-    # z_row is the zerocheck sumcheck point in SP1's insert-at-front
-    # (reversed) order.
-    inputs = JaggedEvalInputs(
-        col_heights=tuple(col_heights),
-        all_claims=all_claims,
-        z_row=zc_sumcheck_point[::-1],
-        z_col=z_col,
-        dense=dense,
-    )
-    _, transcript, eval_msg = JaggedEvalRound(dtype=ef)(inputs, transcript)
-
-    code = BitReversedReedSolomon(
-        message_len=1 << main.log_stacking_height,
-        blowup=1 << log_blowup,
-        dtype=main.dense.dtype,
-    )
-    # Rebuild each StackedRound here: the mle is recomputed from the region dense
-    # (the loop above already reads it for `denses`), joined to the carried digest
-    # tree, in the same [prep, main] order. stacked_basefold_open re-encodes the
-    # codeword from the mle -- no host<->device round-trip, still traceable.
-    commit_rounds = tuple(
-        StackedRound(_region_mle(region), digests)
-        for (region, _), digests in zip(regions, commit_digest_layers, strict=True)
-    )
-    open_proof, transcript = stacked_basefold_open(
-        smcs,
-        code,
-        commit_rounds,
-        eval_msg.outer_sumcheck_point,
-        eval_msg.dense_eval,
-        main.log_stacking_height,
-        num_queries=num_queries,
-        pow_bits=pow_bits,
-        transcript=transcript,
-    )
-    return transcript, eval_msg, open_proof
 
 
 def prove_shard_chain(
@@ -712,10 +678,11 @@ def prove_shard_chain(
     ``jit`` stages every stage's heavy body under a cached ``frx.jit``: the
     trace-commit tail (required at rsp scale, see
     ``zorch.pcs.jagged.commit``), the LogUp-GKR body (host-dispatch-bound
-    eagerly, sp1-zorch#119), and the zerocheck + jagged-eval bodies — eagerly
-    those two rebuild their closure-keyed ``scan``/``while`` bodies each prove,
-    so JAX's compile cache misses and every warm prove re-pays the stage
-    compile. Byte-identical either way."""
+    eagerly, sp1-zorch#119), the zerocheck body, and the jagged-eval sumcheck
+    zone (its stacked open always runs zorch's zoned jits) — eagerly the
+    sumcheck bodies rebuild their closure-keyed ``scan``/``while`` bodies each
+    prove, so JAX's compile cache misses and every warm prove re-pays the
+    stage compile. Byte-identical either way."""
     return ProveChain(
         [
             TraceCommitStage(

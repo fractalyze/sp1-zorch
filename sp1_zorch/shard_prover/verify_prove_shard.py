@@ -325,6 +325,28 @@ def _verify_shard(
             bounds = json.load(f)["chip_heights"]
         gkr_class = GkrCapClass(tuple(int(bounds[name]) for name in order))
 
+    # The jagged class is fully derived — no pin flag. Same (L, n_d) ⇒
+    # eval-zone cache hit; same K ⇒ open prologue/query hit; the fold zone is
+    # K-independent and always shared (sp1-zorch#274).
+    regions_jc = [r for r in (prep_region, main_region) if r is not None]
+    jagged_l = sum(sum(int(c) for c in r.column_counts) for r in regions_jc)
+    jagged_ks = [
+        int(r.dense.shape[0]) >> int(r.log_stacking_height) for r in regions_jc
+    ]
+    total_area = sum(int(r.dense.shape[0]) for r in regions_jc)
+    print(
+        "JAGGED_CLASS "
+        + json.dumps(
+            {
+                "L": jagged_l,
+                "n_d": (total_area - 1).bit_length() + 1,
+                "K": jagged_ks,
+                "rlc_bits": max(sum(jagged_ks) - 1, 0).bit_length(),
+            }
+        ),
+        flush=True,
+    )
+
     # The GKR witness is consumed only by LogUp-GKR; a trace-commit-only run
     # (--max_stage=1) slices that stage off, so don't require the gkr fixture.
     n = max(1, min(4, _MAX_STAGE.value))
