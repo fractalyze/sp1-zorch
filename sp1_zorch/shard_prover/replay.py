@@ -191,7 +191,7 @@ def replay_gkr(
     checks against the dump.
 
     ``cap_class`` routes through the shard-invariant class body
-    (sp1-zorch#272, byte-identical); ``gkr_chips`` lets a multi-shard caller
+    (byte-identical); ``gkr_chips`` lets a multi-shard caller
     reuse ONE chip tuple across shards — the inner zones key statically on
     it, so fresh per-shard objects would bust their caches."""
     state = _parse_kv_lines(

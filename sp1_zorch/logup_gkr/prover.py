@@ -233,18 +233,12 @@ def open_traces_capped(
     prep_heights: tuple[int, ...],
 ) -> tuple[Transcript, dict[str, ChipEvaluation]]:
     """Open every shard chip's trace at the final GKR point and absorb via
-    ``ChipOpeningsRound``, on the class-shaped flat arrival: chip views are
-    static slices at the class bounds, so the compile keys on the chip set
-    and the class alone — no traced height needed. SP1 opens ALL shard
-    chips (not just the GKR ones); preprocessed traces open at their keygen
-    height.
-
-    Byte-identical at any admitted class: the arrival's rows past the real
-    height are zero, so folding at the class log-height multiplies the
-    real-height fold by ``(1 - rev_point[k])`` per extra bind — exactly the
-    factors ``_open_chip``'s zero-extension correction product applies, and
-    field mul is exact and commutative.
-    """
+    ``ChipOpeningsRound``, on the class-shaped flat arrival — static slices
+    at the class bounds, so the compile keys on the chip set + class alone.
+    SP1 opens ALL shard chips; prep opens at its keygen height.
+    Byte-identical at any admitted class: the arrival's zero rows fold into
+    exactly the ``(1 - rev_point[k])`` factors ``_open_chip``'s
+    zero-extension correction applies, and field mul is exact."""
     rev_point = eval_point[-trace_dimension:][::-1]
     main_offsets = _arrival_offsets(main_widths, cap_class.chip_heights)
     prep_offsets = _arrival_offsets(prep_widths, prep_heights)
@@ -375,27 +369,17 @@ def _prove_from_first_layer(
     num_row_variables: int,
     open_fn,
 ) -> tuple[Transcript, LogupGkrProof]:
-    """The first-layer-onward prove shared by the exact and class-shaped
-    bodies: fold the pyramid, bind the output, prove the layer chain, then
-    open the traces via ``open_fn(eval_point, transcript)``.
+    """First-layer-onward prove: fold the pyramid, bind the output, prove
+    the layer chain, open via ``open_fn(eval_point, transcript)``.
 
-    Prove the floor-outward layer chain as an unrolled ProveChain of per-layer
-    JaggedGkrLayerRound. zorch retired the device-FS rolled `prove_jagged_pyramid`
-    (Fiat-Shamir now runs on the host between kernel launches); the unrolled
-    chain is byte-identical and the production path. Each layer traces once per
-    shape. Pop the layers into their rounds through a lazy generator (floor
-    first via `layers.pop()` per yield, NOT a materialized `proved` list): only
-    then does ProveChain's lazy consume release each proved layer before
-    building the next, so at most one big-witness layer stays live. A resident
-    list would pin the whole pyramid and defeat that invariant -- the runtime
-    host-RAM half of zorch#362 (the builder is the other half). Byte-match is
-    gated by the SP1 reference (verify_gkr_prove) and a captured CPU golden.
+    The chain MUST consume layers through the lazy ``layers.pop()``
+    generator, not a materialized list — only then does ProveChain release
+    each proved layer before building the next, keeping at most one
+    big-witness layer live (the host-RAM half of zorch#362).
 
-    Fixed-width round buffers (fractalyze/xla#179): the caps pin ONE operand
-    shape per round phase across every round and layer, so the FS-less round
-    kernels compile once per {row-cap class (see `_row_cap`), 2^niv interaction
-    class, dtype} instead of once per width. 2^niv is an SP1 protocol value that
-    fixes the round count, so it cannot be padded away.
+    The caps (fractalyze/xla#179) pin ONE operand shape per round phase, so
+    the round kernels compile once per {row-cap class, 2^niv, dtype}; 2^niv
+    is an SP1 protocol value and cannot be padded away.
     """
     layers = build_jagged_pyramid(
         first, sp1_schedules(first.row_counts, num_row_variables)
@@ -434,12 +418,10 @@ def _prove_from_first_layer(
 def _head_zone(
     transcript: Transcript, *, num_betas: int
 ) -> tuple[Transcript, Array, Array]:
-    """``HeadChallengesRound`` as one compiled dispatch: eagerly its EF
+    """``HeadChallengesRound`` as one compiled dispatch — eagerly its EF
     samples cost ~14 ms of warm host gaps between tiny permutes. Only the
-    head fuses — a zone also swallowing the first-layer build would hand
-    XLA every chip's build intermediates at once, GBs of extra peak on a
-    wide 33-chip core shard whose GKR already presses the card; the
-    per-chip builds stay their own ``@jit`` boundaries."""
+    head fuses: swallowing the first-layer build too hands XLA every chip's
+    intermediates at once and blows the wide-shard memory budget."""
     _, transcript, head = HeadChallengesRound(num_betas)(None, transcript)
     return transcript, head.alpha, head.betas
 
@@ -457,26 +439,20 @@ def prove_logup_gkr(
     witness: Array | None = None,
 ) -> tuple[Transcript, LogupGkrProof]:
     """Run the LogUp-GKR stage on a transcript positioned after the shard
-    preamble (vk, public values, main commitment, chip metadata) — the
-    single source for the stage (``LogupGkrStage`` calls it directly:
+    preamble — the single source for the stage (``LogupGkrStage``:
     host-side grind, then class-keyed inner zones).
 
-    The one prove path is the shard-invariant class contract
-    (sp1-zorch#272): the regions pack eagerly into class-shaped flat
-    arrivals, the real heights ride as one traced int32 vector, and every
-    traced zone (head, per-chip first-layer builds, pyramid transitions,
-    layer sumchecks, trace open) keys its compile on the chip set and the
-    class alone — shards that differ only in row counts share every
-    executable. With no ``cap_class`` the shard's own a-priori-tight class
-    is derived: the layout then equals the exact SP1 layout (per-shard
-    compile, same body).
+    The one prove path is the shard-invariant class contract:
+    class-shaped flat arrivals + one traced int32 heights
+    vector, so every zone keys its compile on (chip set, class) — shards
+    differing only in row counts share every executable. ``cap_class=None``
+    derives the shard's own tight class (per-shard compile, same body,
+    layout == the exact SP1 layout).
 
     Byte-identical across admitted classes: a wider class only adds
-    fold-neutral (n=0, d=1) slots, which are fixed points of the layer fold
-    and summand no-ops in the layer sumcheck (the virtual-mass correction
-    subtracts exactly the eq weight each one contributes), and the
-    class-height trace open folds the arrival's zeros into exactly the
-    correction factors the tight-class open applies.
+    fold-neutral (n=0, d=1) slots — fixed points of the layer fold, summand
+    no-ops in the sumcheck (the virtual-mass correction subtracts exactly
+    their eq weight), and zeros the open folds into its correction factors.
     """
     transcript, witness = resolve_witness_and_grind(
         transcript,

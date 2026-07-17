@@ -292,7 +292,7 @@ class ProveLogupGkrTest(absltest.TestCase):
 
 class CappedProveTest(absltest.TestCase):
     """The class-shaped prove against the exact prove — the linchpin of the
-    sp1-zorch#272 contract: the class layout only adds fold-neutral slots,
+    class contract: the class layout only adds fold-neutral slots,
     so every proof field, opening, and the transcript must be byte-identical
     on every shard the class admits."""
 

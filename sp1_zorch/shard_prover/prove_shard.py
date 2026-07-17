@@ -225,17 +225,12 @@ class LogupGkrStage(Round):
     """LogUp-GKR stage over ``prove_logup_gkr``; writes the final
     evaluation point and per-chip openings onto the bridge for zerocheck.
 
-    Eager orchestration, not one ``@jit`` body: a whole-body ``@jit`` keeps
-    every pyramid layer live at once (XLA owns liveness) and overflows the
-    memory budget on wide shards, and the grind's host-side ``pow_bits``
-    verdict cannot be traced. The stage instead runs the shard-invariant
-    class contract (sp1-zorch#272): the regions pack eagerly to a
-    ``GkrCapClass`` shape and every traced zone underneath (per-chip
-    first-layer build, pyramid transitions, layer sumchecks, trace open)
-    keys its compile on the chip set and the class alone, so shards of one
-    class share every executable. With no class pinned, the shard's own
-    a-priori-tight class is derived (per-shard compile, same body,
-    byte-identical to the exact prove)."""
+    Eager orchestration, not one ``@jit`` body: a whole-body jit keeps
+    every pyramid layer live at once (OOM on wide shards) and the grind's
+    host-side ``pow_bits`` verdict cannot be traced. Every traced zone
+    underneath keys its compile on (chip set, ``GkrCapClass``) — shards of
+    one class share every executable; no pinned class means
+    the shard's own tight class (per-shard compile, same body)."""
 
     def __init__(
         self,

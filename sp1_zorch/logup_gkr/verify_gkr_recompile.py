@@ -1,23 +1,13 @@
 # Copyright 2026 The sp1-zorch Authors. SPDX-License-Identifier: Apache-2.0
 """Multi-shard zero-recompile check for the class-shaped LogUp-GKR route.
 
-Proves every ``--shard-dirs`` shard's GKR stage through ONE ``GkrCapClass``
-and ONE ``gkr_chips`` tuple in one process and reports the compile counts of
-every class-keyed zone. Shards of one class (same chip set; the class
-bounding every shard in the group) must add ZERO compiles after the first
-shard — the multi-shard acceptance criterion of fractalyze/sp1-zorch#272.
-The stage is eager orchestration (a whole-body jit OOMs wide shards), so
-"one executable" reads per zone: the per-chip first-layer builds and the
-trace open live in sp1-zorch; the pyramid transitions and per-layer
-sumcheck zones in zorch key on the class-constant ``row_counts`` and caps.
-
-``--gkr_class_json`` pins the class, exactly as ``verify_gkr_prove`` /
-``verify_prove_shard`` take it: assemble it as the per-chip max of the
-``GKR_CLASS`` lines those tools print.
-
-Value-level byte-match is ``verify_gkr_prove``'s job (run it per shard with
-the same ``--gkr_class_json``); this tool checks compile sharing and prints
-the per-shard wall so a warm-time regression is visible next to it.
+Proves every ``--shard-dirs`` shard through ONE ``GkrCapClass`` + ONE
+``gkr_chips`` tuple in one process; shards after the first must add ZERO
+compiles in every class-keyed zone (first-layer/open in sp1-zorch,
+transition/round zones in zorch). Assemble ``--gkr_class_json`` as the per-chip
+max of the ``GKR_CLASS`` lines ``verify_gkr_prove``/``verify_prove_shard``
+print. Byte-match stays ``verify_gkr_prove``'s job; this checks compile
+sharing and prints per-shard walls.
 
     bazel run //sp1_zorch/logup_gkr:verify_gkr_recompile -- \
         --shard-dirs="$PWD/dump/shard17,$PWD/dump/shard18" \

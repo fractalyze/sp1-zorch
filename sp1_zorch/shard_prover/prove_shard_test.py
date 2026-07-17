@@ -554,7 +554,7 @@ class JitPermutationTest(absltest.TestCase):
 
 
 class LogupGkrStageCapClassTest(absltest.TestCase):
-    """LogupGkrStage's class plumbing (sp1-zorch#272): one Stage with a
+    """LogupGkrStage's class plumbing: one Stage with a
     pinned ``GkrCapClass`` proves two shards of different heights
     byte-identically to the exact ``prove_logup_gkr``, and the class-keyed
     inner zones compile once for the class, not once per shard."""
