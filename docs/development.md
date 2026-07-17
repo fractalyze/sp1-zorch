@@ -196,20 +196,22 @@ an ELF + stdin) the tool uses `CpuShardProver`: useful as the injection-validity
 | Stage | SP1 GPU | sp1-zorch GPU | ratio | golden |
 |---|---|---|---|---|
 | trace commit | 16.6 ms | 18.2 ms | 1.10× | byte-match |
-| LogUp-GKR | 19.9 ms | 34.0 ms | 1.71× | byte-match |
-| zerocheck | 156.9 ms | **74.2 ms** | **0.47×** | byte-match |
-| jagged eval (PCS open) | 41.1 ms | **36.5 ms** | **0.89×** | byte-match |
-| full chain | 234.8 ms | **168.4 ms** | **0.72×** | `sp1_verify_shard` ACCEPTED |
+| LogUp-GKR | 19.9 ms | 28.7 ms | 1.44× | byte-match |
+| zerocheck | 156.9 ms | **74.8 ms** | **0.48×** | byte-match |
+| jagged eval (PCS open) | 41.1 ms | **40.8 ms** | **0.99×** | byte-match |
+| full chain | 234.8 ms | **167.8 ms** | **0.71×** | `sp1_verify_shard` ACCEPTED |
 
 The two wall-clock columns are warm, byte-matched runs of the two tools above:
 the sp1-zorch column is the converged warm steady state (passes 3–5 of the
 `--runs=5` command, on an idle RTX 5090, published `frx` wheels — no locally
-built plugin — with the shard-invariant jagged total-cap zerocheck route; all
-four Stages byte-match and `--ffi_verify` reports `sp1_verify_shard:
-ACCEPTED`); the SP1 column is the SP1 GPU NoExec run. zerocheck (0.47×) runs
-at over twice SP1's speed — the jagged-packed shared round buffer with the
-shrink prefix and in-kernel folds — the PCS open edges SP1 out (0.89×), and
-the full chain lands at 0.72×, with LogUp-GKR (1.71×) the one remaining gap.
+built plugin — with the shard-invariant class routes on GKR, zerocheck, and
+the jagged stage; all four Stages byte-match and `--ffi_verify` reports
+`sp1_verify_shard: ACCEPTED`); the SP1 column is the SP1 GPU NoExec run.
+zerocheck (0.48×) runs at over twice SP1's speed — the jagged-packed shared
+round buffer with the shrink prefix and in-kernel folds — the PCS open is at
+parity (0.99×; ~4 ms of its warm time is the class route's zone-split
+dispatch, the price of the shard-invariant compile), and the full chain lands
+at 0.71×, with LogUp-GKR (1.44×) the one remaining gap.
 
 ### Measure shipped code
 
