@@ -247,29 +247,65 @@ def _chip_first_layer_batched(
     )
 
 
-@partial(frx.jit, static_argnames=("chip",))
+@partial(
+    frx.jit,
+    static_argnames=(
+        "chip", "main_start", "main_width", "cap", "prep_start",
+        "prep_width", "prep_height",
+    ),
+)
 def _chip_first_layer_capped(
     chip: GkrChip,
-    main_trace: Array,
-    prep_trace: Array | None,
+    main_flat: Array,
+    prep_flat: Array | None,
     live_height: Array,
     alpha: Array,
     betas: Array,
+    *,
+    main_start: int,
+    main_width: int,
+    cap: int,
+    prep_start: int = 0,
+    prep_width: int = 0,
+    prep_height: int = 0,
 ) -> tuple[Array, Array, Array, Array]:
-    """``_chip_first_layer_batched`` at a class height bound: the traces
-    arrive class-shaped (``[H, w]`` with zeros above the live rows) and the
-    shard's real height rides as the traced ``live_height`` scalar, so the
-    compile keys on the chip and the class shape alone.
+    """``_chip_first_layer_batched`` at a class height bound: the chip's
+    view is a static slice of the class-shaped flat arrival (zeros above the
+    live rows) cut INSIDE the jit, and the shard's real height rides as the
+    traced ``live_height`` scalar, so the compile keys on the chip and the
+    class constants alone and the slice fuses into the build instead of
+    dispatching eagerly. One ``@jit`` per chip — a zone fusing all chips
+    would hand XLA every chip's build intermediates at once, GBs of extra
+    peak on a wide 33-chip core shard whose GKR already presses the card.
 
     Slot ``j`` pairs rows ``2j``/``2j+1``, so slots below ``live_height // 2``
     hold exactly the exact-height build's real pairs; every slot past that is
     forced to the fold-neutral ``(n=0, d=1)`` — byte-identical to the
     exact build's ``jnp.pad`` values, whether the exact path padded there
     (``pad_count``) or never materialized the slot (class tail past its
-    ``slot_count``). Junk rows in ``[live_height, H)`` (zero main columns,
+    ``slot_count``). Junk rows in ``[live_height, cap)`` (zero main columns,
     possibly-live prep columns) only ever feed masked slots.
     """
-    height = main_trace.shape[0]
+    height = cap
+    main_trace = (
+        main_flat[main_start : main_start + main_width * cap]
+        .reshape(main_width, cap)
+        .T
+    )
+    prep_trace = None
+    if prep_width:
+        prep_trace = (
+            prep_flat[prep_start : prep_start + prep_width * prep_height]
+            .reshape(prep_width, prep_height)
+            .T
+        )
+        # The class bound stands in for the exact build's trim-to-main
+        # ([:real_height]); rows in [real_height, cap) only feed masked
+        # slots, so a short prep zero-extends safely.
+        if prep_height >= cap:
+            prep_trace = prep_trace[:cap]
+        else:
+            prep_trace = jnp.pad(prep_trace, ((0, cap - prep_height), (0, 0)))
     mult, fingerprint = _chip_mult_fingerprint(
         chip, main_trace, prep_trace, alpha, betas
     )
@@ -595,26 +631,22 @@ def generate_first_layer_capped(
             continue
         idx = name_to_idx[chip.name]
         cap = cap_class.chip_heights[idx]
-        width = main_widths[idx]
-        start = main_offsets[idx]
-        main_trace = main_flat[start : start + width * cap].reshape(width, cap).T
 
-        prep_trace = None
-        if chip.name in prep_name_to_idx and prep_flat is not None:
-            p_idx = prep_name_to_idx[chip.name]
-            p_h, p_w = prep_heights[p_idx], prep_widths[p_idx]
-            p_start = prep_offsets[p_idx]
-            prep_trace = prep_flat[p_start : p_start + p_w * p_h].reshape(p_w, p_h).T
-            # The class bound stands in for the exact build's trim-to-main
-            # ([:real_height]); rows in [real_height, cap) only feed masked
-            # slots, so a short prep zero-extends safely.
-            if p_h >= cap:
-                prep_trace = prep_trace[:cap]
-            else:
-                prep_trace = jnp.pad(prep_trace, ((0, cap - p_h), (0, 0)))
-
+        has_prep = chip.name in prep_name_to_idx and prep_flat is not None
+        p_idx = prep_name_to_idx[chip.name] if has_prep else 0
         chip_n0, chip_n1, chip_d0, chip_d1 = _chip_first_layer_capped(
-            chip, main_trace, prep_trace, heights[idx], alpha, betas
+            chip,
+            main_flat,
+            prep_flat if has_prep else None,
+            heights[idx],
+            alpha,
+            betas,
+            main_start=main_offsets[idx],
+            main_width=main_widths[idx],
+            cap=cap,
+            prep_start=prep_offsets[p_idx] if has_prep else 0,
+            prep_width=prep_widths[p_idx] if has_prep else 0,
+            prep_height=prep_heights[p_idx] if has_prep else 0,
         )
         n0_parts.append(chip_n0)
         n1_parts.append(chip_n1)

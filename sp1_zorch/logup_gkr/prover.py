@@ -553,56 +553,18 @@ def prove_logup_gkr(
     )
 
 
-@partial(
-    frx.jit,
-    static_argnames=(
-        "gkr_chips", "num_betas", "cap_class", "chip_names", "main_widths",
-        "prep_names", "prep_widths", "prep_heights",
-    ),
-)
-def _first_layer_zone(
-    main_flat: Array,
-    prep_flat: Array | None,
-    heights: Array,
-    transcript: Transcript,
-    *,
-    gkr_chips: tuple[GkrChip, ...],
-    num_betas: int,
-    cap_class: GkrCapClass,
-    chip_names: tuple[str, ...],
-    main_widths: tuple[int, ...],
-    prep_names: tuple[str, ...],
-    prep_widths: tuple[int, ...],
-    prep_heights: tuple[int, ...],
-) -> tuple[Transcript, tuple[Array, Array, Array, Array]]:
-    """Head challenges + the class-shaped first-layer build as ONE compiled
-    dispatch. Eagerly the pair costs ~25 ms of warm host-dispatch gaps
-    (transcript sampling between tiny permutes, then per-chip slice/build
-    glue); fused they key on the chip set + class alone, so the zone joins
-    the shard-invariant compile set. Returns the four planes raw —
-    ``JaggedGkrLayer`` is not a pytree; the caller reassembles it with the
-    class slot counts."""
+@partial(frx.jit, static_argnames=("num_betas",))
+def _head_zone(
+    transcript: Transcript, *, num_betas: int
+) -> tuple[Transcript, Array, Array]:
+    """``HeadChallengesRound`` as one compiled dispatch: eagerly its EF
+    samples cost ~14 ms of warm host gaps between tiny permutes. Only the
+    head fuses — a zone also swallowing the first-layer build would hand
+    XLA every chip's build intermediates at once, GBs of extra peak on a
+    wide 33-chip core shard whose GKR already presses the card; the
+    per-chip builds stay their own ``@jit`` boundaries."""
     _, transcript, head = HeadChallengesRound(num_betas)(None, transcript)
-    first = generate_first_layer_capped(
-        gkr_chips,
-        main_flat,
-        prep_flat,
-        heights,
-        head.alpha,
-        head.betas,
-        cap_class=cap_class,
-        chip_names=chip_names,
-        main_widths=main_widths,
-        prep_names=prep_names,
-        prep_widths=prep_widths,
-        prep_heights=prep_heights,
-    )
-    return transcript, (
-        first.numerator_0,
-        first.numerator_1,
-        first.denominator_0,
-        first.denominator_1,
-    )
+    return transcript, head.alpha, head.betas
 
 
 def prove_logup_gkr_capped(
@@ -656,23 +618,20 @@ def prove_logup_gkr_capped(
         else ()
     )
 
-    gkr_chips = tuple(gkr_chips)
-    transcript, planes = _first_layer_zone(
+    transcript, alpha, betas = _head_zone(transcript, num_betas=num_betas)
+    first = generate_first_layer_capped(
+        tuple(gkr_chips),
         main_flat,
         prep_flat,
         heights,
-        transcript,
-        gkr_chips=gkr_chips,
-        num_betas=num_betas,
+        alpha,
+        betas,
         cap_class=cap_class,
         chip_names=chip_names,
         main_widths=main_widths,
         prep_names=prep_names,
         prep_widths=prep_widths,
         prep_heights=prep_heights,
-    )
-    first = JaggedGkrLayer(
-        *planes, row_counts=cap_class.slot_counts(gkr_chips, chip_names)
     )
     return _prove_from_first_layer(
         first,

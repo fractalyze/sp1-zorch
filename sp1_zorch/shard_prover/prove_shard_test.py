@@ -29,10 +29,13 @@ from zorch.testkit.transcript import cheap_transcript
 from zorch.pcs.jagged.region import JaggedRegion
 from zorch.commit.smcs import SingleMatrixCommitmentScheme
 from zorch.pcs.jagged.commit import commit_region
-from sp1_zorch.logup_gkr.circuit import GkrCapClass, GkrChip
+from sp1_zorch.logup_gkr.circuit import (
+    GkrCapClass,
+    GkrChip,
+    _chip_first_layer_capped,
+)
 from sp1_zorch.logup_gkr.prover import (
     ChipEvaluation,
-    _first_layer_zone,
     open_traces_capped,
     prove_logup_gkr,
 )
@@ -564,7 +567,7 @@ class LogupGkrStageCapClassTest(absltest.TestCase):
             num_row_variables=_NUM_ROW_VARIABLES,
             gkr_cap_class=GkrCapClass((10,)),
         )
-        build_before = _first_layer_zone._cache_size()
+        build_before = _chip_first_layer_capped._cache_size()
         open_before = open_traces_capped._cache_size()
         for seed, rows in ((60, 6), (70, 10)):
             main_region = JaggedRegion.from_chips(
@@ -596,9 +599,12 @@ class LogupGkrStageCapClassTest(absltest.TestCase):
                 want.chip_openings["alpha"].main,
                 label,
             )
-        # One head+first-layer zone compile and one open compile across both
+        # One first-layer compile per chip and one open compile across both
         # shards: the class shapes + traced heights keep shard 2 a cache hit.
-        self.assertEqual(_first_layer_zone._cache_size() - build_before, 1)
+        self.assertEqual(
+            _chip_first_layer_capped._cache_size() - build_before,
+            len(gkr_chips),
+        )
         self.assertEqual(open_traces_capped._cache_size() - open_before, 1)
 
 
