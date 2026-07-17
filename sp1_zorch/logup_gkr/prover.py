@@ -33,10 +33,9 @@ from sp1_zorch.logup_gkr.circuit import (
     GkrCapClass,
     GkrChip,
     _arrival_offsets,
-    _chip_view,
-    generate_first_layer,
     generate_first_layer_capped,
     pack_gkr_arrival,
+    region_statics,
     sp1_schedules,
 )
 from sp1_zorch.logup_gkr.head import (
@@ -189,7 +188,7 @@ def flat_openings_absorb(
 
 class ChipOpeningsRound(Round):
     """SP1's GKR chip-openings absorb schedule, single-sourced the same way
-    as the preamble and the GKR head glue: the prover (``open_traces``)
+    as the preamble and the GKR head glue: the prover (``open_traces_capped``)
     drives it with the openings it just computed, the verifier dual with the
     proof's recorded ones, so the two Fiat-Shamir streams cannot drift.
     ``chip_names`` fixes the absorb order -- the caller's statement, never
@@ -210,53 +209,6 @@ class ChipOpeningsRound(Round):
             empty_prep_absorbs_zero=False,
         )
         return carry, transcript.observe(flat), self._openings
-
-
-@partial(frx.jit, static_argnames=("trace_dimension",))
-def open_traces(
-    main_region: JaggedRegion,
-    prep_region: JaggedRegion | None,
-    eval_point: Array,
-    transcript: Transcript,
-    *,
-    trace_dimension: int,
-) -> tuple[Transcript, dict[str, ChipEvaluation]]:
-    """Open every shard chip's traces at the final GKR point and absorb them
-    via ``ChipOpeningsRound``.
-
-    SP1 opens ALL shard chips (not just the GKR ones). Preprocessed traces
-    open at their keygen height.
-
-    ``@jit`` so the per-chip ``_chip_view`` + ``_open_chip`` + Fiat-Shamir absorb
-    fuse into one program: under the eager LogUp-GKR fold this loop would
-    otherwise dispatch op-by-op per chip and dominate the warm GKR time. It runs
-    after the fold, so it pins no layer -- jitting it costs no memory."""
-    rev_point = eval_point[-trace_dimension:][::-1]
-    prep_name_to_idx = (
-        {name: i for i, name in enumerate(prep_region.chip_names)}
-        if prep_region is not None
-        else {}
-    )
-
-    openings: dict[str, ChipEvaluation] = {}
-    for idx, name in enumerate(main_region.chip_names):
-        main_eval = _open_chip(
-            _chip_view(main_region, idx), rev_point, main_region.chip_heights[idx]
-        )
-        prep_eval = None
-        if name in prep_name_to_idx:
-            prep_idx = prep_name_to_idx[name]
-            prep_eval = _open_chip(
-                _chip_view(prep_region, prep_idx),
-                rev_point,
-                prep_region.chip_heights[prep_idx],
-            )
-        openings[name] = ChipEvaluation(main=main_eval, preprocessed=prep_eval)
-
-    _, transcript, _ = ChipOpeningsRound(openings, main_region.chip_names)(
-        None, transcript
-    )
-    return transcript, openings
 
 
 @partial(
@@ -280,15 +232,18 @@ def open_traces_capped(
     prep_widths: tuple[int, ...],
     prep_heights: tuple[int, ...],
 ) -> tuple[Transcript, dict[str, ChipEvaluation]]:
-    """``open_traces`` on the class-shaped flat arrival: chip views are
+    """Open every shard chip's trace at the final GKR point and absorb via
+    ``ChipOpeningsRound``, on the class-shaped flat arrival: chip views are
     static slices at the class bounds, so the compile keys on the chip set
-    and the class alone — no traced height needed.
+    and the class alone — no traced height needed. SP1 opens ALL shard
+    chips (not just the GKR ones); preprocessed traces open at their keygen
+    height.
 
-    Byte-identical to the exact open: the arrival's rows past the real
-    height are zero, so folding at the class log-height multiplies the exact
-    fold by ``(1 - rev_point[k])`` per extra bind — exactly the factors the
-    exact path applies in its zero-extension correction product, and field
-    mul is exact and commutative.
+    Byte-identical at any admitted class: the arrival's rows past the real
+    height are zero, so folding at the class log-height multiplies the
+    real-height fold by ``(1 - rev_point[k])`` per extra bind — exactly the
+    factors ``_open_chip``'s zero-extension correction product applies, and
+    field mul is exact and commutative.
     """
     rev_point = eval_point[-trace_dimension:][::-1]
     main_offsets = _arrival_offsets(main_widths, cap_class.chip_heights)
@@ -475,84 +430,6 @@ def _prove_from_first_layer(
     return transcript, proof
 
 
-def prove_logup_gkr_body(
-    gkr_chips: Sequence[GkrChip],
-    main_region: JaggedRegion,
-    prep_region: JaggedRegion | None,
-    transcript: Transcript,
-    witness: Array,
-    *,
-    num_betas: int,
-    num_row_variables: int,
-) -> tuple[Transcript, LogupGkrProof]:
-    """The grind-free LogUp-GKR body: head challenges, circuit build, the rolled
-    pyramid sumcheck, and the trace openings, on a post-grind transcript.
-
-    Pure traceable array work; each heavy inner zone (first-layer build,
-    per-transition pyramid build, whole-layer sumcheck) is ``@jit``-ed on its
-    own. ``witness`` is threaded only onto the returned proof.
-    """
-    _, transcript, head = HeadChallengesRound(num_betas)(None, transcript)
-
-    # Build the pyramid as one fused traced region over the transitions (zorch's
-    # build_jagged_pyramid, natural-width per zorch#370) rather than the eager
-    # per-transition dispatch loop -- it collapses the ~20 heterogeneous
-    # transition layers into one traced region, O(1) in the depth (sp1-zorch#143).
-    # build_jagged_pyramid reads the first layer's row_counts to derive SP1's fold
-    # schedule, so build it first.
-    first = generate_first_layer(
-        gkr_chips, main_region, prep_region, head.alpha, head.betas
-    )
-    return _prove_from_first_layer(
-        first,
-        transcript,
-        witness,
-        num_row_variables=num_row_variables,
-        open_fn=lambda eval_point, t: open_traces(
-            main_region,
-            prep_region,
-            eval_point,
-            t,
-            trace_dimension=num_row_variables + 1,
-        ),
-    )
-
-
-def prove_logup_gkr(
-    gkr_chips: Sequence[GkrChip],
-    main_region: JaggedRegion,
-    prep_region: JaggedRegion | None,
-    transcript: Transcript,
-    *,
-    num_betas: int,
-    num_row_variables: int,
-    pow_bits: int = 0,
-    witness: Array | None = None,
-) -> tuple[Transcript, LogupGkrProof]:
-    """Run the LogUp-GKR stage on a transcript positioned after the shard
-    preamble (vk, public values, main commitment, chip metadata).
-
-    Returns the advanced transcript and the proof; the caller opens the
-    traces at ``proof.eval_point``. The single source for the stage --
-    ``LogupGkrStage`` calls it directly (host-side grind, then the body).
-    """
-    transcript, witness = resolve_witness_and_grind(
-        transcript,
-        pow_bits=pow_bits,
-        witness=witness,
-        bf_dtype=main_region.dense.dtype,
-    )
-    return prove_logup_gkr_body(
-        gkr_chips,
-        main_region,
-        prep_region,
-        transcript,
-        witness,
-        num_betas=num_betas,
-        num_row_variables=num_row_variables,
-    )
-
-
 @partial(frx.jit, static_argnames=("num_betas",))
 def _head_zone(
     transcript: Transcript, *, num_betas: int
@@ -567,7 +444,7 @@ def _head_zone(
     return transcript, head.alpha, head.betas
 
 
-def prove_logup_gkr_capped(
+def prove_logup_gkr(
     gkr_chips: Sequence[GkrChip],
     main_region: JaggedRegion,
     prep_region: JaggedRegion | None,
@@ -575,23 +452,31 @@ def prove_logup_gkr_capped(
     *,
     num_betas: int,
     num_row_variables: int,
-    cap_class: GkrCapClass,
+    cap_class: GkrCapClass | None = None,
     pow_bits: int = 0,
     witness: Array | None = None,
 ) -> tuple[Transcript, LogupGkrProof]:
-    """``prove_logup_gkr`` on the shard-invariant class contract
+    """Run the LogUp-GKR stage on a transcript positioned after the shard
+    preamble (vk, public values, main commitment, chip metadata) — the
+    single source for the stage (``LogupGkrStage`` calls it directly:
+    host-side grind, then class-keyed inner zones).
+
+    The one prove path is the shard-invariant class contract
     (sp1-zorch#272): the regions pack eagerly into class-shaped flat
     arrivals, the real heights ride as one traced int32 vector, and every
-    traced zone (first-layer build, pyramid transitions, layer sumchecks,
-    trace open) keys its compile on the chip set and the class alone —
-    shards that differ only in row counts share every executable.
+    traced zone (head, per-chip first-layer builds, pyramid transitions,
+    layer sumchecks, trace open) keys its compile on the chip set and the
+    class alone — shards that differ only in row counts share every
+    executable. With no ``cap_class`` the shard's own a-priori-tight class
+    is derived: the layout then equals the exact SP1 layout (per-shard
+    compile, same body).
 
-    Byte-identical to ``prove_logup_gkr`` on every shard the class admits:
-    the class layout only adds fold-neutral (n=0, d=1) slots, which are
-    fixed points of the layer fold and summand no-ops in the layer sumcheck
-    (the virtual-mass correction subtracts exactly the eq weight each one
-    contributes), and the class-height trace open folds the same zeros the
-    exact open factors out as its correction product.
+    Byte-identical across admitted classes: a wider class only adds
+    fold-neutral (n=0, d=1) slots, which are fixed points of the layer fold
+    and summand no-ops in the layer sumcheck (the virtual-mass correction
+    subtracts exactly the eq weight each one contributes), and the
+    class-height trace open folds the arrival's zeros into exactly the
+    correction factors the tight-class open applies.
     """
     transcript, witness = resolve_witness_and_grind(
         transcript,
@@ -599,24 +484,15 @@ def prove_logup_gkr_capped(
         witness=witness,
         bf_dtype=main_region.dense.dtype,
     )
+    if cap_class is None:
+        cap_class = GkrCapClass.from_heights(
+            [int(h) for h in main_region.chip_heights]
+        )
     main_flat, prep_flat, heights = pack_gkr_arrival(
         main_region, prep_region, cap_class
     )
-    chip_names = tuple(main_region.chip_names)
-    main_widths = tuple(int(w) for w in main_region.chip_widths)
-    prep_names = (
-        tuple(prep_region.chip_names) if prep_region is not None else ()
-    )
-    prep_widths = (
-        tuple(int(w) for w in prep_region.chip_widths)
-        if prep_region is not None
-        else ()
-    )
-    prep_heights = (
-        tuple(int(h) for h in prep_region.chip_heights)
-        if prep_region is not None
-        else ()
-    )
+    chip_names, main_widths, _ = region_statics(main_region)
+    prep_names, prep_widths, prep_heights = region_statics(prep_region)
 
     transcript, alpha, betas = _head_zone(transcript, num_betas=num_betas)
     first = generate_first_layer_capped(

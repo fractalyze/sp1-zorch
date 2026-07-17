@@ -561,14 +561,17 @@ class LogupGkrStageCapClassTest(absltest.TestCase):
 
     def test_cap_class_stage_matches_exact_and_shares_compiles(self) -> None:
         gkr_chips = (GkrChip("alpha", (_interaction(0, 1),)),)
+        # The pinned class exceeds BOTH shard heights: the tight-class oracle
+        # proves below (prove_logup_gkr with no class routes through the same
+        # capped builders) then cannot pre-warm the class executables the
+        # compile-count window measures.
         stage = LogupGkrStage(
             gkr_chips,
             num_betas=_NUM_BETAS,
             num_row_variables=_NUM_ROW_VARIABLES,
-            gkr_cap_class=GkrCapClass((10,)),
+            gkr_cap_class=GkrCapClass((12,)),
         )
-        build_before = _chip_first_layer_capped._cache_size()
-        open_before = open_traces_capped._cache_size()
+        shards = []
         for seed, rows in ((60, 6), (70, 10)):
             main_region = JaggedRegion.from_chips(
                 [_rand_bf(seed, (rows, 2))],
@@ -577,8 +580,6 @@ class LogupGkrStageCapClassTest(absltest.TestCase):
                 chip_names=("alpha",),
             )
             public_values = _rand_bf(seed + 1, (8,))
-            bridge = ShardBridge(main_region, None, public_values)
-
             _, want = prove_logup_gkr(
                 gkr_chips,
                 main_region,
@@ -587,6 +588,12 @@ class LogupGkrStageCapClassTest(absltest.TestCase):
                 num_betas=_NUM_BETAS,
                 num_row_variables=_NUM_ROW_VARIABLES,
             )
+            shards.append((rows, main_region, public_values, want))
+
+        build_before = _chip_first_layer_capped._cache_size()
+        open_before = open_traces_capped._cache_size()
+        for rows, main_region, public_values, want in shards:
+            bridge = ShardBridge(main_region, None, public_values)
             got_bridge, _, got = stage(bridge, cheap_transcript(BF))
 
             label = f"rows {rows}"

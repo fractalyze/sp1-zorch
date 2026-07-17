@@ -686,15 +686,24 @@ class CappedFirstLayerTest(absltest.TestCase):
 
     def test_two_shards_of_one_class_share_one_compile(self) -> None:
         chips = self._chips()
-        shard1 = _region(_main(6), _main(4, offset=100), names=("A", "B"))
-        shard2 = _region(_main(10, offset=7), _main(8, offset=50), names=("A", "B"))
+        # Mixed dominance (A grows, B shrinks): the union class differs from
+        # BOTH tight classes, so the exact-oracle builds below cannot
+        # pre-warm the union executables.
+        shard1 = _region(_main(6), _main(8, offset=100), names=("A", "B"))
+        shard2 = _region(_main(10, offset=7), _main(4, offset=50), names=("A", "B"))
         cls = GkrCapClass.union(
             GkrCapClass.from_heights([int(h) for h in shard1.chip_heights]),
             GkrCapClass.from_heights([int(h) for h in shard2.chip_heights]),
         )
+        # Oracles first: the exact build routes through the same capped
+        # builder at each shard's TIGHT class, so it must stay outside the
+        # shared-class compile-count window below.
+        exacts = [
+            generate_first_layer(chips, shard, None, ALPHA, BETAS)
+            for shard in (shard1, shard2)
+        ]
         before = _chip_first_layer_capped._cache_size()
-        for shard in (shard1, shard2):
-            exact = generate_first_layer(chips, shard, None, ALPHA, BETAS)
+        for shard, exact in zip((shard1, shard2), exacts):
             capped = _capped_layer(chips, shard, None, cls)
             self.assertEqual(
                 capped.row_counts, cls.slot_counts(chips, shard.chip_names)

@@ -29,7 +29,6 @@ from sp1_zorch.logup_gkr.prover import (
     LogupGkrProof,
     num_beta_values,
     prove_logup_gkr,
-    prove_logup_gkr_capped,
 )
 from sp1_zorch.poseidon2.koalabear16 import koalabear16_params
 from sp1_zorch.shard_prover.fixture_loader import _parse_int_list, _parse_kv_lines
@@ -202,23 +201,16 @@ def replay_gkr(
     if gkr_chips is None:
         order = shard.main_trace_data.traces.chip_order
         gkr_chips = build_gkr_chips(shard.main_trace_data.chips, order)
-    common = dict(
+    return prove_logup_gkr(
+        gkr_chips,
+        main_region,
+        prep_region,
+        preamble,
         num_betas=num_beta_values(shard.main_trace_data.chips),
         num_row_variables=MAX_LOG_ROW_COUNT - 1,
         pow_bits=pow_bits,
         witness=jnp.array(int(state["witness"]), F),
-    )
-    if cap_class is not None:
-        return prove_logup_gkr_capped(
-            gkr_chips,
-            main_region,
-            prep_region,
-            preamble,
-            cap_class=cap_class,
-            **common,
-        )
-    return prove_logup_gkr(
-        gkr_chips, main_region, prep_region, preamble, **common
+        cap_class=cap_class,
     )
 
 

@@ -34,7 +34,6 @@ from sp1_zorch.logup_gkr.prover import (
     num_beta_values,
     open_traces_capped,
     prove_logup_gkr,
-    prove_logup_gkr_capped,
     resolve_witness_and_grind,
 )
 from sp1_zorch.shard_prover.chip_loader import make_chip_stub
@@ -339,7 +338,7 @@ class CappedProveTest(absltest.TestCase):
                 num_betas=3,
                 num_row_variables=4,
             )
-            capped_t, capped = prove_logup_gkr_capped(
+            capped_t, capped = prove_logup_gkr(
                 self._CHIPS,
                 shard,
                 None,
@@ -367,7 +366,7 @@ class CappedProveTest(absltest.TestCase):
         cap_class = self._class_of(shards)
         before = open_traces_capped._cache_size()
         for shard in shards:
-            prove_logup_gkr_capped(
+            prove_logup_gkr(
                 self._CHIPS,
                 shard,
                 None,
@@ -400,7 +399,7 @@ class CappedProveTest(absltest.TestCase):
             num_betas=3,
             num_row_variables=3,
         )
-        _, capped = prove_logup_gkr_capped(
+        _, capped = prove_logup_gkr(
             chips,
             shard,
             prep_region,

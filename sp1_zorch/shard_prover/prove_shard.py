@@ -41,7 +41,7 @@ from sp1_zorch.logup_gkr.circuit import GkrCapClass, GkrChip
 from sp1_zorch.logup_gkr.prover import (
     ChipEvaluation,
     LogupGkrProof,
-    prove_logup_gkr_capped,
+    prove_logup_gkr,
 )
 from sp1_zorch.shard_prover.types import MachineVerifyingKey
 from sp1_zorch.zerocheck.jagged import TotalCapClass, pack_flat_arrival
@@ -222,7 +222,7 @@ class TraceCommitStage(Round):
 
 
 class LogupGkrStage(Round):
-    """LogUp-GKR stage over ``prove_logup_gkr_capped``; writes the final
+    """LogUp-GKR stage over ``prove_logup_gkr``; writes the final
     evaluation point and per-chip openings onto the bridge for zerocheck.
 
     Eager orchestration, not one ``@jit`` body: a whole-body ``@jit`` keeps
@@ -257,10 +257,7 @@ class LogupGkrStage(Round):
     def __call__(
         self, bridge: ShardBridge, transcript: Transcript
     ) -> tuple[ShardBridge, Transcript, LogupGkrProof]:
-        cap_class = self._gkr_cap_class or GkrCapClass.from_heights(
-            [int(h) for h in bridge.main_region.chip_heights]
-        )
-        transcript, proof = prove_logup_gkr_capped(
+        transcript, proof = prove_logup_gkr(
             self._gkr_chips,
             bridge.main_region,
             bridge.prep_region,
@@ -269,7 +266,7 @@ class LogupGkrStage(Round):
             num_row_variables=self._num_row_variables,
             pow_bits=self._pow_bits,
             witness=self._witness,
-            cap_class=cap_class,
+            cap_class=self._gkr_cap_class,
         )
         bridge = replace(
             bridge,
