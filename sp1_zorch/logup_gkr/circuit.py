@@ -477,6 +477,38 @@ def _arrival_offsets(
     return tuple(offsets)
 
 
+@partial(frx.jit, static_argnames=("cap_class", "main_widths"))
+def _pack_main_zone(
+    dense: Array,
+    starts: Array,
+    heights: Array,
+    *,
+    cap_class: GkrCapClass,
+    main_widths: tuple[int, ...],
+) -> Array:
+    """The main arrival as ONE fused program: per chip, a vmapped column
+    slice reads each column at its traced start/stride and the live mask
+    zeroes rows past the traced height. Eagerly this pack was ~130
+    dispatches copying the trace ~4x (slice, pad, transpose, concat) and
+    dominated the warm serve (~1.7 s of a ~2 s unseen-shard serve); fused
+    it is output-sized reads + writes. ``dense`` arrives padded to the
+    class constant, so the compile keys on (class, widths) alone."""
+    parts: list[Array] = []
+    for i, (w, cap) in enumerate(zip(main_widths, cap_class.chip_heights)):
+        if w * cap == 0:
+            continue
+        h = heights[i]
+        start = starts[i]
+        block = frx.vmap(
+            lambda c: lax.dynamic_slice(dense, (start + c * h,), (cap,))
+        )(jnp.arange(w, dtype=jnp.int32))  # [w, cap]
+        live = jnp.arange(cap, dtype=jnp.int32)[None, :] < h
+        parts.append(
+            jnp.where(live, block, jnp.zeros((), dense.dtype)).reshape(-1)
+        )
+    return jnp.concatenate(parts)
+
+
 def pack_gkr_arrival(
     main_region: JaggedRegion,
     prep_region: JaggedRegion | None,
@@ -484,19 +516,43 @@ def pack_gkr_arrival(
 ) -> tuple[Array, Array | None, Array]:
     """Pack the regions into class-shaped flat arrivals at the eager stage
     prologue: main chips as column-major ``[width, class height]`` blocks
-    (live rows + zeros) at ``_arrival_offsets``, prep at its shard-invariant
-    keygen heights, plus the real main heights as the one traced int32
-    vector. No ``JaggedRegion`` crosses into a jit body — its per-shard
-    host-tuple metadata would key every zone compile."""
+    (live rows + zeros) at ``_arrival_offsets`` via the fused
+    ``_pack_main_zone``, prep at its shard-invariant keygen heights, plus
+    the real main heights as the one traced int32 vector. No
+    ``JaggedRegion`` crosses into a jit body — its per-shard host-tuple
+    metadata would key every zone compile."""
     heights_host = [int(h) for h in main_region.chip_heights]
     cap_class.check_bounds(heights_host)
+    main_widths = tuple(int(w) for w in main_region.chip_widths)
 
-    main_parts: list[Array] = []
-    for idx, real_h in enumerate(heights_host):
-        cap = cap_class.chip_heights[idx]
-        view = _chip_view(main_region, idx)  # [real_h, width]
-        main_parts.append(jnp.pad(view, ((0, cap - real_h), (0, 0))).T.reshape(-1))
-    main_flat = jnp.concatenate(main_parts)
+    # Pad the dense to the CLASS constant (arrival area + one class height
+    # of slack for the last column's full-cap read) so the pack zone's
+    # operand shape is class-derived — any admitted shard, including a
+    # synthetic warmup shard, hits the same executable. Out-of-chip reads
+    # the slices make below a live height land in masked rows only.
+    dense = main_region.dense
+    arrival_len = _arrival_offsets(main_widths, cap_class.chip_heights)[-1]
+    # >= any admitted dense (live area + its stacking pad) + full-cap slack
+    # for the last column's slice.
+    dense_cap = (
+        arrival_len
+        + (1 << main_region.log_stacking_height)
+        + max(cap_class.chip_heights, default=0)
+    )
+    if dense.shape[0] > dense_cap:
+        raise ValueError(
+            f"dense length {dense.shape[0]} exceeds the class bound "
+            f"{dense_cap}; the class does not admit this shard"
+        )
+    dense = jnp.pad(dense, (0, dense_cap - dense.shape[0]))
+    heights = jnp.asarray(heights_host, jnp.int32)
+    main_flat = _pack_main_zone(
+        dense,
+        jnp.asarray([int(s) for s in main_region.chip_starts], jnp.int32),
+        heights,
+        cap_class=cap_class,
+        main_widths=main_widths,
+    )
 
     prep_flat = None
     if prep_region is not None:
@@ -506,7 +562,7 @@ def pack_gkr_arrival(
         ]
         prep_flat = jnp.concatenate(prep_parts)
 
-    return main_flat, prep_flat, jnp.asarray(heights_host, jnp.int32)
+    return main_flat, prep_flat, heights
 
 
 def generate_first_layer_capped(
