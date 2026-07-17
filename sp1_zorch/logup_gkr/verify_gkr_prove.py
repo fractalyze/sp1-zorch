@@ -24,12 +24,14 @@ Exits non-zero on any mismatch.
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
 import frx.numpy as jnp
 from absl import app, flags
 
+from sp1_zorch.logup_gkr.circuit import GkrCapClass
 from sp1_zorch.logup_gkr.head import (
     GrindRound,
     HeadChallengesRound,
@@ -58,6 +60,15 @@ _GKR_POW_BITS = flags.DEFINE_integer(
     "gkr_pow_bits",
     12,
     "GKR grind bits (SP1 hardcodes GKR_GRINDING_BITS = 12).",
+)
+_GKR_CLASS_JSON = flags.DEFINE_string(
+    "gkr_class_json",
+    None,
+    'JSON {"chip_heights": {name: bound}} pinning the shard-invariant '
+    "GkrCapClass (sp1-zorch#272); the prove then runs the class-shaped body "
+    "(byte-identical) whose compiles shards of one class share. Default: the "
+    "exact per-shard body. Assemble a cross-shard class as the per-chip max "
+    "of the GKR_CLASS lines printed here.",
 )
 
 
@@ -187,8 +198,31 @@ def main(argv) -> None:
     num_betas = num_beta_values(shard.main_trace_data.chips)
     print(f"num_beta_values={num_betas}")
 
+    # The shard's own a-priori-tight class, printed for cross-shard class
+    # assembly (per-chip max); --gkr_class_json pins one for the prove.
+    own = GkrCapClass.from_heights([int(h) for h in main_region.chip_heights])
+    print(
+        "GKR_CLASS "
+        + json.dumps(
+            {"chip_heights": dict(zip(main_region.chip_names, own.chip_heights))}
+        ),
+        flush=True,
+    )
+    cap_class = None
+    if _GKR_CLASS_JSON.value:
+        with open(_GKR_CLASS_JSON.value) as f:
+            bounds = json.load(f)["chip_heights"]
+        cap_class = GkrCapClass(
+            tuple(int(bounds[name]) for name in main_region.chip_names)
+        )
+
     transcript, proof = replay_gkr(
-        shard, shard_dir, main_region, prep_region, pow_bits=_GKR_POW_BITS.value
+        shard,
+        shard_dir,
+        main_region,
+        prep_region,
+        pow_bits=_GKR_POW_BITS.value,
+        cap_class=cap_class,
     )
 
     ok &= _check_outputs(proof, state)

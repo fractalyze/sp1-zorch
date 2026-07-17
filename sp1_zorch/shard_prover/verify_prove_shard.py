@@ -71,7 +71,7 @@ from absl import app, flags
 from zk_dtypes import koalabear_mont as F
 
 from zorch.commit.smcs import SingleMatrixCommitmentScheme
-from sp1_zorch.logup_gkr.circuit import build_gkr_chips
+from sp1_zorch.logup_gkr.circuit import GkrCapClass, build_gkr_chips
 from sp1_zorch.logup_gkr.prover import num_beta_values
 from sp1_zorch.poseidon2.koalabear16 import koalabear16_params
 from sp1_zorch.shard_prover.fixture_loader import (
@@ -153,6 +153,15 @@ _ZC_CLASS_JSON = flags.DEFINE_string(
     "ZC_CLASS lines. The jagged-packed round buffer costs area_cap extension-"
     "field elements — a class bounding a much larger shard prices every "
     "shard at that area.",
+)
+_GKR_CLASS_JSON = flags.DEFINE_string(
+    "gkr_class_json",
+    None,
+    'JSON {"chip_heights": {name: bound}} pinning the shard-invariant '
+    "GkrCapClass (sp1-zorch#272); shards of one class share every LogUp-GKR "
+    "zone compile. Default: each shard's own a-priori-tight class (per-shard "
+    "compile). Assemble a cross-shard class as the per-chip max of the "
+    "printed GKR_CLASS lines.",
 )
 _JAXPROF_DIR = flags.DEFINE_string(
     "jaxprof_dir",
@@ -297,6 +306,25 @@ def _verify_shard(
             c = {k: int(v) for k, v in json.load(f).items()}
         tc_class = TotalCapClass(area_cap=c["area_cap"], window=c["window"])
 
+    # LogUp-GKR rides the same contract (sp1-zorch#272) on per-chip height
+    # bounds; --gkr_class_json pins a cross-shard class (per-chip max of the
+    # GKR_CLASS lines printed here).
+    # From the region heights (what the stage packs), not num_reals — the
+    # two agree on real rows but the pack's bound check runs on the region.
+    own_gkr = GkrCapClass.from_heights(
+        [int(h) for h in main_region.chip_heights]
+    )
+    print(
+        "GKR_CLASS "
+        + json.dumps({"chip_heights": dict(zip(order, own_gkr.chip_heights))}),
+        flush=True,
+    )
+    gkr_class = own_gkr
+    if _GKR_CLASS_JSON.value:
+        with open(_GKR_CLASS_JSON.value) as f:
+            bounds = json.load(f)["chip_heights"]
+        gkr_class = GkrCapClass(tuple(int(bounds[name]) for name in order))
+
     # The GKR witness is consumed only by LogUp-GKR; a trace-commit-only run
     # (--max_stage=1) slices that stage off, so don't require the gkr fixture.
     n = max(1, min(4, _MAX_STAGE.value))
@@ -325,6 +353,7 @@ def _verify_shard(
         witness=witness,
         jit=True,
         zerocheck_total_cap_class=tc_class,
+        gkr_cap_class=gkr_class,
     )
     # Slice to the first N stages (--max_stage) so the downstream stages' compile
     # is skipped for a cheaper loop. ProveChain collects one message per round,

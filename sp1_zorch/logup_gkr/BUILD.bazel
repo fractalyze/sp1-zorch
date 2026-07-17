@@ -151,3 +151,23 @@ py_binary(
         requirement("frx_cuda12_pjrt"),
     ],
 )
+
+# Multi-shard zero-recompile check for the class-shaped GKR route
+# (sp1-zorch#272): every class-keyed zone must add zero compiles after the
+# first shard of a GkrCapClass.
+#   bazel run //sp1_zorch/logup_gkr:verify_gkr_recompile -- \
+#       --shard-dirs=/path/shard17,/path/shard18 --gkr_class_json=class.json
+py_binary(
+    name = "verify_gkr_recompile",
+    srcs = ["verify_gkr_recompile.py"],
+    deps = [
+        ":logup_gkr",
+        "//sp1_zorch/shard_prover",
+        "//sp1_zorch/shard_prover:replay",
+        "@zorch//zorch/logup_gkr",
+        requirement("frx"),
+        requirement("frx_cuda12_plugin"),
+        requirement("zk_dtypes"),
+        requirement("frx_cuda12_pjrt"),
+    ],
+)

@@ -23,12 +23,13 @@ from zk_dtypes import koalabear_mont as F
 from zk_dtypes import koalabearx4_mont as EF
 
 from zorch.pcs.jagged.region import JaggedRegion
-from sp1_zorch.logup_gkr.circuit import build_gkr_chips
+from sp1_zorch.logup_gkr.circuit import GkrCapClass, build_gkr_chips
 from sp1_zorch.logup_gkr.prover import (
     ChipEvaluation,
     LogupGkrProof,
     num_beta_values,
     prove_logup_gkr,
+    prove_logup_gkr_capped,
 )
 from sp1_zorch.poseidon2.koalabear16 import koalabear16_params
 from sp1_zorch.shard_prover.fixture_loader import _parse_int_list, _parse_kv_lines
@@ -182,26 +183,42 @@ def replay_gkr(
     prep_region: JaggedRegion | None,
     *,
     pow_bits: int,
+    cap_class: GkrCapClass | None = None,
+    gkr_chips: tuple | None = None,
 ) -> tuple[Transcript, LogupGkrProof]:
     """The pipeline through the layered GKR prove, grind skipped via the
     dump's witness. One call site for the stage invocation so the GKR and
     zerocheck runnables cannot drift on its wiring; each caller owns its own
-    checks against the dump."""
+    checks against the dump.
+
+    ``cap_class`` routes through the shard-invariant class body
+    (sp1-zorch#272, byte-identical); ``gkr_chips`` lets a multi-shard caller
+    reuse ONE chip tuple across shards — the inner zones key statically on
+    it, so fresh per-shard objects would bust their caches."""
     state = _parse_kv_lines(
         (shard_dir / "gpu_gkr_state.txt").read_text(), skip_unkeyed=True
     )
     preamble = preamble_transcript(shard, shard_dir)
-    order = shard.main_trace_data.traces.chip_order
-    gkr_chips = build_gkr_chips(shard.main_trace_data.chips, order)
-    return prove_logup_gkr(
-        gkr_chips,
-        main_region,
-        prep_region,
-        preamble,
+    if gkr_chips is None:
+        order = shard.main_trace_data.traces.chip_order
+        gkr_chips = build_gkr_chips(shard.main_trace_data.chips, order)
+    common = dict(
         num_betas=num_beta_values(shard.main_trace_data.chips),
         num_row_variables=MAX_LOG_ROW_COUNT - 1,
         pow_bits=pow_bits,
         witness=jnp.array(int(state["witness"]), F),
+    )
+    if cap_class is not None:
+        return prove_logup_gkr_capped(
+            gkr_chips,
+            main_region,
+            prep_region,
+            preamble,
+            cap_class=cap_class,
+            **common,
+        )
+    return prove_logup_gkr(
+        gkr_chips, main_region, prep_region, preamble, **common
     )
 
 
