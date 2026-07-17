@@ -16,10 +16,14 @@ from zk_dtypes import koalabearx4_mont as EF
 
 from zorch.pcs.jagged.region import JaggedRegion
 from sp1_zorch.logup_gkr.circuit import (
+    GkrCapClass,
     GkrChip,
+    _chip_first_layer_capped,
     _chip_view,
     build_gkr_chips,
     generate_first_layer,
+    generate_first_layer_capped,
+    pack_gkr_arrival,
     sp1_col_h,
     sp1_next_row_counts,
     sp1_schedules,
@@ -539,6 +543,212 @@ class FirstLayerBatchedEquivalenceTest(absltest.TestCase):
             for i in range(200)
         )
         self._assert_equiv([GkrChip("A", inters)], _region(main, names=("A",)), None, BETAS)
+
+
+class GkrCapClassTest(absltest.TestCase):
+    def test_from_heights_is_identity_on_even_heights(self) -> None:
+        self.assertEqual(GkrCapClass.from_heights([6, 32]).chip_heights, (6, 32))
+        self.assertEqual(GkrCapClass.from_heights([5]).chip_heights, (6,))
+
+    def test_union_is_per_chip_max(self) -> None:
+        a = GkrCapClass((6, 32))
+        b = GkrCapClass((10, 8))
+        self.assertEqual(GkrCapClass.union(a, b).chip_heights, (10, 32))
+
+    def test_union_rejects_chip_count_mismatch(self) -> None:
+        with self.assertRaises(ValueError):
+            GkrCapClass.union(GkrCapClass((6,)), GkrCapClass((6, 8)))
+
+    def test_check_bounds_rejects_odd_over_and_count_mismatch(self) -> None:
+        cls = GkrCapClass((8,))
+        cls.check_bounds([6])
+        with self.assertRaises(ValueError):
+            cls.check_bounds([5])
+        with self.assertRaises(ValueError):
+            cls.check_bounds([10])
+        with self.assertRaises(ValueError):
+            cls.check_bounds([6, 6])
+
+    def test_slot_counts_match_the_exact_build_at_the_tight_class(self) -> None:
+        main_a, main_b = _main(24), _main(4, offset=100)
+        chips = [
+            GkrChip("A", (_interaction(0, 1),)),
+            GkrChip("B", (_interaction(0, 1, kind=5),)),
+        ]
+        region = _region(main_a, main_b, names=("A", "B"))
+        exact = generate_first_layer(chips, region, None, ALPHA, BETAS)
+        cls = GkrCapClass.from_heights([int(h) for h in region.chip_heights])
+        self.assertEqual(cls.slot_counts(chips, region.chip_names), exact.row_counts)
+        self.assertEqual(
+            cls.schedules(chips, region.chip_names, 4),
+            sp1_schedules(exact.row_counts, 4),
+        )
+
+    def test_slot_counts_pad_interactions_to_power_of_two(self) -> None:
+        chips = [
+            GkrChip("A", (_interaction(0, 1), _interaction(1, 0, kind=5))),
+            GkrChip("B", (_interaction(0, 1, kind=7),)),
+        ]
+        cls = GkrCapClass((8, 4))
+        # 3 real interactions pad to 4; the pad slot is 2 * sp1_col_h(0) = 4.
+        self.assertEqual(cls.slot_counts(chips, ("A", "B")), (4, 4, 4, 4))
+
+
+def _capped_layer(chips, main_region, prep_region, cap_class, betas=BETAS):
+    """Pack + build the class-shaped first layer from regions, the way the
+    stage prologue will."""
+    main_flat, prep_flat, heights = pack_gkr_arrival(
+        main_region, prep_region, cap_class
+    )
+    prep_names = prep_region.chip_names if prep_region is not None else ()
+    prep_widths = (
+        tuple(int(w) for w in prep_region.chip_widths)
+        if prep_region is not None
+        else ()
+    )
+    prep_heights = (
+        tuple(int(h) for h in prep_region.chip_heights)
+        if prep_region is not None
+        else ()
+    )
+    return generate_first_layer_capped(
+        chips,
+        main_flat,
+        prep_flat,
+        heights,
+        ALPHA,
+        betas,
+        cap_class=cap_class,
+        chip_names=tuple(main_region.chip_names),
+        main_widths=tuple(int(w) for w in main_region.chip_widths),
+        prep_names=tuple(prep_names),
+        prep_widths=prep_widths,
+        prep_heights=prep_heights,
+    )
+
+
+class CappedFirstLayerTest(absltest.TestCase):
+    """The class-shaped build against the exact build: byte-equal live
+    prefixes, fold-neutral class tails, and one compile across the heights
+    of one class."""
+
+    def _chips(self):
+        return [
+            GkrChip("A", (_interaction(0, 1),)),
+            GkrChip("B", (_interaction(0, 1, kind=5),)),
+        ]
+
+    def _assert_matches_exact(self, capped, exact) -> None:
+        """Per interaction: the capped segment's first ``exact_rc`` slots are
+        the exact segment, the rest the fold-neutral (n=0, d=1)."""
+        self.assertEqual(len(capped.row_counts), len(exact.row_counts))
+        for k, (cap_rc, exact_rc) in enumerate(
+            zip(capped.row_counts, exact.row_counts)
+        ):
+            self.assertGreaterEqual(cap_rc, exact_rc)
+            c_lo = capped.start_indices[k]
+            e_lo = exact.start_indices[k]
+            for plane, neutral in (
+                ("numerator_0", 0),
+                ("numerator_1", 0),
+                ("denominator_0", 1),
+                ("denominator_1", 1),
+            ):
+                got = getattr(capped, plane)[c_lo : c_lo + cap_rc]
+                want = getattr(exact, plane)[e_lo : e_lo + exact_rc]
+                self.assertTrue(
+                    bool(jnp.all(got[:exact_rc] == want)),
+                    msg=f"interaction {k} {plane} live prefix",
+                )
+                self.assertTrue(
+                    bool(jnp.all(got[exact_rc:] == jnp.array(neutral, F))),
+                    msg=f"interaction {k} {plane} class tail",
+                )
+
+    def test_tight_class_is_byte_identical_to_exact(self) -> None:
+        main_a, main_b = _main(24), _main(4, offset=100)
+        region = _region(main_a, main_b, names=("A", "B"))
+        chips = self._chips()
+        exact = generate_first_layer(chips, region, None, ALPHA, BETAS)
+        cls = GkrCapClass.from_heights([int(h) for h in region.chip_heights])
+        capped = _capped_layer(chips, region, None, cls)
+        self.assertEqual(capped.row_counts, exact.row_counts)
+        for plane in (
+            "numerator_0",
+            "numerator_1",
+            "denominator_0",
+            "denominator_1",
+        ):
+            self.assertTrue(
+                bool(jnp.all(getattr(capped, plane) == getattr(exact, plane))),
+                msg=plane,
+            )
+
+    def test_two_shards_of_one_class_share_one_compile(self) -> None:
+        chips = self._chips()
+        # Mixed dominance (A grows, B shrinks): the union class differs from
+        # BOTH tight classes, so the exact-oracle builds below cannot
+        # pre-warm the union executables.
+        shard1 = _region(_main(6), _main(8, offset=100), names=("A", "B"))
+        shard2 = _region(_main(10, offset=7), _main(4, offset=50), names=("A", "B"))
+        cls = GkrCapClass.union(
+            GkrCapClass.from_heights([int(h) for h in shard1.chip_heights]),
+            GkrCapClass.from_heights([int(h) for h in shard2.chip_heights]),
+        )
+        # Oracles first: the exact build routes through the same capped
+        # builder at each shard's TIGHT class, so it must stay outside the
+        # shared-class compile-count window below.
+        exacts = [
+            generate_first_layer(chips, shard, None, ALPHA, BETAS)
+            for shard in (shard1, shard2)
+        ]
+        before = _chip_first_layer_capped._cache_size()
+        for shard, exact in zip((shard1, shard2), exacts):
+            capped = _capped_layer(chips, shard, None, cls)
+            self.assertEqual(
+                capped.row_counts, cls.slot_counts(chips, shard.chip_names)
+            )
+            self._assert_matches_exact(capped, exact)
+        # One compile per chip across both shards: the class shapes + traced
+        # height keep the second shard a cache hit.
+        self.assertEqual(
+            _chip_first_layer_capped._cache_size() - before, len(chips)
+        )
+
+    def test_prep_chip_matches_exact_under_a_wider_class(self) -> None:
+        # Keygen-height prep above main (recursion-shard shape); the class
+        # bound trims it where the exact build trims to the real height.
+        main = _main(4)
+        prep = _main(8, width=1, offset=200)
+        inter = Interaction(
+            values=(VirtualPairCol(constant=0, column_weights=((0, True, 1),)),),
+            multiplicity=VirtualPairCol.single_main(0),
+            kind=2,
+            is_send=True,
+        )
+        chips = [GkrChip("A", (inter,))]
+        region = _region(main, names=("A",))
+        prep_region = _region(prep, names=("A",))
+        exact = generate_first_layer(chips, region, prep_region, ALPHA, BETAS)
+        capped = _capped_layer(chips, region, prep_region, GkrCapClass((6,)))
+        self._assert_matches_exact(capped, exact)
+
+    def test_short_prep_zero_extends_under_the_class_bound(self) -> None:
+        # Prep shorter than the class bound: rows past it feed only masked
+        # slots, so the zero-extension cannot leak into live values.
+        main = _main(4, width=3)
+        prep = _main(3, width=2, offset=99)
+        chips = [GkrChip("A", (_interaction(0, 1), _interaction(1, 2, kind=4)))]
+        region = _region(main, names=("A",))
+        prep_region = _region(prep, names=("A",))
+        exact = generate_first_layer(chips, region, prep_region, ALPHA, BETAS)
+        capped = _capped_layer(chips, region, prep_region, GkrCapClass((8,)))
+        self._assert_matches_exact(capped, exact)
+
+    def test_pack_rejects_a_shard_the_class_does_not_admit(self) -> None:
+        region = _region(_main(10), names=("A",))
+        with self.assertRaises(ValueError):
+            pack_gkr_arrival(region, None, GkrCapClass((6,)))
 
 
 if __name__ == "__main__":

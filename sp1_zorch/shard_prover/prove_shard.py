@@ -37,7 +37,7 @@ from zorch.pcs.jagged.prover import (
     assemble_columns,
     sample_z_col,
 )
-from sp1_zorch.logup_gkr.circuit import GkrChip
+from sp1_zorch.logup_gkr.circuit import GkrCapClass, GkrChip
 from sp1_zorch.logup_gkr.prover import (
     ChipEvaluation,
     LogupGkrProof,
@@ -222,12 +222,20 @@ class TraceCommitStage(Round):
 
 
 class LogupGkrStage(Round):
-    """LogUp-GKR stage over ``prove_logup_gkr``; writes the final evaluation
-    point and per-chip openings onto the bridge for zerocheck.
+    """LogUp-GKR stage over ``prove_logup_gkr``; writes the final
+    evaluation point and per-chip openings onto the bridge for zerocheck.
 
-    Eager, not jitted: a whole-body ``@jit`` keeps every pyramid layer live at
-    once (XLA owns liveness) and overflows the memory budget on wide shards, and
-    the grind's host-side ``pow_bits`` verdict cannot be traced."""
+    Eager orchestration, not one ``@jit`` body: a whole-body ``@jit`` keeps
+    every pyramid layer live at once (XLA owns liveness) and overflows the
+    memory budget on wide shards, and the grind's host-side ``pow_bits``
+    verdict cannot be traced. The stage instead runs the shard-invariant
+    class contract (sp1-zorch#272): the regions pack eagerly to a
+    ``GkrCapClass`` shape and every traced zone underneath (per-chip
+    first-layer build, pyramid transitions, layer sumchecks, trace open)
+    keys its compile on the chip set and the class alone, so shards of one
+    class share every executable. With no class pinned, the shard's own
+    a-priori-tight class is derived (per-shard compile, same body,
+    byte-identical to the exact prove)."""
 
     def __init__(
         self,
@@ -237,12 +245,14 @@ class LogupGkrStage(Round):
         num_row_variables: int,
         pow_bits: int = 0,
         witness: Array | None = None,
+        gkr_cap_class: GkrCapClass | None = None,
     ) -> None:
         self._gkr_chips = tuple(gkr_chips)
         self._num_betas = num_betas
         self._num_row_variables = num_row_variables
         self._pow_bits = pow_bits
         self._witness = witness
+        self._gkr_cap_class = gkr_cap_class
 
     def __call__(
         self, bridge: ShardBridge, transcript: Transcript
@@ -256,6 +266,7 @@ class LogupGkrStage(Round):
             num_row_variables=self._num_row_variables,
             pow_bits=self._pow_bits,
             witness=self._witness,
+            cap_class=self._gkr_cap_class,
         )
         bridge = replace(
             bridge,
@@ -692,6 +703,7 @@ def prove_shard_chain(
     witness: Array | None = None,
     jit: bool = True,
     zerocheck_total_cap_class: TotalCapClass | None = None,
+    gkr_cap_class: GkrCapClass | None = None,
 ) -> ProveChain:
     """The SP1 shard chain. One definition for the stage wiring so the
     benchmark, the byte-match runnables, and proof assembly cannot drift
@@ -713,14 +725,15 @@ def prove_shard_chain(
                 chip_metadata=chip_metadata,
                 jit=jit,
             ),
-            # GKR is always eager (see LogupGkrStage); only the other stages
-            # take the `jit` knob.
+            # GKR is always eager orchestration over class-keyed inner zones
+            # (see LogupGkrStage); only the other stages take the `jit` knob.
             LogupGkrStage(
                 gkr_chips,
                 num_betas=num_betas,
                 num_row_variables=num_row_variables,
                 pow_bits=pow_bits,
                 witness=witness,
+                gkr_cap_class=gkr_cap_class,
             ),
             ZerocheckStage(
                 chips,

@@ -112,16 +112,16 @@ def _chip_view(region: JaggedRegion, idx: int) -> Array:
     return _chip_view_jit(region.dense, region.chip_starts[idx], h=h, w=w)
 
 
-@partial(frx.jit, static_argnames=("chip",))
-def _chip_first_layer_batched(
+def _chip_mult_fingerprint(
     chip: GkrChip,
     main_trace: Array,
     prep_trace: Array | None,
     alpha: Array,
     betas: Array,
-) -> tuple[Array, Array, Array, Array]:
-    """One chip's four first-layer planes, interaction-major, as batched field
-    ops rather than a per-interaction Python loop.
+) -> tuple[Array, Array]:
+    """Every interaction's per-row ``(multiplicity, fingerprint)`` as two
+    ``[num_inter, height]`` stacks, computed as batched field ops rather than a
+    per-interaction Python loop.
 
     Every multiplicity and value column is an affine form over the trace
     (``VirtualPairCol``: ``const + Σ wᵢ·colᵢ``). Stacking all forms into one
@@ -132,9 +132,7 @@ def _chip_first_layer_batched(
     exact, so the result is byte-identical to the per-interaction affine formula
     (``generate_interaction_vals_batch``) at a fraction of the dispatch count.
     Matmul + gather + element-wise field mul/add are the only ops -- a field
-    ``segment_sum`` (scatter-add) does not lower on the GPU emitter. The even/odd
-    slot split and fold-neutral padding match ``populateLastCircuitLayer``. Each
-    chip rides one ``@jit`` boundary, so its build is a single fused dispatch.
+    ``segment_sum`` (scatter-add) does not lower on the GPU emitter.
     """
     interactions = chip.interactions
     num_inter = len(interactions)
@@ -215,18 +213,102 @@ def _chip_first_layer_batched(
     value_idx_arr = jnp.asarray(value_idx)  # [num_inter, max_values]
     for v in range(max_values):
         fingerprint = fingerprint + betas[v + 1] * forms[value_idx_arr[:, v]]
+    return mult, fingerprint
 
-    # Even/odd slot split + fold-neutral pad, flattened interaction-major. The
-    # numerator pads with field 0 (Mont zero == jnp.pad's raw-zero default); the
-    # denominator with the fold-neutral 1, matching the verifier's pad idiom.
+
+@partial(
+    frx.jit,
+    static_argnames=(
+        "chip", "main_start", "main_width", "cap", "prep_start",
+        "prep_width", "prep_height",
+    ),
+)
+def _chip_first_layer_capped(
+    chip: GkrChip,
+    main_flat: Array,
+    prep_flat: Array | None,
+    live_height: Array,
+    alpha: Array,
+    betas: Array,
+    *,
+    main_start: int,
+    main_width: int,
+    cap: int,
+    prep_start: int = 0,
+    prep_width: int = 0,
+    prep_height: int = 0,
+) -> tuple[Array, Array, Array, Array]:
+    """One chip's four first-layer planes at a class height bound: the
+    chip's view is a static slice of the class-shaped flat arrival (zeros
+    above the live rows) cut INSIDE the jit, and the shard's real height
+    rides as the traced ``live_height`` scalar, so the compile keys on the
+    chip and the class constants alone and the slice fuses into the build
+    instead of dispatching eagerly. One ``@jit`` per chip — a zone fusing
+    all chips would hand XLA every chip's build intermediates at once, GBs
+    of extra peak on a wide 33-chip core shard whose GKR already presses
+    the card. At the shard's own tight class the live mask is all-true and
+    this IS the exact SP1 build (``generate_first_layer`` routes here).
+
+    Slot ``j`` pairs rows ``2j``/``2j+1``, so slots below ``live_height // 2``
+    hold exactly the exact-height build's real pairs; every slot past that is
+    forced to the fold-neutral ``(n=0, d=1)`` — byte-identical to the
+    exact build's ``jnp.pad`` values, whether the exact path padded there
+    (``pad_count``) or never materialized the slot (class tail past its
+    ``slot_count``). Junk rows in ``[live_height, cap)`` (zero main columns,
+    possibly-live prep columns) only ever feed masked slots.
+    """
+    height = cap
+    main_trace = (
+        main_flat[main_start : main_start + main_width * cap]
+        .reshape(main_width, cap)
+        .T
+    )
+    prep_trace = None
+    if prep_width:
+        prep_trace = (
+            prep_flat[prep_start : prep_start + prep_width * prep_height]
+            .reshape(prep_width, prep_height)
+            .T
+        )
+        # The class bound stands in for the exact build's trim-to-main
+        # ([:real_height]); rows in [real_height, cap) only feed masked
+        # slots, so a short prep zero-extends safely.
+        if prep_height >= cap:
+            prep_trace = prep_trace[:cap]
+        else:
+            prep_trace = jnp.pad(prep_trace, ((0, cap - prep_height), (0, 0)))
+    mult, fingerprint = _chip_mult_fingerprint(
+        chip, main_trace, prep_trace, alpha, betas
+    )
+
+    live = jnp.arange(height // 2) < live_height // 2
+    zero = jnp.zeros((), dtype=mult.dtype)
+    one = jnp.ones((), dtype=fingerprint.dtype)
     slot_count = 2 * sp1_col_h(height)
-    pad_count = slot_count - height // 2
-    pad = ((0, 0), (0, pad_count))
+    pad = ((0, 0), (0, slot_count - height // 2))
     return (
-        jnp.pad(mult[:, 0::2], pad).reshape(-1),
-        jnp.pad(mult[:, 1::2], pad).reshape(-1),
-        jnp.pad(fingerprint[:, 0::2], pad, constant_values=1).reshape(-1),
-        jnp.pad(fingerprint[:, 1::2], pad, constant_values=1).reshape(-1),
+        jnp.pad(jnp.where(live, mult[:, 0::2], zero), pad).reshape(-1),
+        jnp.pad(jnp.where(live, mult[:, 1::2], zero), pad).reshape(-1),
+        jnp.pad(
+            jnp.where(live, fingerprint[:, 0::2], one), pad, constant_values=1
+        ).reshape(-1),
+        jnp.pad(
+            jnp.where(live, fingerprint[:, 1::2], one), pad, constant_values=1
+        ).reshape(-1),
+    )
+
+
+def region_statics(
+    region: JaggedRegion | None,
+) -> tuple[tuple[str, ...], tuple[int, ...], tuple[int, ...]]:
+    """A region's ``(chip_names, widths, heights)`` as the static tuples the
+    class-shaped consumers take — hashable jit keys, no region pytree."""
+    if region is None:
+        return (), (), ()
+    return (
+        tuple(region.chip_names),
+        tuple(int(w) for w in region.chip_widths),
+        tuple(int(h) for h in region.chip_heights),
     )
 
 
@@ -247,72 +329,32 @@ def generate_first_layer(
 
     Real heights must be even: an odd height would leave the odd-row side one
     slot short of the even-row side (the SP1 reference never produces one).
+
+    One build path: this is the class-shaped build at the shard's own
+    a-priori-tight class, where the layout equals the exact SP1 layout and
+    the live masks are all-true — byte-identical, one executable set.
     """
-    total_interactions = sum(len(c.interactions) for c in chips)
-    padded_interactions = 1 << log2_ceil_usize(total_interactions)
-
-    main_name_to_idx = {name: i for i, name in enumerate(main_region.chip_names)}
-    prep_name_to_idx = (
-        {name: i for i, name in enumerate(prep_region.chip_names)}
-        if prep_region is not None
-        else {}
+    cap_class = GkrCapClass.from_heights(
+        [int(h) for h in main_region.chip_heights]
     )
-
-    bf_dtype = main_region.dense.dtype
-    ef_dtype = alpha.dtype
-
-    n0_parts: list[Array] = []
-    n1_parts: list[Array] = []
-    d0_parts: list[Array] = []
-    d1_parts: list[Array] = []
-    row_counts: list[int] = []
-
-    for chip in chips:
-        if not chip.interactions:
-            continue
-        main_trace = _chip_view(main_region, main_name_to_idx[chip.name])
-        real_height = main_trace.shape[0]
-        if real_height % 2 != 0:
-            raise ValueError(
-                f"chip {chip.name} has odd real height {real_height}; the "
-                f"even/odd row split needs an even height"
-            )
-        if chip.name in prep_name_to_idx:
-            # Trim prep to main's height for the per-row eval; recursion
-            # shards keep prep at keygen height above main's.
-            prep_trace = _chip_view(prep_region, prep_name_to_idx[chip.name])[
-                :real_height
-            ]
-        else:
-            prep_trace = None
-        chip_n0, chip_n1, chip_d0, chip_d1 = _chip_first_layer_batched(
-            chip, main_trace, prep_trace, alpha, betas
-        )
-
-        n0_parts.append(chip_n0)
-        n1_parts.append(chip_n1)
-        d0_parts.append(chip_d0)
-        d1_parts.append(chip_d1)
-        slot_count = 2 * sp1_col_h(real_height)
-        row_counts.extend([slot_count] * len(chip.interactions))
-
-    pad_slot_count = 2 * sp1_col_h(0)
-    n_pad = padded_interactions - total_interactions
-    if n_pad > 0:
-        # One allocation per side instead of n_pad tiny ones.
-        pad_total = n_pad * pad_slot_count
-        n0_parts.append(jnp.zeros(pad_total, dtype=bf_dtype))
-        n1_parts.append(jnp.zeros(pad_total, dtype=bf_dtype))
-        d0_parts.append(jnp.ones(pad_total, dtype=ef_dtype))
-        d1_parts.append(jnp.ones(pad_total, dtype=ef_dtype))
-        row_counts.extend([pad_slot_count] * n_pad)
-
-    return JaggedGkrLayer(
-        numerator_0=jnp.concatenate(n0_parts),
-        numerator_1=jnp.concatenate(n1_parts),
-        denominator_0=jnp.concatenate(d0_parts),
-        denominator_1=jnp.concatenate(d1_parts),
-        row_counts=tuple(row_counts),
+    main_flat, prep_flat, heights = pack_gkr_arrival(
+        main_region, prep_region, cap_class
+    )
+    chip_names, main_widths, _ = region_statics(main_region)
+    prep_names, prep_widths, prep_heights = region_statics(prep_region)
+    return generate_first_layer_capped(
+        chips,
+        main_flat,
+        prep_flat,
+        heights,
+        alpha,
+        betas,
+        cap_class=cap_class,
+        chip_names=chip_names,
+        main_widths=main_widths,
+        prep_names=prep_names,
+        prep_widths=prep_widths,
+        prep_heights=prep_heights,
     )
 
 
@@ -354,3 +396,223 @@ def sp1_schedules(
         counts = sp1_next_row_counts(counts)
         schedules.append(counts)
     return schedules
+
+
+@dataclass(frozen=True)
+class GkrCapClass:
+    """Per-chip height bounds shared by every shard of one chip set — the
+    LogUp-GKR analogue of zerocheck's ``TotalCapClass`` (sp1-zorch#272).
+
+    ``chip_heights[i]`` bounds main chip ``i``'s real height (main
+    ``chip_names`` order), each even so the even/odd slot split never
+    straddles a pair. Every first-layer slot count, transition schedule, and
+    arrival offset derives from these bounds, so shards that differ only in
+    row counts share every stage executable; the real heights ride as one
+    traced int32 vector.
+    """
+
+    chip_heights: tuple[int, ...]
+
+    @classmethod
+    def from_heights(cls, heights: Sequence[int]) -> "GkrCapClass":
+        """The a-priori-tight class of one shard (per-shard-compile
+        fallback); real heights are even, so this is the identity bound."""
+        return cls(tuple(int(h) + int(h) % 2 for h in heights))
+
+    @classmethod
+    def union(cls, *classes: "GkrCapClass") -> "GkrCapClass":
+        """The smallest class admitting every input class — per-chip max.
+        Assembles the cross-shard class from per-shard ``from_heights``."""
+        if not classes:
+            raise ValueError("union needs at least one class")
+        counts = {len(c.chip_heights) for c in classes}
+        if len(counts) != 1:
+            raise ValueError(f"classes disagree on the chip count: {counts}")
+        return cls(tuple(max(hs) for hs in zip(*(c.chip_heights for c in classes))))
+
+    def check_bounds(self, heights: Sequence[int]) -> None:
+        """Reject a shard the class does not admit — loudly, at pack time
+        (the traced body cannot gate a compile on a runtime value)."""
+        if len(heights) != len(self.chip_heights):
+            raise ValueError(
+                f"class covers {len(self.chip_heights)} chips, shard has "
+                f"{len(heights)}"
+            )
+        for i, (h, cap) in enumerate(zip(heights, self.chip_heights)):
+            if h % 2 != 0:
+                raise ValueError(
+                    f"chip {i} has odd real height {h}; the even/odd row "
+                    f"split needs an even height"
+                )
+            if h > cap:
+                raise ValueError(
+                    f"chip {i} height {h} exceeds its class bound {cap}"
+                )
+
+    def slot_counts(
+        self, gkr_chips: Sequence[GkrChip], chip_names: Sequence[str]
+    ) -> tuple[int, ...]:
+        """The class first-layer ``row_counts``: per interaction
+        ``2 * sp1_col_h(bound)``, then the power-of-two interaction padding —
+        ``generate_first_layer``'s accounting at the class bounds."""
+        name_to_idx = {name: i for i, name in enumerate(chip_names)}
+        counts: list[int] = []
+        for chip in gkr_chips:
+            slot_count = 2 * sp1_col_h(self.chip_heights[name_to_idx[chip.name]])
+            counts.extend([slot_count] * len(chip.interactions))
+        total = len(counts)
+        n_pad = (1 << log2_ceil_usize(total)) - total
+        counts.extend([2 * sp1_col_h(0)] * n_pad)
+        return tuple(counts)
+
+    def schedules(
+        self,
+        gkr_chips: Sequence[GkrChip],
+        chip_names: Sequence[str],
+        num_row_variables: int,
+    ) -> list[tuple[int, ...]]:
+        """The class transition schedule — ``sp1_schedules`` over the class
+        slot counts; pointwise dominates every admitted shard's exact
+        schedule (``sp1_next_row_counts`` is monotone)."""
+        return sp1_schedules(
+            self.slot_counts(gkr_chips, chip_names), num_row_variables
+        )
+
+
+def _arrival_offsets(
+    widths: Sequence[int], heights: Sequence[int]
+) -> tuple[int, ...]:
+    """Chip offsets into a flat chip-major column-major arrival:
+    ``cumsum(width * height)``. ``pack_gkr_arrival`` and the class-shaped
+    consumers MUST derive the same offsets or views read across chips."""
+    offsets = [0]
+    for w, h in zip(widths, heights):
+        offsets.append(offsets[-1] + int(w) * int(h))
+    return tuple(offsets)
+
+
+def pack_gkr_arrival(
+    main_region: JaggedRegion,
+    prep_region: JaggedRegion | None,
+    cap_class: GkrCapClass,
+) -> tuple[Array, Array | None, Array]:
+    """Pack the shard's regions into class-shaped flat arrivals, eagerly at
+    the stage prologue (heights are host ints here).
+
+    Returns ``(main_flat, prep_flat, heights)``: main chips as column-major
+    ``[width, class height]`` blocks at ``_arrival_offsets`` (live rows +
+    zeros, staying in the base field), prep chips likewise at their exact
+    keygen heights (shard-invariant, so no class bound needed), and the real
+    main heights as the one traced int32 vector the class-shaped zones take.
+    No ``JaggedRegion`` crosses into a jit body — its per-shard host-tuple
+    metadata would key every zone compile.
+    """
+    heights_host = [int(h) for h in main_region.chip_heights]
+    cap_class.check_bounds(heights_host)
+
+    main_parts: list[Array] = []
+    for idx, real_h in enumerate(heights_host):
+        cap = cap_class.chip_heights[idx]
+        view = _chip_view(main_region, idx)  # [real_h, width]
+        main_parts.append(jnp.pad(view, ((0, cap - real_h), (0, 0))).T.reshape(-1))
+    main_flat = jnp.concatenate(main_parts)
+
+    prep_flat = None
+    if prep_region is not None:
+        prep_parts = [
+            _chip_view(prep_region, idx).T.reshape(-1)
+            for idx in range(len(prep_region.chip_names))
+        ]
+        prep_flat = jnp.concatenate(prep_parts)
+
+    return main_flat, prep_flat, jnp.asarray(heights_host, jnp.int32)
+
+
+def generate_first_layer_capped(
+    gkr_chips: Sequence[GkrChip],
+    main_flat: Array,
+    prep_flat: Array | None,
+    heights: Array,
+    alpha: Array,
+    betas: Array,
+    *,
+    cap_class: GkrCapClass,
+    chip_names: tuple[str, ...],
+    main_widths: tuple[int, ...],
+    prep_names: tuple[str, ...],
+    prep_widths: tuple[int, ...],
+    prep_heights: tuple[int, ...],
+) -> JaggedGkrLayer:
+    """``generate_first_layer`` on the class-shaped flat arrival: chip views
+    are static slices at the class bounds, the real heights ride in the
+    traced ``heights`` vector, and every slot count is a class constant —
+    so the build (and everything downstream reading ``row_counts``) compiles
+    once per (chip set, class).
+
+    Byte-identical to the exact build on every admitted shard: live slots
+    hold the same real pairs, and every slot past ``height // 2`` holds the
+    fold-neutral ``(n=0, d=1)`` whether the exact build padded it or never
+    materialized it (``_chip_first_layer_capped``).
+    """
+    name_to_idx = {name: i for i, name in enumerate(chip_names)}
+    prep_name_to_idx = {name: i for i, name in enumerate(prep_names)}
+    main_offsets = _arrival_offsets(main_widths, cap_class.chip_heights)
+    prep_offsets = _arrival_offsets(prep_widths, prep_heights)
+
+    total_interactions = sum(len(c.interactions) for c in gkr_chips)
+    padded_interactions = 1 << log2_ceil_usize(total_interactions)
+
+    bf_dtype = main_flat.dtype
+    ef_dtype = alpha.dtype
+
+    n0_parts: list[Array] = []
+    n1_parts: list[Array] = []
+    d0_parts: list[Array] = []
+    d1_parts: list[Array] = []
+    row_counts: list[int] = []
+
+    for chip in gkr_chips:
+        if not chip.interactions:
+            continue
+        idx = name_to_idx[chip.name]
+        cap = cap_class.chip_heights[idx]
+
+        has_prep = chip.name in prep_name_to_idx and prep_flat is not None
+        p_idx = prep_name_to_idx[chip.name] if has_prep else 0
+        chip_n0, chip_n1, chip_d0, chip_d1 = _chip_first_layer_capped(
+            chip,
+            main_flat,
+            prep_flat if has_prep else None,
+            heights[idx],
+            alpha,
+            betas,
+            main_start=main_offsets[idx],
+            main_width=main_widths[idx],
+            cap=cap,
+            prep_start=prep_offsets[p_idx] if has_prep else 0,
+            prep_width=prep_widths[p_idx] if has_prep else 0,
+            prep_height=prep_heights[p_idx] if has_prep else 0,
+        )
+        n0_parts.append(chip_n0)
+        n1_parts.append(chip_n1)
+        d0_parts.append(chip_d0)
+        d1_parts.append(chip_d1)
+        row_counts.extend([2 * sp1_col_h(cap)] * len(chip.interactions))
+
+    pad_slot_count = 2 * sp1_col_h(0)
+    n_pad = padded_interactions - total_interactions
+    if n_pad > 0:
+        pad_total = n_pad * pad_slot_count
+        n0_parts.append(jnp.zeros(pad_total, dtype=bf_dtype))
+        n1_parts.append(jnp.zeros(pad_total, dtype=bf_dtype))
+        d0_parts.append(jnp.ones(pad_total, dtype=ef_dtype))
+        d1_parts.append(jnp.ones(pad_total, dtype=ef_dtype))
+        row_counts.extend([pad_slot_count] * n_pad)
+
+    return JaggedGkrLayer(
+        numerator_0=jnp.concatenate(n0_parts),
+        numerator_1=jnp.concatenate(n1_parts),
+        denominator_0=jnp.concatenate(d0_parts),
+        denominator_1=jnp.concatenate(d1_parts),
+        row_counts=tuple(row_counts),
+    )

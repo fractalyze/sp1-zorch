@@ -30,9 +30,12 @@ from zk_dtypes import efinfo
 
 from zorch.pcs.jagged.region import JaggedRegion
 from sp1_zorch.logup_gkr.circuit import (
+    GkrCapClass,
     GkrChip,
-    _chip_view,
-    generate_first_layer,
+    _arrival_offsets,
+    generate_first_layer_capped,
+    pack_gkr_arrival,
+    region_statics,
     sp1_schedules,
 )
 from sp1_zorch.logup_gkr.head import (
@@ -185,7 +188,7 @@ def flat_openings_absorb(
 
 class ChipOpeningsRound(Round):
     """SP1's GKR chip-openings absorb schedule, single-sourced the same way
-    as the preamble and the GKR head glue: the prover (``open_traces``)
+    as the preamble and the GKR head glue: the prover (``open_traces_capped``)
     drives it with the openings it just computed, the verifier dual with the
     proof's recorded ones, so the two Fiat-Shamir streams cannot drift.
     ``chip_names`` fixes the absorb order -- the caller's statement, never
@@ -208,50 +211,61 @@ class ChipOpeningsRound(Round):
         return carry, transcript.observe(flat), self._openings
 
 
-@partial(frx.jit, static_argnames=("trace_dimension",))
-def open_traces(
-    main_region: JaggedRegion,
-    prep_region: JaggedRegion | None,
+@partial(
+    frx.jit,
+    static_argnames=(
+        "trace_dimension", "cap_class", "chip_names", "main_widths",
+        "prep_names", "prep_widths", "prep_heights",
+    ),
+)
+def open_traces_capped(
+    main_flat: Array,
+    prep_flat: Array | None,
     eval_point: Array,
     transcript: Transcript,
     *,
     trace_dimension: int,
+    cap_class: GkrCapClass,
+    chip_names: tuple[str, ...],
+    main_widths: tuple[int, ...],
+    prep_names: tuple[str, ...],
+    prep_widths: tuple[int, ...],
+    prep_heights: tuple[int, ...],
 ) -> tuple[Transcript, dict[str, ChipEvaluation]]:
-    """Open every shard chip's traces at the final GKR point and absorb them
-    via ``ChipOpeningsRound``.
+    """Open every shard chip's trace at the final GKR point and absorb via
+    ``ChipOpeningsRound``, on the class-shaped flat arrival: chip views are
+    static slices at the class bounds, so the compile keys on the chip set
+    and the class alone — no traced height needed. SP1 opens ALL shard
+    chips (not just the GKR ones); preprocessed traces open at their keygen
+    height.
 
-    SP1 opens ALL shard chips (not just the GKR ones). Preprocessed traces
-    open at their keygen height.
-
-    ``@jit`` so the per-chip ``_chip_view`` + ``_open_chip`` + Fiat-Shamir absorb
-    fuse into one program: under the eager LogUp-GKR fold this loop would
-    otherwise dispatch op-by-op per chip and dominate the warm GKR time. It runs
-    after the fold, so it pins no layer -- jitting it costs no memory."""
+    Byte-identical at any admitted class: the arrival's rows past the real
+    height are zero, so folding at the class log-height multiplies the
+    real-height fold by ``(1 - rev_point[k])`` per extra bind — exactly the
+    factors ``_open_chip``'s zero-extension correction product applies, and
+    field mul is exact and commutative.
+    """
     rev_point = eval_point[-trace_dimension:][::-1]
-    prep_name_to_idx = (
-        {name: i for i, name in enumerate(prep_region.chip_names)}
-        if prep_region is not None
-        else {}
-    )
+    main_offsets = _arrival_offsets(main_widths, cap_class.chip_heights)
+    prep_offsets = _arrival_offsets(prep_widths, prep_heights)
+    prep_name_to_idx = {name: i for i, name in enumerate(prep_names)}
 
     openings: dict[str, ChipEvaluation] = {}
-    for idx, name in enumerate(main_region.chip_names):
-        main_eval = _open_chip(
-            _chip_view(main_region, idx), rev_point, main_region.chip_heights[idx]
-        )
+    for idx, name in enumerate(chip_names):
+        cap, width = cap_class.chip_heights[idx], main_widths[idx]
+        start = main_offsets[idx]
+        view = main_flat[start : start + width * cap].reshape(width, cap).T
+        main_eval = _open_chip(view, rev_point, cap)
         prep_eval = None
-        if name in prep_name_to_idx:
-            prep_idx = prep_name_to_idx[name]
-            prep_eval = _open_chip(
-                _chip_view(prep_region, prep_idx),
-                rev_point,
-                prep_region.chip_heights[prep_idx],
-            )
+        if name in prep_name_to_idx and prep_flat is not None:
+            p_idx = prep_name_to_idx[name]
+            p_h, p_w = prep_heights[p_idx], prep_widths[p_idx]
+            p_start = prep_offsets[p_idx]
+            p_view = prep_flat[p_start : p_start + p_w * p_h].reshape(p_w, p_h).T
+            prep_eval = _open_chip(p_view, rev_point, p_h)
         openings[name] = ChipEvaluation(main=main_eval, preprocessed=prep_eval)
 
-    _, transcript, _ = ChipOpeningsRound(openings, main_region.chip_names)(
-        None, transcript
-    )
+    _, transcript, _ = ChipOpeningsRound(openings, chip_names)(None, transcript)
     return transcript, openings
 
 
@@ -353,57 +367,42 @@ def _row_cap(floor_padded: int) -> int:
     return -(-floor_padded // _STACKING_HEIGHT) * _STACKING_HEIGHT
 
 
-def prove_logup_gkr_body(
-    gkr_chips: Sequence[GkrChip],
-    main_region: JaggedRegion,
-    prep_region: JaggedRegion | None,
+def _prove_from_first_layer(
+    first,
     transcript: Transcript,
     witness: Array,
     *,
-    num_betas: int,
     num_row_variables: int,
+    open_fn,
 ) -> tuple[Transcript, LogupGkrProof]:
-    """The grind-free LogUp-GKR body: head challenges, circuit build, the rolled
-    pyramid sumcheck, and the trace openings, on a post-grind transcript.
+    """The first-layer-onward prove shared by the exact and class-shaped
+    bodies: fold the pyramid, bind the output, prove the layer chain, then
+    open the traces via ``open_fn(eval_point, transcript)``.
 
-    Pure traceable array work; each heavy inner zone (first-layer build,
-    per-transition pyramid build, whole-layer sumcheck) is ``@jit``-ed on its
-    own. ``witness`` is threaded only onto the returned proof.
+    Prove the floor-outward layer chain as an unrolled ProveChain of per-layer
+    JaggedGkrLayerRound. zorch retired the device-FS rolled `prove_jagged_pyramid`
+    (Fiat-Shamir now runs on the host between kernel launches); the unrolled
+    chain is byte-identical and the production path. Each layer traces once per
+    shape. Pop the layers into their rounds through a lazy generator (floor
+    first via `layers.pop()` per yield, NOT a materialized `proved` list): only
+    then does ProveChain's lazy consume release each proved layer before
+    building the next, so at most one big-witness layer stays live. A resident
+    list would pin the whole pyramid and defeat that invariant -- the runtime
+    host-RAM half of zorch#362 (the builder is the other half). Byte-match is
+    gated by the SP1 reference (verify_gkr_prove) and a captured CPU golden.
+
+    Fixed-width round buffers (fractalyze/xla#179): the caps pin ONE operand
+    shape per round phase across every round and layer, so the FS-less round
+    kernels compile once per {row-cap class (see `_row_cap`), 2^niv interaction
+    class, dtype} instead of once per width. 2^niv is an SP1 protocol value that
+    fixes the round count, so it cannot be padded away.
     """
-    _, transcript, head = HeadChallengesRound(num_betas)(None, transcript)
-
-    # Build the pyramid as one fused traced region over the transitions (zorch's
-    # build_jagged_pyramid, natural-width per zorch#370) rather than the eager
-    # per-transition dispatch loop -- it collapses the ~20 heterogeneous
-    # transition layers into one traced region, O(1) in the depth (sp1-zorch#143).
-    # build_jagged_pyramid reads the first layer's row_counts to derive SP1's fold
-    # schedule, so build it first.
-    first = generate_first_layer(
-        gkr_chips, main_region, prep_region, head.alpha, head.betas
-    )
     layers = build_jagged_pyramid(
         first, sp1_schedules(first.row_counts, num_row_variables)
     )
     output = extract_sp1_outputs(layers[-1])
     carry, transcript, _ = OutputBindRound(output)(None, transcript)
 
-    # Prove the floor-outward layer chain as an unrolled ProveChain of per-layer
-    # JaggedGkrLayerRound. zorch retired the device-FS rolled `prove_jagged_pyramid`
-    # (Fiat-Shamir now runs on the host between kernel launches); the unrolled
-    # chain is byte-identical and the production path. Each layer traces once per
-    # shape. Pop the layers into their rounds through a lazy generator (floor
-    # first via `layers.pop()` per yield, NOT a materialized `proved` list): only
-    # then does ProveChain's lazy consume release each proved layer before
-    # building the next, so at most one big-witness layer stays live. A resident
-    # list would pin the whole pyramid and defeat that invariant -- the runtime
-    # host-RAM half of zorch#362 (the builder is the other half). Byte-match is
-    # gated by the SP1 reference (verify_gkr_prove) and a captured CPU golden.
-    #
-    # Fixed-width round buffers (fractalyze/xla#179): the caps pin ONE operand
-    # shape per round phase across every round and layer, so the FS-less round
-    # kernels compile once per {row-cap class (see `_row_cap`), 2^niv interaction
-    # class, dtype} instead of once per width. 2^niv is an SP1 protocol value that
-    # fixes the round count, so it cannot be padded away.
     floor_padded = sum(rc + rc % 2 for rc in first.row_counts)
     caps = RoundWidthCaps(
         elements=_row_cap(floor_padded),
@@ -420,13 +419,7 @@ def prove_logup_gkr_body(
     )
     (_, _, eval_point), transcript, round_proofs = chain(carry, transcript)
 
-    transcript, chip_openings = open_traces(
-        main_region,
-        prep_region,
-        eval_point,
-        transcript,
-        trace_dimension=num_row_variables + 1,
-    )
+    transcript, chip_openings = open_fn(eval_point, transcript)
     proof = LogupGkrProof(
         witness=witness,
         circuit_output=output,
@@ -437,6 +430,20 @@ def prove_logup_gkr_body(
     return transcript, proof
 
 
+@partial(frx.jit, static_argnames=("num_betas",))
+def _head_zone(
+    transcript: Transcript, *, num_betas: int
+) -> tuple[Transcript, Array, Array]:
+    """``HeadChallengesRound`` as one compiled dispatch: eagerly its EF
+    samples cost ~14 ms of warm host gaps between tiny permutes. Only the
+    head fuses — a zone also swallowing the first-layer build would hand
+    XLA every chip's build intermediates at once, GBs of extra peak on a
+    wide 33-chip core shard whose GKR already presses the card; the
+    per-chip builds stay their own ``@jit`` boundaries."""
+    _, transcript, head = HeadChallengesRound(num_betas)(None, transcript)
+    return transcript, head.alpha, head.betas
+
+
 def prove_logup_gkr(
     gkr_chips: Sequence[GkrChip],
     main_region: JaggedRegion,
@@ -445,15 +452,31 @@ def prove_logup_gkr(
     *,
     num_betas: int,
     num_row_variables: int,
+    cap_class: GkrCapClass | None = None,
     pow_bits: int = 0,
     witness: Array | None = None,
 ) -> tuple[Transcript, LogupGkrProof]:
     """Run the LogUp-GKR stage on a transcript positioned after the shard
-    preamble (vk, public values, main commitment, chip metadata).
+    preamble (vk, public values, main commitment, chip metadata) — the
+    single source for the stage (``LogupGkrStage`` calls it directly:
+    host-side grind, then class-keyed inner zones).
 
-    Returns the advanced transcript and the proof; the caller opens the
-    traces at ``proof.eval_point``. The single source for the stage --
-    ``LogupGkrStage`` calls it directly (host-side grind, then the body).
+    The one prove path is the shard-invariant class contract
+    (sp1-zorch#272): the regions pack eagerly into class-shaped flat
+    arrivals, the real heights ride as one traced int32 vector, and every
+    traced zone (head, per-chip first-layer builds, pyramid transitions,
+    layer sumchecks, trace open) keys its compile on the chip set and the
+    class alone — shards that differ only in row counts share every
+    executable. With no ``cap_class`` the shard's own a-priori-tight class
+    is derived: the layout then equals the exact SP1 layout (per-shard
+    compile, same body).
+
+    Byte-identical across admitted classes: a wider class only adds
+    fold-neutral (n=0, d=1) slots, which are fixed points of the layer fold
+    and summand no-ops in the layer sumcheck (the virtual-mass correction
+    subtracts exactly the eq weight each one contributes), and the
+    class-height trace open folds the arrival's zeros into exactly the
+    correction factors the tight-class open applies.
     """
     transcript, witness = resolve_witness_and_grind(
         transcript,
@@ -461,12 +484,47 @@ def prove_logup_gkr(
         witness=witness,
         bf_dtype=main_region.dense.dtype,
     )
-    return prove_logup_gkr_body(
-        gkr_chips,
-        main_region,
-        prep_region,
+    if cap_class is None:
+        cap_class = GkrCapClass.from_heights(
+            [int(h) for h in main_region.chip_heights]
+        )
+    main_flat, prep_flat, heights = pack_gkr_arrival(
+        main_region, prep_region, cap_class
+    )
+    chip_names, main_widths, _ = region_statics(main_region)
+    prep_names, prep_widths, prep_heights = region_statics(prep_region)
+
+    transcript, alpha, betas = _head_zone(transcript, num_betas=num_betas)
+    first = generate_first_layer_capped(
+        tuple(gkr_chips),
+        main_flat,
+        prep_flat,
+        heights,
+        alpha,
+        betas,
+        cap_class=cap_class,
+        chip_names=chip_names,
+        main_widths=main_widths,
+        prep_names=prep_names,
+        prep_widths=prep_widths,
+        prep_heights=prep_heights,
+    )
+    return _prove_from_first_layer(
+        first,
         transcript,
         witness,
-        num_betas=num_betas,
         num_row_variables=num_row_variables,
+        open_fn=lambda eval_point, t: open_traces_capped(
+            main_flat,
+            prep_flat,
+            eval_point,
+            t,
+            trace_dimension=num_row_variables + 1,
+            cap_class=cap_class,
+            chip_names=chip_names,
+            main_widths=main_widths,
+            prep_names=prep_names,
+            prep_widths=prep_widths,
+            prep_heights=prep_heights,
+        ),
     )

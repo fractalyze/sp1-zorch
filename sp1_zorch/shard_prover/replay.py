@@ -23,7 +23,7 @@ from zk_dtypes import koalabear_mont as F
 from zk_dtypes import koalabearx4_mont as EF
 
 from zorch.pcs.jagged.region import JaggedRegion
-from sp1_zorch.logup_gkr.circuit import build_gkr_chips
+from sp1_zorch.logup_gkr.circuit import GkrCapClass, build_gkr_chips
 from sp1_zorch.logup_gkr.prover import (
     ChipEvaluation,
     LogupGkrProof,
@@ -182,17 +182,25 @@ def replay_gkr(
     prep_region: JaggedRegion | None,
     *,
     pow_bits: int,
+    cap_class: GkrCapClass | None = None,
+    gkr_chips: tuple | None = None,
 ) -> tuple[Transcript, LogupGkrProof]:
     """The pipeline through the layered GKR prove, grind skipped via the
     dump's witness. One call site for the stage invocation so the GKR and
     zerocheck runnables cannot drift on its wiring; each caller owns its own
-    checks against the dump."""
+    checks against the dump.
+
+    ``cap_class`` routes through the shard-invariant class body
+    (sp1-zorch#272, byte-identical); ``gkr_chips`` lets a multi-shard caller
+    reuse ONE chip tuple across shards — the inner zones key statically on
+    it, so fresh per-shard objects would bust their caches."""
     state = _parse_kv_lines(
         (shard_dir / "gpu_gkr_state.txt").read_text(), skip_unkeyed=True
     )
     preamble = preamble_transcript(shard, shard_dir)
-    order = shard.main_trace_data.traces.chip_order
-    gkr_chips = build_gkr_chips(shard.main_trace_data.chips, order)
+    if gkr_chips is None:
+        order = shard.main_trace_data.traces.chip_order
+        gkr_chips = build_gkr_chips(shard.main_trace_data.chips, order)
     return prove_logup_gkr(
         gkr_chips,
         main_region,
@@ -202,6 +210,7 @@ def replay_gkr(
         num_row_variables=MAX_LOG_ROW_COUNT - 1,
         pow_bits=pow_bits,
         witness=jnp.array(int(state["witness"]), F),
+        cap_class=cap_class,
     )
 
 
