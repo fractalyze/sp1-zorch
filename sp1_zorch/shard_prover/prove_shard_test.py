@@ -41,10 +41,12 @@ from sp1_zorch.logup_gkr.prover import (
 )
 from sp1_zorch.poseidon2.koalabear16 import koalabear16_params
 from sp1_zorch.shard_prover.prove_shard import (
+    JaggedPcsStage,
     LogupGkrStage,
     PreambleStage,
     ShardBridge,
     ZerocheckStage,
+    _jagged_eval_jit,
     _region_mle,
     preamble_chip_metadata,
     prove_shard_chain,
@@ -697,6 +699,75 @@ class ZerocheckStageTotalCapTest(absltest.TestCase):
         self.assertEqual(
             ZerocheckStage._jit_body_totalcap_traced._cache_size() - before, 1
         )
+
+
+class JaggedPcsStageClassTest(absltest.TestCase):
+    """JaggedPcsStage's shard-invariant eval zone (sp1-zorch#274): the eager
+    prologue folds per-shard heights into traced array values, so two shards of
+    one layout class — same chip set (fixes L) and same stacking-aligned area
+    tier (fixes n_d and the padded dense) — share ONE ``_jagged_eval_jit``
+    compile while byte-matching the eager ``eval_round_core`` path."""
+
+    def _rand_ef(self, seed: int, shape) -> jnp.ndarray:
+        return _rand_bf(seed, tuple(shape) + (4,)).view(EF).reshape(shape)
+
+    def test_eval_zone_matches_eager_and_shares_one_compile(self) -> None:
+        perm = Poseidon2(koalabear16_params())
+        smcs = SingleMatrixCommitmentScheme(
+            Sponge(perm, SpongeParams(rate=8, out=8)),
+            Compression(perm, CompressionParams(arity=2, chunk=8)),
+        )
+        stage = JaggedPcsStage(
+            smcs,
+            log_blowup=_LOG_BLOWUP,
+            num_queries=_OPEN_NUM_QUERIES,
+            pow_bits=0,
+            jit=True,
+        )
+        eager = JaggedPcsStage(
+            smcs,
+            log_blowup=_LOG_BLOWUP,
+            num_queries=_OPEN_NUM_QUERIES,
+            pow_bits=0,
+            jit=False,
+        )
+        before = _jagged_eval_jit._cache_size()
+        # Heights 5 and 7 share the layout class: 2 columns each (same L), both
+        # areas stacking-align to one 16-element block (same K, tier, padded
+        # dense). Only the height VALUES differ — exactly what must not key the
+        # compile.
+        for seed, rows in ((80, 5), (90, 7)):
+            main_region = JaggedRegion.from_chips(
+                [_rand_bf(seed, (rows, 2))],
+                log_stacking_height=4,
+                max_log_row_count=_MAX_LOG_ROW_COUNT,
+                chip_names=("alpha",),
+            )
+            _, commit_data = commit_region(
+                main_region, smcs, log_blowup=_LOG_BLOWUP, jit=False
+            )
+            bridge = replace(
+                ShardBridge(main_region, None, _rand_bf(seed + 1, (8,))),
+                commit_digest_layers=(commit_data.digest_layers,),
+                zc_sumcheck_point=self._rand_ef(seed + 2, (_MAX_LOG_ROW_COUNT,)),
+                zc_opened_values={
+                    "alpha": ChipEvaluation(
+                        main=self._rand_ef(seed + 3, (2,)), preprocessed=None
+                    )
+                },
+            )
+            _, got_t, got = stage(bridge, cheap_transcript(BF))
+            _, want_t, want = eager(bridge, cheap_transcript(BF))
+
+            label = f"rows {rows}"
+            _assert_proof_byte_equal(got.eval, want.eval, f"{label} eval")
+            _assert_proof_byte_equal(got.open, want.open, f"{label} open")
+            _, got_s = got_t.sample(1)
+            _, want_s = want_t.sample(1)
+            _assert_bytes_equal(got_s, want_s, f"{label} post-stage sample")
+        # ONE eval-zone compile across both shards: the heights ride as traced
+        # array values, so shard 2 is a cache hit.
+        self.assertEqual(_jagged_eval_jit._cache_size() - before, 1)
 
 
 if __name__ == "__main__":
