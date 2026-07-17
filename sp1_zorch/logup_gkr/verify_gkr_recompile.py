@@ -27,6 +27,7 @@ the per-shard wall so a warm-time regression is visible next to it.
 from __future__ import annotations
 
 import argparse
+import gc
 import json
 import sys
 import time
@@ -135,6 +136,12 @@ def main() -> int:
             f"{deltas}",
             flush=True,
         )
+        # Release this shard's device buffers before the next iteration
+        # allocates — holding a spent proof + regions while the next shard
+        # proves stacks two shards' residency and OOMs a wide core-shard
+        # pair (verify_prove_shard releases the same way between passes).
+        del shard, main_region, prep_region, proof
+        gc.collect()
 
     final = _zone_sizes()
     new_compiles = {n: final[n] - after_first[n] for n in _ZONES}
