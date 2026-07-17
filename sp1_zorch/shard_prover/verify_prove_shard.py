@@ -158,7 +158,7 @@ _GKR_CLASS_JSON = flags.DEFINE_string(
     "gkr_class_json",
     None,
     'JSON {"chip_heights": {name: bound}} pinning the shard-invariant '
-    "GkrCapClass (sp1-zorch#272); shards of one class share every LogUp-GKR "
+    "GkrCapClass; shards of one class share every LogUp-GKR "
     "zone compile. Default: each shard's own a-priori-tight class (per-shard "
     "compile). Assemble a cross-shard class as the per-chip max of the "
     "printed GKR_CLASS lines.",
@@ -306,7 +306,7 @@ def _verify_shard(
             c = {k: int(v) for k, v in json.load(f).items()}
         tc_class = TotalCapClass(area_cap=c["area_cap"], window=c["window"])
 
-    # LogUp-GKR rides the same contract (sp1-zorch#272) on per-chip height
+    # LogUp-GKR rides the same shard-invariant contract on per-chip height
     # bounds; --gkr_class_json pins a cross-shard class (per-chip max of the
     # GKR_CLASS lines printed here).
     # From the region heights (what the stage packs), not num_reals — the

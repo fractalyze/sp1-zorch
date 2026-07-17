@@ -65,7 +65,7 @@ _GKR_CLASS_JSON = flags.DEFINE_string(
     "gkr_class_json",
     None,
     'JSON {"chip_heights": {name: bound}} pinning the shard-invariant '
-    "GkrCapClass (sp1-zorch#272); the prove then runs the class-shaped body "
+    "GkrCapClass; the prove then runs the class-shaped body "
     "(byte-identical) whose compiles shards of one class share. Default: the "
     "exact per-shard body. Assemble a cross-shard class as the per-chip max "
     "of the GKR_CLASS lines printed here.",

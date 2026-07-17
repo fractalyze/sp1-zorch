@@ -238,25 +238,13 @@ def _chip_first_layer_capped(
     prep_width: int = 0,
     prep_height: int = 0,
 ) -> tuple[Array, Array, Array, Array]:
-    """One chip's four first-layer planes at a class height bound: the
-    chip's view is a static slice of the class-shaped flat arrival (zeros
-    above the live rows) cut INSIDE the jit, and the shard's real height
-    rides as the traced ``live_height`` scalar, so the compile keys on the
-    chip and the class constants alone and the slice fuses into the build
-    instead of dispatching eagerly. One ``@jit`` per chip — a zone fusing
-    all chips would hand XLA every chip's build intermediates at once, GBs
-    of extra peak on a wide 33-chip core shard whose GKR already presses
-    the card. At the shard's own tight class the live mask is all-true and
-    this IS the exact SP1 build (``generate_first_layer`` routes here).
-
-    Slot ``j`` pairs rows ``2j``/``2j+1``, so slots below ``live_height // 2``
-    hold exactly the exact-height build's real pairs; every slot past that is
-    forced to the fold-neutral ``(n=0, d=1)`` — byte-identical to the
-    exact build's ``jnp.pad`` values, whether the exact path padded there
-    (``pad_count``) or never materialized the slot (class tail past its
-    ``slot_count``). Junk rows in ``[live_height, cap)`` (zero main columns,
-    possibly-live prep columns) only ever feed masked slots.
-    """
+    """One chip's four first-layer planes at a class height bound: static
+    slices of the flat arrival + the traced ``live_height``, so the compile
+    keys on the chip and class constants alone. Slots below
+    ``live_height // 2`` hold the real pairs; the rest force the
+    fold-neutral ``(n=0, d=1)``, byte-identical to the tight-class build's
+    ``jnp.pad`` values. One ``@jit`` per chip — fusing all chips hands XLA
+    every build's intermediates at once and blows the wide-shard budget."""
     height = cap
     main_trace = (
         main_flat[main_start : main_start + main_width * cap]
@@ -270,9 +258,8 @@ def _chip_first_layer_capped(
             .reshape(prep_width, prep_height)
             .T
         )
-        # The class bound stands in for the exact build's trim-to-main
-        # ([:real_height]); rows in [real_height, cap) only feed masked
-        # slots, so a short prep zero-extends safely.
+        # Rows in [live_height, cap) only feed masked slots, so trimming or
+        # zero-extending prep to the class bound is byte-safe.
         if prep_height >= cap:
             prep_trace = prep_trace[:cap]
         else:
@@ -330,9 +317,8 @@ def generate_first_layer(
     Real heights must be even: an odd height would leave the odd-row side one
     slot short of the even-row side (the SP1 reference never produces one).
 
-    One build path: this is the class-shaped build at the shard's own
-    a-priori-tight class, where the layout equals the exact SP1 layout and
-    the live masks are all-true — byte-identical, one executable set.
+    One build path: the class-shaped build at the shard's own tight class,
+    where the layout equals the exact SP1 layout byte-for-byte.
     """
     cap_class = GkrCapClass.from_heights(
         [int(h) for h in main_region.chip_heights]
@@ -401,7 +387,7 @@ def sp1_schedules(
 @dataclass(frozen=True)
 class GkrCapClass:
     """Per-chip height bounds shared by every shard of one chip set — the
-    LogUp-GKR analogue of zerocheck's ``TotalCapClass`` (sp1-zorch#272).
+    LogUp-GKR analogue of zerocheck's ``TotalCapClass``.
 
     ``chip_heights[i]`` bounds main chip ``i``'s real height (main
     ``chip_names`` order), each even so the even/odd slot split never
@@ -496,17 +482,12 @@ def pack_gkr_arrival(
     prep_region: JaggedRegion | None,
     cap_class: GkrCapClass,
 ) -> tuple[Array, Array | None, Array]:
-    """Pack the shard's regions into class-shaped flat arrivals, eagerly at
-    the stage prologue (heights are host ints here).
-
-    Returns ``(main_flat, prep_flat, heights)``: main chips as column-major
-    ``[width, class height]`` blocks at ``_arrival_offsets`` (live rows +
-    zeros, staying in the base field), prep chips likewise at their exact
-    keygen heights (shard-invariant, so no class bound needed), and the real
-    main heights as the one traced int32 vector the class-shaped zones take.
-    No ``JaggedRegion`` crosses into a jit body — its per-shard host-tuple
-    metadata would key every zone compile.
-    """
+    """Pack the regions into class-shaped flat arrivals at the eager stage
+    prologue: main chips as column-major ``[width, class height]`` blocks
+    (live rows + zeros) at ``_arrival_offsets``, prep at its shard-invariant
+    keygen heights, plus the real main heights as the one traced int32
+    vector. No ``JaggedRegion`` crosses into a jit body — its per-shard
+    host-tuple metadata would key every zone compile."""
     heights_host = [int(h) for h in main_region.chip_heights]
     cap_class.check_bounds(heights_host)
 
@@ -543,17 +524,11 @@ def generate_first_layer_capped(
     prep_widths: tuple[int, ...],
     prep_heights: tuple[int, ...],
 ) -> JaggedGkrLayer:
-    """``generate_first_layer`` on the class-shaped flat arrival: chip views
-    are static slices at the class bounds, the real heights ride in the
-    traced ``heights`` vector, and every slot count is a class constant —
-    so the build (and everything downstream reading ``row_counts``) compiles
-    once per (chip set, class).
-
-    Byte-identical to the exact build on every admitted shard: live slots
-    hold the same real pairs, and every slot past ``height // 2`` holds the
-    fold-neutral ``(n=0, d=1)`` whether the exact build padded it or never
-    materialized it (``_chip_first_layer_capped``).
-    """
+    """``generate_first_layer`` on the class-shaped flat arrival: static
+    slices at the class bounds + the traced ``heights`` vector, so the
+    build — and everything downstream reading ``row_counts`` — compiles
+    once per (chip set, class). Byte-identical on every admitted shard
+    (``_chip_first_layer_capped``)."""
     name_to_idx = {name: i for i, name in enumerate(chip_names)}
     prep_name_to_idx = {name: i for i, name in enumerate(prep_names)}
     main_offsets = _arrival_offsets(main_widths, cap_class.chip_heights)
