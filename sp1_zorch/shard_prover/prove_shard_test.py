@@ -47,7 +47,6 @@ from sp1_zorch.shard_prover.prove_shard import (
     ShardBridge,
     ZerocheckStage,
     _jagged_eval_jit,
-    _region_block,
     preamble_chip_metadata,
     prove_shard_chain,
 )
@@ -430,14 +429,14 @@ class ProveShardChainTest(absltest.TestCase):
     def test_trace_commit_stage_threads_digest_layers_not_mle(self) -> None:
         """TraceCommitStage retains only each region's digest tree on the bridge
         as ``[prep, main]`` — NOT the trace-sized ``[S, K]`` mle, which the
-        jagged-eval open recomputes from the region dense (``_region_block``) so a
+        jagged-eval open reads as the region's ``block`` view, so a
         trace-sized copy never rides the card through GKR + zerocheck
         (fractalyze/sp1-zorch#264). The recompute yields the stacked shape."""
         digests = self.bridge.commit_digest_layers
         self.assertIsNotNone(digests)
         self.assertLen(digests, 2)  # prep, then main
         S = 1 << self.main_region.log_stacking_height
-        self.assertEqual(_region_block(self.main_region).shape[1], S)
+        self.assertEqual(self.main_region.block.shape[1], S)
 
     def test_zerocheck_stage_threads_the_eval_point(self) -> None:
         """ZerocheckStage threads its sumcheck point onto the bridge as the

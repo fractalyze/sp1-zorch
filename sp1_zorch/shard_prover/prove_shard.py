@@ -641,11 +641,10 @@ class JaggedPcsStage(Round):
             blowup=1 << self._log_blowup,
             dtype=main.dense.dtype,
         )
-        # Rebuild each StackedRound from the region dense (a free [K, S]
-        # reshape view — no copy), joined to the carried digest tree, in the
-        # same [prep, main] order.
+        # Rebuild each StackedRound from the region's [K, S] block view (no
+        # copy), joined to the carried digest tree, in [prep, main] order.
         commit_rounds = tuple(
-            StackedRound(_region_block(region), digests)
+            StackedRound(region.block, digests)
             for (region, _), digests in zip(
                 regions, bridge.commit_digest_layers, strict=True
             )
@@ -662,14 +661,6 @@ class JaggedPcsStage(Round):
             transcript=transcript,
         )
         return bridge, transcript, JaggedPcsProof(eval=eval_msg, open=open_proof)
-
-
-def _region_block(region: JaggedRegion) -> Array:
-    """The commit's ``[K, S]`` message matrix for a region — a free reshape
-    view of its packed dense buffer, so the open never pins a trace-sized copy
-    through the chain (fractalyze/sp1-zorch#264)."""
-    S = 1 << region.log_stacking_height
-    return region.dense.reshape(-1, S)
 
 
 def prove_shard_chain(
