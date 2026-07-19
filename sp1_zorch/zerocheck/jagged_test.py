@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from functools import partial
 
 import frx
-import frx.numpy as jnp
+import frx.numpy as fnp
 import numpy as np
 from absl.testing import absltest
 from zk_dtypes import koalabear_mont as KB
@@ -56,7 +56,7 @@ def zero_extend(arr, width):
     pad = width - arr.shape[-1]
     if pad == 0:
         return arr
-    return jnp.concatenate([arr, jnp.zeros((*arr.shape[:-1], pad), arr.dtype)], axis=-1)
+    return fnp.concatenate([arr, fnp.zeros((*arr.shape[:-1], pad), arr.dtype)], axis=-1)
 
 
 # Witness chip: columns [a, b, c] with a == 1 on every real row, so both
@@ -66,37 +66,37 @@ _NUM_COLS = 3
 _K = 2
 
 
-def _eval_fn(trace: jnp.ndarray, public_values: jnp.ndarray) -> jnp.ndarray:
+def _eval_fn(trace: fnp.ndarray, public_values: fnp.ndarray) -> fnp.ndarray:
     del public_values
     a, b, c = trace[:, 0], trace[:, 1], trace[:, 2]
-    one = jnp.ones((), trace.dtype)
-    return jnp.stack([(a - one) * (c - one), (a - one) * b * c], axis=-1)
+    one = fnp.ones((), trace.dtype)
+    return fnp.stack([(a - one) * (c - one), (a - one) * b * c], axis=-1)
 
 
-def _eval_fn_empty(trace: jnp.ndarray, public_values: jnp.ndarray) -> jnp.ndarray:
+def _eval_fn_empty(trace: fnp.ndarray, public_values: fnp.ndarray) -> fnp.ndarray:
     """Lookup-only chip: no transition constraints (SP1's Byte / Program /
     Range shape) — ``(N, 0)``, so only the GKR column term contributes."""
     del public_values
-    return jnp.zeros((trace.shape[0], 0), dtype=trace.dtype)
+    return fnp.zeros((trace.shape[0], 0), dtype=trace.dtype)
 
 
 # The eval_fns above ignore the statement (no constraint declares a pv_arg),
 # but it still rides as a declared `constraint_eval` operand — so the summand
 # and the reference thread a (dummy) pv through the 2-ary signature.
-_PV = jnp.zeros((8,), dtype=KB)
+_PV = fnp.zeros((8,), dtype=KB)
 
 
-def _rand(seed: int, shape) -> jnp.ndarray:
+def _rand(seed: int, shape) -> fnp.ndarray:
     ints = np.random.default_rng(seed).integers(1, 1 << 30, size=shape, dtype=np.int64)
-    return jnp.array(ints, dtype=KB)
+    return fnp.array(ints, dtype=KB)
 
 
-def _rand_ef(seed: int, shape) -> jnp.ndarray:
+def _rand_ef(seed: int, shape) -> fnp.ndarray:
     return frx.lax.bitcast_convert_type(_rand(seed, (*shape, 4)), EF)
 
 
 def _u32(a) -> np.ndarray:
-    return np.asarray(frx.lax.bitcast_convert_type(a, jnp.uint32)).reshape(-1)
+    return np.asarray(frx.lax.bitcast_convert_type(a, fnp.uint32)).reshape(-1)
 
 
 def _assert_bytes_equal(got, want, label: str = "") -> None:
@@ -105,11 +105,11 @@ def _assert_bytes_equal(got, want, label: str = "") -> None:
     np.testing.assert_array_equal(_u32(got), _u32(want), err_msg=label)
 
 
-def _witness_trace(seed: int, nr: int) -> jnp.ndarray:
+def _witness_trace(seed: int, nr: int) -> fnp.ndarray:
     if nr == 0:
-        return jnp.zeros((_NUM_COLS, 0), dtype=KB)
-    ones = jnp.ones((1, nr), dtype=KB)
-    return jnp.concatenate([ones, _rand(seed, (2, nr))], axis=0)
+        return fnp.zeros((_NUM_COLS, 0), dtype=KB)
+    ones = fnp.ones((1, nr), dtype=KB)
+    return fnp.concatenate([ones, _rand(seed, (2, nr))], axis=0)
 
 
 @partial(
@@ -123,12 +123,12 @@ class _ScriptedTranscript:
     the round ``lax.scan`` carry; ``sample`` advances it with ``dynamic_slice``
     (a Python ``list.pop`` cannot be a scan carry)."""
 
-    challenges: jnp.ndarray
-    pos: jnp.ndarray
+    challenges: fnp.ndarray
+    pos: fnp.ndarray
 
     @classmethod
     def replaying(cls, challenges) -> "_ScriptedTranscript":
-        return cls(jnp.asarray(challenges), jnp.asarray(0, jnp.int32))
+        return cls(fnp.asarray(challenges), fnp.asarray(0, fnp.int32))
 
     def observe(self, values):
         del values
@@ -139,7 +139,7 @@ class _ScriptedTranscript:
         return _ScriptedTranscript(self.challenges, self.pos + n), out
 
 
-def _lift(v: jnp.ndarray, t: jnp.ndarray) -> jnp.ndarray:
+def _lift(v: fnp.ndarray, t: fnp.ndarray) -> fnp.ndarray:
     """Bind the LSB variable at t: even + t*(odd - even) along the last axis."""
     return v[..., 0::2] + t * (v[..., 1::2] - v[..., 0::2])
 
@@ -149,16 +149,16 @@ def _naive_round_polys(
 ):
     n = int(zeta.shape[0])
     width = 1 << n
-    one = jnp.ones((), KB)
+    one = fnp.ones((), KB)
     inv_vand = compute_inv_vandermonde(DEGREE, KB)
 
     cols = [zero_extend(t, width) for t in traces]
     geqs = [
-        jnp.concatenate([jnp.zeros(nr, dtype=KB), jnp.ones(width - nr, dtype=KB)])
+        fnp.concatenate([fnp.zeros(nr, dtype=KB), fnp.ones(width - nr, dtype=KB)])
         for nr in num_reals
     ]
     adjs = [
-        f(jnp.zeros((1, _NUM_COLS), dtype=KB), _PV)[0] @ a
+        f(fnp.zeros((1, _NUM_COLS), dtype=KB), _PV)[0] @ a
         for f, a in zip(eval_fns, alphas)
     ]
     e = expand_eq_to_hypercube(zeta, one)
@@ -167,16 +167,16 @@ def _naive_round_polys(
     for r in challenges:
         evals = []
         for t in range(DEGREE + 1):
-            tv = jnp.array(t, KB)
+            tv = fnp.array(t, KB)
             et = _lift(e, tv)
-            tot = jnp.zeros_like(et)
+            tot = fnp.zeros_like(et)
             for i in range(len(cols)):
                 ct = _lift(cols[i], tv)
                 cv = eval_fns[i](ct.T, _PV) @ alphas[i]
                 cv = cv + ct.T @ gkr_powers[i]
                 tot = tot + lambdas[i] * (cv - adjs[i] * _lift(geqs[i], tv))
-            evals.append(jnp.sum(et * tot))
-        polys.append(jnp.dot(inv_vand, jnp.stack(evals)))
+            evals.append(fnp.sum(et * tot))
+        polys.append(fnp.dot(inv_vand, fnp.stack(evals)))
         e = _lift(e, r)
         cols = [_lift(c, r) for c in cols]
         geqs = [_lift(g, r) for g in geqs]
@@ -190,8 +190,8 @@ def _gkr_inputs(beta, traces, zeta):
     pows = [beta]
     for _ in range(_NUM_COLS - 1):
         pows.append(pows[-1] * beta)
-    gkr = jnp.stack(pows)
-    e = expand_eq_to_hypercube(zeta, jnp.ones((), KB))
+    gkr = fnp.stack(pows)
+    e = expand_eq_to_hypercube(zeta, fnp.ones((), KB))
     claims = [gkr @ (zero_extend(t, width) @ e) for t in traces]
     return [gkr] * len(traces), claims
 
@@ -203,7 +203,7 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
         for r in range(msgs.round_poly.shape[0]):
             coeffs = msgs.round_poly[r]
             self.assertTrue(
-                bool(coeffs[0] + jnp.sum(coeffs) == claim), msg=f"round {r}"
+                bool(coeffs[0] + fnp.sum(coeffs) == claim), msg=f"round {r}"
             )
             claim = eval_coeffs(coeffs, msgs.challenge[r])
 
@@ -249,7 +249,7 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
         )
         for r in range(num_vars):
             self.assertTrue(
-                bool(jnp.all(msgs.round_poly[r] == want[r])), msg=f"round {r}"
+                bool(fnp.all(msgs.round_poly[r] == want[r])), msg=f"round {r}"
             )
 
     def test_jagged_heights_match_reference(self) -> None:
@@ -304,14 +304,14 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
         p0, p1 = trace_rm[0::2], trace_rm[1::2]
         diff = p1 - p0
         eq = _rand(3, (nr // 2,))
-        nr_live = jnp.asarray(nr, jnp.int32)
+        nr_live = fnp.asarray(nr, fnp.int32)
         claim = _rand(9, ())
         last = _rand(11, ())
         eq_adj = _rand(13, ())
-        padded_row_adj = _eval_fn(jnp.zeros((1, _NUM_COLS), dtype=KB), _PV)[0] @ alpha
-        vgeq = VirtualGeq(nr_live, jnp.ones((), KB), jnp.zeros((), KB))
-        interp = interp_matrix((jnp.array(2, KB), jnp.array(4, KB)), last)
-        is_round0 = jnp.array(False)
+        padded_row_adj = _eval_fn(fnp.zeros((1, _NUM_COLS), dtype=KB), _PV)[0] @ alpha
+        vgeq = VirtualGeq(nr_live, fnp.ones((), KB), fnp.zeros((), KB))
+        interp = interp_matrix((fnp.array(2, KB), fnp.array(4, KB)), last)
+        is_round0 = fnp.array(False)
 
         term, alpha0 = summand._term_fns[0], summand.alphas[0]
         vals = _summand_values(term, alpha0, p0, diff, gkr, nr_live, is_round0)
@@ -503,7 +503,7 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
             claims=claims,
         )
 
-        claim = jnp.zeros((), KB)
+        claim = fnp.zeros((), KB)
         for i in range(nchips):
             claim = claim + lambdas[i] * claims[i]
         self._assert_claim_thread(msgs, claim)
@@ -534,7 +534,7 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
         )
 
         # The claim thread starts at the lambda-RLC of the GKR claims.
-        claim = jnp.zeros((), KB)
+        claim = fnp.zeros((), KB)
         for i in range(nchips):
             claim = claim + lambdas[i] * claims[i]
         self._assert_claim_thread(msgs, claim)
@@ -548,7 +548,7 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
                 v = _lift(v, msgs.challenge[r])
             if finals[i].shape[1] > 0:
                 self.assertTrue(
-                    bool(jnp.all(finals[i][:, 0] == v[:, 0])), msg=f"chip {i}"
+                    bool(fnp.all(finals[i][:, 0] == v[:, 0])), msg=f"chip {i}"
                 )
 
     def test_round_challenge_is_one_extension_sample(self) -> None:
@@ -586,7 +586,7 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
             t = t.observe(msgs.round_poly[r])
             t, want = sample_challenge(t, EF, 4)
             self.assertTrue(
-                bool(jnp.array_equal(want, msgs.challenge[r])), msg=f"round {r}"
+                bool(fnp.array_equal(want, msgs.challenge[r])), msg=f"round {r}"
             )
 
     def test_validation_rejects_mismatched_height(self) -> None:
@@ -604,7 +604,7 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
                 [5],
                 _rand(7, (3,)),
                 cheap_transcript(KB),
-                claims=[jnp.zeros((), KB)],
+                claims=[fnp.zeros((), KB)],
             )
 
     def test_validation_rejects_short_claims(self) -> None:
@@ -621,7 +621,7 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
                 [4],
                 _rand(7, (3,)),
                 cheap_transcript(KB),
-                claims=[jnp.zeros((), KB)] * 2,
+                claims=[fnp.zeros((), KB)] * 2,
             )
 
 
@@ -653,7 +653,7 @@ class TotalCapTracedTest(absltest.TestCase):
     @staticmethod
     def _pad_rows(trace, height):
         """Column-major ``[cols, nr]`` -> ``[cols, height]``, zeros past nr."""
-        return jnp.pad(trace, ((0, 0), (0, height - trace.shape[1])))
+        return fnp.pad(trace, ((0, 0), (0, height - trace.shape[1])))
 
     def test_traced_total_cap_shares_one_compile_and_byte_matches(self) -> None:
         num_vars, nchips = self._NUM_VARS, self._NCHIPS
@@ -687,8 +687,8 @@ class TotalCapTracedTest(absltest.TestCase):
 
             got_poly, got_chal = jrun(
                 padded,
-                jnp.asarray(shard_heights, jnp.int32),
-                jnp.stack(claims),
+                fnp.asarray(shard_heights, fnp.int32),
+                fnp.stack(claims),
             )
 
             # Static per-shard total-cap path (class derived from the shard's
@@ -728,7 +728,7 @@ class TotalCapTracedTest(absltest.TestCase):
             finals_t, _, msgs_t = prove_jagged_zerocheck(
                 self._summand(alphas, lambdas, beta),
                 padded,
-                [jnp.asarray(nr, jnp.int32) for nr in shard_heights],
+                [fnp.asarray(nr, fnp.int32) for nr in shard_heights],
                 zeta,
                 _ScriptedTranscript.replaying(challenges),
                 claims=claims,

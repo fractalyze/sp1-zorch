@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-import frx.numpy as jnp
+import frx.numpy as fnp
 import numpy as np
 import zk_dtypes
 from frx import Array
@@ -83,7 +83,7 @@ def _parse_ef_list(value: str) -> Array:
     as one EF array (canonical limbs Mont-encoded)."""
     rows = [[int(t) for t in m.group(1).split(",")] for m in _EF_RE.finditer(value)]
     return (
-        jnp.array(rows, dtype=koalabear_mont)
+        fnp.array(rows, dtype=koalabear_mont)
         .reshape(-1)
         .view(zk_dtypes.koalabearx4_mont)
     )
@@ -97,7 +97,7 @@ def check_match(label: str, got, want) -> bool:
     else:
         # array_equal, not all(got == want): shape divergence must read as
         # a mismatch, and broadcasting would equate e.g. (1,) with (1, 1).
-        ok = bool(jnp.array_equal(got, want))
+        ok = bool(fnp.array_equal(got, want))
     print(f"{'OK ' if ok else 'MISMATCH'} {label}")
     if not ok:
         print(f"  got:  {got}")
@@ -120,10 +120,10 @@ def _load_trace_dir(trace_dir: Path) -> tuple[dict[str, Array], dict[str, int]]:
         num_reals[name] = height
         bin_path = trace_dir / f"{name}.bin"
         if height == 0 or not bin_path.exists():
-            traces[name] = jnp.zeros((0, width), dtype=koalabear_mont)
+            traces[name] = fnp.zeros((0, width), dtype=koalabear_mont)
         else:
             raw = np.fromfile(bin_path, dtype=np.uint32)
-            traces[name] = jnp.array(raw.reshape(height, width)).view(koalabear_mont)
+            traces[name] = fnp.array(raw.reshape(height, width)).view(koalabear_mont)
     return traces, num_reals
 
 
@@ -136,7 +136,7 @@ def _load_vk(vk_path: Path) -> MachineVerifyingKey:
     }
 
     def _arr(key: str) -> Array:
-        return jnp.array(vals[key], dtype=jnp.uint32).astype(koalabear_mont)
+        return fnp.array(vals[key], dtype=fnp.uint32).astype(koalabear_mont)
 
     return MachineVerifyingKey(
         preprocessed_commit=_arr("preprocessed_commit"),
@@ -170,7 +170,7 @@ def read_dump(fixture_dir: Path, trace_subdir: Optional[str] = None) -> DumpData
         preprocessed = {}
 
     pv_raw = np.fromfile(trace_dir / "public_values.bin", dtype=np.uint32)
-    public_values = jnp.array(pv_raw).view(koalabear_mont)
+    public_values = fnp.array(pv_raw).view(koalabear_mont)
 
     return DumpData(
         traces=traces,

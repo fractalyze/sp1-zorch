@@ -19,7 +19,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import frx
-import frx.numpy as jnp
+import frx.numpy as fnp
 import numpy as np
 from absl.testing import absltest
 from rw_constraints import Interaction, VirtualPairCol
@@ -43,11 +43,11 @@ _PV_NPY = (
 )
 
 
-def _ef(seed: int, n: int) -> jnp.ndarray:
+def _ef(seed: int, n: int) -> fnp.ndarray:
     """A deterministic EF vector with small, distinct, in-range limbs."""
     limbs = (np.arange(n * 4) * 48271 + seed * 7 + 1).reshape(n, 4) % 0x7F000001
     return frx.lax.bitcast_convert_type(
-        jnp.asarray(limbs, dtype=jnp.uint32), EF
+        fnp.asarray(limbs, dtype=fnp.uint32), EF
     )
 
 
@@ -55,7 +55,7 @@ class EvalPublicValuesTest(absltest.TestCase):
     def test_valid_shard_pv_drives_accumulator_to_zero(self) -> None:
         pv_u32 = np.load(_PV_NPY)
         public_values = frx.lax.bitcast_convert_type(
-            jnp.asarray(pv_u32, dtype=jnp.uint32), F
+            fnp.asarray(pv_u32, dtype=fnp.uint32), F
         )
         self.assertGreaterEqual(public_values.shape[0], SP1_PROOF_NUM_PV_ELTS)
 
@@ -67,7 +67,7 @@ class EvalPublicValuesTest(absltest.TestCase):
         betas = _ef(3, 16)
         accumulator, _ = eval_public_values(public_values, pv_challenge, alpha, betas)
         self.assertTrue(
-            bool(accumulator == jnp.zeros((), EF)),
+            bool(accumulator == fnp.zeros((), EF)),
             f"valid shard PV left accumulator non-zero: {accumulator}",
         )
 
@@ -81,7 +81,7 @@ class EvalPublicValuesTest(absltest.TestCase):
         betas = _ef(6, 16)
         kind = 5  # Byte
         # Column 0 holds the multiplicity, columns 1..5 the four values.
-        main = jnp.arange(1, 6, dtype=jnp.uint32).reshape(1, 5).view(F)
+        main = fnp.arange(1, 6, dtype=fnp.uint32).reshape(1, 5).view(F)
         interaction = Interaction(
             values=tuple(VirtualPairCol.single_main(i) for i in range(1, 5)),
             multiplicity=VirtualPairCol.single_main(0),
@@ -91,11 +91,11 @@ class EvalPublicValuesTest(absltest.TestCase):
         mult_row, fingerprint_row = generate_interaction_vals_batch(
             interaction, None, main, alpha, betas
         )
-        want = (mult_row[0] * jnp.ones((), EF)) / fingerprint_row[0]
+        want = (mult_row[0] * fnp.ones((), EF)) / fingerprint_row[0]
 
-        values = [main[0, i] * jnp.ones((), EF) for i in range(1, 5)]
+        values = [main[0, i] * fnp.ones((), EF) for i in range(1, 5)]
         folder = _Folder(_ef(9, 1)[0], alpha, betas)
-        folder.send(values, main[0, 0] * jnp.ones((), EF), kind)
+        folder.send(values, main[0, 0] * fnp.ones((), EF), kind)
         self.assertTrue(bool(folder.local_interaction_digest == want))
 
     def test_pv_tamper_shifts_the_digest(self) -> None:
@@ -106,12 +106,12 @@ class EvalPublicValuesTest(absltest.TestCase):
         # digest no longer balances. Pin that sensitivity directly.
         pv_u32 = np.load(_PV_NPY)
         public_values = frx.lax.bitcast_convert_type(
-            jnp.asarray(pv_u32, dtype=jnp.uint32), F
+            fnp.asarray(pv_u32, dtype=fnp.uint32), F
         )
         pv_challenge, alpha, betas = _ef(1, 1)[0], _ef(2, 1)[0], _ef(3, 16)
         _, digest = eval_public_values(public_values, pv_challenge, alpha, betas)
 
-        tampered = public_values.at[129].add(jnp.ones((), F))  # global_count
+        tampered = public_values.at[129].add(fnp.ones((), F))  # global_count
         _, tampered_digest = eval_public_values(
             tampered, pv_challenge, alpha, betas
         )
@@ -125,7 +125,7 @@ class EvalPublicValuesTest(absltest.TestCase):
         folder = _Folder(_ef(15, 1)[0], alpha, betas)
         folder.send(values, mult, 7)
         folder.receive(values, mult, 7)
-        self.assertTrue(bool(folder.local_interaction_digest == jnp.zeros((), EF)))
+        self.assertTrue(bool(folder.local_interaction_digest == fnp.zeros((), EF)))
 
 
 if __name__ == "__main__":

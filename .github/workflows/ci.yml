@@ -51,13 +51,13 @@ jobs:
       # No setup-bazel: it's for ephemeral runners and clobbers the box's
       # ~/.bazelrc; on self-hosted runners bazel/caches already persist.
       # --test_env selects the backend per leg, overriding the repo default
-      # (.bazelrc pins JAX_PLATFORMS=cpu). The GPU leg pins cuda — needed for the
+      # (.bazelrc pins FRX_PLATFORMS=cpu). The GPU leg pins cuda — needed for the
       # SP1 FFI byte-match tests, which require a CUDA GPU. The CPU leg filters
       # `-gpu_only` so the full-shard byte-match validation (too slow to compile
       # on CPU — fractalyze/xla#121) runs on the GPU leg only; the GPU leg's
       # empty filter runs everything.
       - name: Run bazel test
-        run: bazel test --test_env=JAX_PLATFORMS=${{ matrix.jax_platforms }} --test_tag_filters=${{ matrix.test_tag_filters }} -- //...
+        run: bazel test --test_env=FRX_PLATFORMS=${{ matrix.jax_platforms }} --test_tag_filters=${{ matrix.test_tag_filters }} -- //...
 
       # Capture the runner-local test.log a failed test leaves behind — the CI
       # stream only carries the FAIL summary, not the gtest output.

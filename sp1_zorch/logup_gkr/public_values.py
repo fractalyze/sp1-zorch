@@ -34,7 +34,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Sequence
 
-import frx.numpy as jnp
+import frx.numpy as fnp
 from frx import Array
 from zk_dtypes import koalabear_mont as F
 
@@ -254,9 +254,9 @@ class _Folder:
         self._alpha = alpha
         self._betas = betas
         self._ef = ef
-        self._one = jnp.ones((), ef)
-        self.accumulator = jnp.zeros((), ef)
-        self.local_interaction_digest = jnp.zeros((), ef)
+        self._one = fnp.ones((), ef)
+        self.accumulator = fnp.zeros((), ef)
+        self.local_interaction_digest = fnp.zeros((), ef)
 
     # --- constraint folding -------------------------------------------------
 
@@ -315,7 +315,7 @@ class _Folder:
 
     def const(self, value: int) -> Array:
         """An EF-embedded canonical field constant."""
-        return jnp.array(value, F) * self._one
+        return fnp.array(value, F) * self._one
 
     @property
     def one(self) -> Array:
@@ -323,7 +323,7 @@ class _Folder:
 
     @property
     def zero(self) -> Array:
-        return jnp.zeros((), self._ef)
+        return fnp.zeros((), self._ef)
 
 
 @dataclass(frozen=True)
@@ -435,7 +435,7 @@ def _eval_first_execution_shard(pv: _Pv, f: _Folder) -> None:
     first = pv.is_first_execution_shard
     f.assert_bool(first)
     f.when(first).assert_all_eq(
-        pv.initial_timestamp, jnp.stack([f.zero, f.zero, f.zero, f.one])
+        pv.initial_timestamp, fnp.stack([f.zero, f.zero, f.zero, f.one])
     )
     f.when(first).assert_one(pv.is_execution_shard)
     for i in range(PV_DIGEST_NUM_WORDS):
@@ -598,7 +598,7 @@ def eval_public_values(
             "the GlobalAccumulation interaction needs 16 betas (1 kind + 15 "
             f"values); got {betas.shape[0]}"
         )
-    one_ef = jnp.ones((), alpha.dtype)
+    one_ef = fnp.ones((), alpha.dtype)
     pv = _Pv(public_values[:SP1_PROOF_NUM_PV_ELTS] * one_ef)
     f = _Folder(pv_challenge, alpha, betas)
 

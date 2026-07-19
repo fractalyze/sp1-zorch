@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import frx
-import frx.numpy as jnp
+import frx.numpy as fnp
 import numpy as np
 from absl.testing import absltest
 from zk_dtypes import koalabear_mont, koalabearx4_mont
@@ -27,28 +27,28 @@ BF, EF = koalabear_mont, koalabearx4_mont
 # correction live (adj = alpha_0 != 0) — mirrors jagged_test.py's fixture.
 _NUM_COLS = 3
 _K = 2
-_PV = jnp.zeros((8,), dtype=BF)
+_PV = fnp.zeros((8,), dtype=BF)
 
 
-def _eval_fn(trace: jnp.ndarray, public_values: jnp.ndarray) -> jnp.ndarray:
+def _eval_fn(trace: fnp.ndarray, public_values: fnp.ndarray) -> fnp.ndarray:
     del public_values
     a, b, c = trace[:, 0], trace[:, 1], trace[:, 2]
-    one = jnp.ones((), trace.dtype)
-    return jnp.stack([(a - one) * (c - one), (a - one) * b * c], axis=-1)
+    one = fnp.ones((), trace.dtype)
+    return fnp.stack([(a - one) * (c - one), (a - one) * b * c], axis=-1)
 
 
-def _rand(seed: int, shape) -> jnp.ndarray:
+def _rand(seed: int, shape) -> fnp.ndarray:
     ints = np.random.default_rng(seed).integers(1, 1 << 30, size=shape, dtype=np.int64)
-    return jnp.array(ints, dtype=BF)
+    return fnp.array(ints, dtype=BF)
 
 
-def _witness_trace(seed: int, nr: int) -> jnp.ndarray:
-    ones = jnp.ones((1, nr), dtype=BF)
-    return jnp.concatenate([ones, _rand(seed, (2, nr))], axis=0)
+def _witness_trace(seed: int, nr: int) -> fnp.ndarray:
+    ones = fnp.ones((1, nr), dtype=BF)
+    return fnp.concatenate([ones, _rand(seed, (2, nr))], axis=0)
 
 
 def _u32(a) -> np.ndarray:
-    return np.asarray(frx.lax.bitcast_convert_type(a, jnp.uint32)).reshape(-1)
+    return np.asarray(frx.lax.bitcast_convert_type(a, fnp.uint32)).reshape(-1)
 
 
 def _assert_bytes_equal(got, want, label: str = "") -> None:
@@ -81,14 +81,14 @@ class MarkerByteTransparencyTest(absltest.TestCase):
         p0, p1 = trace_rm[0::2], trace_rm[1::2]
         diff = p1 - p0
         eq = _rand(3, (nr // 2,))
-        nr_live = jnp.asarray(nr, jnp.int32)
+        nr_live = fnp.asarray(nr, fnp.int32)
         claim = _rand(9, ())
         last = _rand(11, ())
         eq_adj = _rand(13, ())
-        padded_row_adj = _eval_fn(jnp.zeros((1, _NUM_COLS), dtype=BF), _PV)[0] @ alpha
-        vgeq = VirtualGeq(nr_live, jnp.ones((), BF), jnp.zeros((), BF))
-        interp = interp_matrix((jnp.array(2, BF), jnp.array(4, BF)), last)
-        is_round0 = jnp.array(False)
+        padded_row_adj = _eval_fn(fnp.zeros((1, _NUM_COLS), dtype=BF), _PV)[0] @ alpha
+        vgeq = VirtualGeq(nr_live, fnp.ones((), BF), fnp.zeros((), BF))
+        interp = interp_matrix((fnp.array(2, BF), fnp.array(4, BF)), last)
+        is_round0 = fnp.array(False)
 
         term, alpha0 = summand._term_fns[0], summand.alphas[0]
         vals = _summand_values(term, alpha0, p0, diff, gkr, nr_live, is_round0)

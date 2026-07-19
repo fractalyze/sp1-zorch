@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 import frx
-import frx.numpy as jnp
+import frx.numpy as fnp
 import numpy as np
 from frx import Array
 from zk_dtypes import koalabear_mont as F
@@ -47,12 +47,12 @@ RATE = 8
 
 def to_u32(a: Array) -> np.ndarray:
     """Montgomery-form u32 bitpatterns — the byte-match comparison unit."""
-    return np.asarray(frx.lax.bitcast_convert_type(a, jnp.uint32))
+    return np.asarray(frx.lax.bitcast_convert_type(a, fnp.uint32))
 
 
 def from_u32(u32: np.ndarray, dtype: Any) -> Array:
     """Raw u32 Mont bitpatterns -> field array (EF collapses a trailing 4)."""
-    return frx.lax.bitcast_convert_type(jnp.asarray(u32, dtype=jnp.uint32), dtype)
+    return frx.lax.bitcast_convert_type(fnp.asarray(u32, dtype=fnp.uint32), dtype)
 
 
 class JitPermutation:
@@ -100,7 +100,7 @@ def preamble_transcript(shard: ShardData, shard_dir: Path) -> Transcript:
     main-commit byte-match is the trace-commit stage's concern."""
     commit_kv = _parse_kv_lines((shard_dir / "gpu_commitment.txt").read_text())
     # gpu_commitment.txt carries canonical integers, so encode rather than view.
-    commitment = jnp.array(_parse_int_list(commit_kv["main_commit"]), F)
+    commitment = fnp.array(_parse_int_list(commit_kv["main_commit"]), F)
 
     traces = shard.main_trace_data.traces
     names = traces.chip_order
@@ -168,8 +168,8 @@ def load_gkr_cache(
             input_buffer=from_u32(z["t_input"], F),
             output_buffer=from_u32(z["t_output"], F),
             sponge_state=from_u32(z["t_sponge"], F),
-            in_pos=jnp.int32(int(z["t_in_pos"])),
-            out_pos=jnp.int32(int(z["t_out_pos"])),
+            in_pos=fnp.int32(int(z["t_in_pos"])),
+            out_pos=fnp.int32(int(z["t_out_pos"])),
         )
     base = fresh_transcript()
     return eval_point, openings, DuplexTranscript(base.permutation, base.rate, state)
@@ -209,7 +209,7 @@ def replay_gkr(
         num_betas=num_beta_values(shard.main_trace_data.chips),
         num_row_variables=MAX_LOG_ROW_COUNT - 1,
         pow_bits=pow_bits,
-        witness=jnp.array(int(state["witness"]), F),
+        witness=fnp.array(int(state["witness"]), F),
         cap_class=cap_class,
     )
 
@@ -238,7 +238,7 @@ def seed_gkr_outputs_rolled(
     gkr_chips = build_gkr_chips(shard.main_trace_data.chips, order)
     num_betas = num_beta_values(shard.main_trace_data.chips)
     num_row_variables = MAX_LOG_ROW_COUNT - 1
-    witness = jnp.array(int(state["witness"]), F)
+    witness = fnp.array(int(state["witness"]), F)
 
     # chips static via closure; regions/transcript/witness traced -- mirrors how
     # the rolled bench jits the stage, keeping the zorch.sumcheck composite

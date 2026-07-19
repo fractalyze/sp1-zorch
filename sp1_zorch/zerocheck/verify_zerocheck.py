@@ -39,7 +39,7 @@ from pathlib import Path
 import json
 
 import frx
-import frx.numpy as jnp
+import frx.numpy as fnp
 import numpy as np
 from absl import app, flags
 from frx import Array
@@ -159,7 +159,7 @@ def _check_opened_values(zc: ZerocheckProof, main_region, shard_dir: Path) -> bo
     for i, name in enumerate(main_region.chip_names):
         final = zc.finals[i]
         nc = final.shape[0]
-        vals = final[:, 0] if final.shape[1] > 0 else jnp.zeros((nc,), dtype=EF)
+        vals = final[:, 0] if final.shape[1] > 0 else fnp.zeros((nc,), dtype=EF)
         mw = int(main_region.chip_widths[i])
         ok_i = check_match(f"openings:{name} main", vals[:mw], ref[name]["main"])
         ok_i &= check_match(f"openings:{name} prep", vals[mw:], ref[name]["prep"])
@@ -187,14 +187,14 @@ def _report_univariate_encoding(zc: ZerocheckProof, shard_dir: Path) -> None:
             return
         rounds.append((r, hit[1]))
 
-    one = jnp.ones((), EF)
+    one = fnp.ones((), EF)
     candidates = {
         "coeffs[0:4]": lambda p: p[:4],
         "coeffs[1:5]": lambda p: p[1:],
-        "evals@{0,1,2,3}": lambda p: jnp.stack(
+        "evals@{0,1,2,3}": lambda p: fnp.stack(
             [eval_coeffs(p, t * one) for t in (0, 1, 2, 3)]
         ),
-        "evals@{0,1,2,4}": lambda p: jnp.stack(
+        "evals@{0,1,2,4}": lambda p: fnp.stack(
             [eval_coeffs(p, t * one) for t in (0, 1, 2, 4)]
         ),
     }
@@ -270,7 +270,7 @@ def main(argv) -> None:
             shard.main_trace_data.public_values,
             eval_point,
             openings,
-            jnp.asarray(heights_host, jnp.int32),
+            fnp.asarray(heights_host, fnp.int32),
             transcript,
             chips=tuple(shard.main_trace_data.chips.items()),
             max_log_row_count=MAX_LOG_ROW_COUNT,
@@ -328,7 +328,7 @@ def main(argv) -> None:
     # round poly carries it: claimed_sum = c0 + sum(c).
     p0 = zc.msgs.round_poly[0]
     ok &= check_match(
-        "claimed_sum", p0[0] + jnp.sum(p0), _parse_ef_list(state["claimed_sum"])[0]
+        "claimed_sum", p0[0] + fnp.sum(p0), _parse_ef_list(state["claimed_sum"])[0]
     )
     # gpu_z_row.txt is SP1's `zeta` -- the LogUp-GKR evaluation point's row tail
     # (`eval_point[-max_log_row_count:]`, the GKR `logup_evaluations.point`), NOT

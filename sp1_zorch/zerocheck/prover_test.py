@@ -17,7 +17,7 @@ Reference: whir-zorch ``sp1/shard_prover/prover.py``, its zerocheck (SP1
 from __future__ import annotations
 
 import frx
-import frx.numpy as jnp
+import frx.numpy as fnp
 import numpy as np
 from absl.testing import absltest
 from zk_dtypes import koalabear_mont, koalabearx4_mont
@@ -59,29 +59,29 @@ class _WitnessChip:
 
     def eval_constraints(self, trace, public_values):
         a, b, c = trace[:, 2], trace[:, 3], trace[:, 4]
-        one = jnp.ones((), trace.dtype)
-        pv0 = jnp.concatenate([public_values[:1], jnp.zeros((3,), BF)]).view(EF)[0]
-        return jnp.stack([(a - one) * (c - one), (a - one) * (b + pv0)], axis=-1)
+        one = fnp.ones((), trace.dtype)
+        pv0 = fnp.concatenate([public_values[:1], fnp.zeros((3,), BF)]).view(EF)[0]
+        return fnp.stack([(a - one) * (c - one), (a - one) * (b + pv0)], axis=-1)
 
 
 class _LookupChip:
     """Constraint-less chip (SP1's Byte / Program / Range shape)."""
 
     def eval_constraints(self, trace, public_values):
-        return jnp.zeros((trace.shape[0], 0), dtype=trace.dtype)
+        return fnp.zeros((trace.shape[0], 0), dtype=trace.dtype)
 
 
-def _rand_bf(seed: int, shape) -> jnp.ndarray:
+def _rand_bf(seed: int, shape) -> fnp.ndarray:
     ints = np.random.default_rng(seed).integers(1, 1 << 30, size=shape, dtype=np.int64)
-    return jnp.array(ints, dtype=BF)
+    return fnp.array(ints, dtype=BF)
 
 
-def _rand_ef(seed: int, shape) -> jnp.ndarray:
+def _rand_ef(seed: int, shape) -> fnp.ndarray:
     return _rand_bf(seed, tuple(shape) + (4,)).view(EF).reshape(shape)
 
 
 def _u32(a) -> np.ndarray:
-    return np.asarray(frx.lax.bitcast_convert_type(a, jnp.uint32)).reshape(-1)
+    return np.asarray(frx.lax.bitcast_convert_type(a, fnp.uint32)).reshape(-1)
 
 
 def _assert_bytes_equal(got, want, label: str = "") -> None:
@@ -96,8 +96,8 @@ class ProveZerocheckTest(absltest.TestCase):
         # alpha: 3 main cols x 5 real rows (col a == 1), prep 2 cols x 3 rows
         # (shorter than num_real — exercises the prep zero-pad). lookup: one
         # main col x 3 rows, no prep, no constraints.
-        alpha_main = jnp.concatenate(
-            [jnp.ones((5, 1), dtype=BF), _rand_bf(1, (5, 2))], axis=1
+        alpha_main = fnp.concatenate(
+            [fnp.ones((5, 1), dtype=BF), _rand_bf(1, (5, 2))], axis=1
         )
         alpha_prep = _rand_bf(2, (3, 2))
         lookup_main = _rand_bf(3, (3, 1))
@@ -146,19 +146,19 @@ class ProveZerocheckTest(absltest.TestCase):
 
         zeta = eval_point[-_MAX_LOG_ROW_COUNT:]
         claims = [
-            jnp.sum(
+            fnp.sum(
                 gkr_powers(beta, 5)
-                * jnp.concatenate(
+                * fnp.concatenate(
                     [chip_openings["alpha"].main, chip_openings["alpha"].preprocessed]
                 )
             ),
-            jnp.sum(gkr_powers(beta, 1) * chip_openings["lookup"].main),
+            fnp.sum(gkr_powers(beta, 1) * chip_openings["lookup"].main),
         ]
         # [main | prep] column-major, prep zero-padded to num_real.
-        alpha_trace = jnp.concatenate(
+        alpha_trace = fnp.concatenate(
             [
                 alpha_main.T,
-                jnp.concatenate([alpha_prep.T, jnp.zeros((2, 2), dtype=BF)], axis=1),
+                fnp.concatenate([alpha_prep.T, fnp.zeros((2, 2), dtype=BF)], axis=1),
             ],
             axis=0,
         )
@@ -170,7 +170,7 @@ class ProveZerocheckTest(absltest.TestCase):
         # them (alpha: main width 3 of 5 columns; lookup is main-only).
         eval_fns = [
             lambda tr, pv: chips["alpha"].eval_constraints(
-                jnp.concatenate([tr[..., 3:], tr[..., :3]], axis=-1), pv
+                fnp.concatenate([tr[..., 3:], tr[..., :3]], axis=-1), pv
             ),
             chips["lookup"].eval_constraints,
         ]
@@ -198,13 +198,13 @@ class ProveZerocheckTest(absltest.TestCase):
         # [main | prep], so alpha's prep is rows 3:5 of its column stack.
         alpha_vals = want_finals[0][:, 0]
         lookup_vals = want_finals[1][:, 0]
-        t = t.observe(jnp.array(2, BF))
-        t = t.observe(jnp.array(2, BF))
+        t = t.observe(fnp.array(2, BF))
+        t = t.observe(fnp.array(2, BF))
         t = t.observe(alpha_vals[3:5])
-        t = t.observe(jnp.array(3, BF))
+        t = t.observe(fnp.array(3, BF))
         t = t.observe(alpha_vals[:3])
-        t = t.observe(jnp.array(0, BF))
-        t = t.observe(jnp.array(1, BF))
+        t = t.observe(fnp.array(0, BF))
+        t = t.observe(fnp.array(1, BF))
         t = t.observe(lookup_vals[:1])
         cls.want_finals, cls.want_transcript, cls.want_msgs = want_finals, t, want_msgs
         cls.zeta = zeta
@@ -273,8 +273,8 @@ class OpenedValuesRoundGuardTest(absltest.TestCase):
 
     def test_extra_chip_raises(self) -> None:
         opened = {
-            "alpha": ChipEvaluation(main=jnp.zeros((1,), EF), preprocessed=None),
-            "stowaway": ChipEvaluation(main=jnp.zeros((1,), EF), preprocessed=None),
+            "alpha": ChipEvaluation(main=fnp.zeros((1,), EF), preprocessed=None),
+            "stowaway": ChipEvaluation(main=fnp.zeros((1,), EF), preprocessed=None),
         }
         with self.assertRaisesRegex(ValueError, "cover exactly"):
             OpenedValuesRound(opened, ("alpha",))(None, cheap_transcript(BF))
@@ -289,7 +289,7 @@ class SplitOpenedValuesTest(absltest.TestCase):
     def test_splits_main_then_prep(self) -> None:
         # "alpha": 2 main cols + 1 prep col; "lookup": 1 main col, no prep.
         main_region = JaggedRegion(
-            dense=jnp.zeros(8, dtype=BF),
+            dense=fnp.zeros(8, dtype=BF),
             chip_starts=(0, 6, 8),
             row_counts=(3, 2, 4, 1),
             column_counts=(2, 1, 1, 1),
@@ -297,7 +297,7 @@ class SplitOpenedValuesTest(absltest.TestCase):
             chip_names=("alpha", "lookup"),
         )
         prep_region = JaggedRegion(
-            dense=jnp.zeros(3, dtype=BF),
+            dense=fnp.zeros(3, dtype=BF),
             chip_starts=(0, 3),
             row_counts=(3, 4, 1),
             column_counts=(1, 1, 1),
@@ -305,8 +305,8 @@ class SplitOpenedValuesTest(absltest.TestCase):
             chip_names=("alpha",),
         )
         finals = [
-            jnp.array([[31, 0], [32, 0], [33, 0]], dtype=EF),
-            jnp.array([[41, 0]], dtype=EF),
+            fnp.array([[31, 0], [32, 0], [33, 0]], dtype=EF),
+            fnp.array([[41, 0]], dtype=EF),
         ]
 
         opened = split_opened_values(finals, main_region, prep_region)
@@ -320,14 +320,14 @@ class SplitOpenedValuesTest(absltest.TestCase):
 
     def test_no_prep_region_means_no_preprocessed_anywhere(self) -> None:
         main_region = JaggedRegion(
-            dense=jnp.zeros(8, dtype=BF),
+            dense=fnp.zeros(8, dtype=BF),
             chip_starts=(0, 8),
             row_counts=(4, 4, 1),
             column_counts=(2, 1, 1),
             log_stacking_height=2,
             chip_names=("alpha",),
         )
-        finals = [jnp.array([[31, 0], [32, 0]], dtype=EF)]
+        finals = [fnp.array([[31, 0], [32, 0]], dtype=EF)]
 
         opened = split_opened_values(finals, main_region, None)
 

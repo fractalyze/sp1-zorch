@@ -16,7 +16,7 @@ from __future__ import annotations
 import struct
 from typing import TYPE_CHECKING
 
-import frx.numpy as jnp
+import frx.numpy as fnp
 import numpy as np
 from frx import Array, lax
 from zk_dtypes import efinfo
@@ -48,15 +48,15 @@ def _vec_prefix(length: int) -> bytes:
 
 def _field_bytes(arr: Array) -> bytes:
     """Canonical LE bytes for any BF/EF field array (any shape)."""
-    a = jnp.atleast_1d(arr)
+    a = fnp.atleast_1d(arr)
     if a.dtype.itemsize > 4:
         a = lax.bitcast_convert_type(a, efinfo(a.dtype).base_field_dtype)
-    return np.asarray(lax.convert_element_type(jnp.ravel(a), np.uint32)).tobytes()
+    return np.asarray(lax.convert_element_type(fnp.ravel(a), np.uint32)).tobytes()
 
 
 def _eval_poly_at(coeffs_row: Array, alpha: Array) -> Array:
     """Evaluate a univariate polynomial (coefficient form) at alpha via Horner."""
-    result = jnp.zeros((), dtype=coeffs_row.dtype)
+    result = fnp.zeros((), dtype=coeffs_row.dtype)
     for i in range(int(coeffs_row.shape[0]) - 1, -1, -1):
         result = result * alpha + coeffs_row[i]
     return result
@@ -64,7 +64,7 @@ def _eval_poly_at(coeffs_row: Array, alpha: Array) -> Array:
 
 def _encode_tensor(arr: Array, dimensions: list[int]) -> bytes:
     """Encode ``Tensor<T>``: ``{storage: Vec<T>, dimensions: Vec<usize>}``."""
-    flat = jnp.ravel(arr)
+    flat = fnp.ravel(arr)
     n = int(flat.shape[0])
     return (
         _vec_prefix(n)
@@ -76,7 +76,7 @@ def _encode_tensor(arr: Array, dimensions: list[int]) -> bytes:
 
 def _encode_point(arr: Array) -> bytes:
     """Encode ``Point<T> = {values: Buffer<T>}`` = ``Vec<T>``."""
-    flat = jnp.atleast_1d(arr)
+    flat = fnp.atleast_1d(arr)
     return _vec_prefix(int(flat.shape[0])) + _field_bytes(flat)
 
 
@@ -111,9 +111,9 @@ def _encode_logup_gkr_proof(proof, max_log_row_count: int) -> bytes:
     """
     parts = []
 
-    n_num = int(jnp.atleast_1d(proof.circuit_output.numerator).shape[0])
+    n_num = int(fnp.atleast_1d(proof.circuit_output.numerator).shape[0])
     parts.append(_encode_tensor(proof.circuit_output.numerator, [n_num, 1]))
-    n_den = int(jnp.atleast_1d(proof.circuit_output.denominator).shape[0])
+    n_den = int(fnp.atleast_1d(proof.circuit_output.denominator).shape[0])
     parts.append(_encode_tensor(proof.circuit_output.denominator, [n_den, 1]))
 
     parts.append(_vec_prefix(len(proof.round_proofs)))
@@ -138,11 +138,11 @@ def _encode_logup_gkr_proof(proof, max_log_row_count: int) -> bytes:
         parts.append(_vec_prefix(len(name_bytes)))
         parts.append(name_bytes)
         ce = chip_map[name]
-        n_main = int(jnp.atleast_1d(ce.main).shape[0])
+        n_main = int(fnp.atleast_1d(ce.main).shape[0])
         parts.append(_encode_tensor(ce.main, [n_main]))
         if ce.preprocessed is not None:
             parts.append(b"\x01")
-            n_prep = int(jnp.atleast_1d(ce.preprocessed).shape[0])
+            n_prep = int(fnp.atleast_1d(ce.preprocessed).shape[0])
             parts.append(_encode_tensor(ce.preprocessed, [n_prep]))
         else:
             parts.append(b"\x00")
@@ -218,7 +218,7 @@ def _pack_batch_openings(opening: Opening, root_digest: Array) -> bytes:
     # ``paths`` is level-major, one (Q, digest) array per tree level; the
     # wire wants every query's full path contiguously.
     if depth > 0:
-        parts.append(_field_bytes(jnp.stack(paths, axis=1)))
+        parts.append(_field_bytes(fnp.stack(paths, axis=1)))
     parts.append(_vec_prefix(2))
     parts.append(_usize(num_queries))
     parts.append(_usize(depth))
@@ -288,7 +288,7 @@ def _encode_evaluation_proof(
 
     parts.append(_vec_prefix(len(open_proof.batch_evals)))
     for evals in open_proof.batch_evals:
-        n_evals = int(jnp.atleast_1d(evals).shape[0])
+        n_evals = int(fnp.atleast_1d(evals).shape[0])
         parts.append(_encode_tensor(evals, [n_evals]))
 
     outer_polys = eval_msg.outer_sumcheck_polys

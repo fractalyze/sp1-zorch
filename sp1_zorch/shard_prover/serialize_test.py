@@ -9,7 +9,7 @@ fields flatten to their base-field limbs.
 
 import struct
 
-import frx.numpy as jnp
+import frx.numpy as fnp
 from absl.testing import absltest
 from zk_dtypes import koalabear_mont as F
 from zk_dtypes import koalabearx4_mont as EF
@@ -58,43 +58,43 @@ class BincodePrimitivesTest(absltest.TestCase):
     def test_field_bytes_emits_canonical_u32_not_montgomery(self) -> None:
         # Values 1,2,3 at the Python boundary are canonical; the wire must
         # carry canonical u32 LE regardless of the Montgomery storage form.
-        arr = jnp.array([1, 2, 3], dtype=F)
+        arr = fnp.array([1, 2, 3], dtype=F)
         self.assertEqual(_field_bytes(arr), struct.pack("<3I", 1, 2, 3))
 
     def test_field_bytes_scalar_and_2d_flatten(self) -> None:
-        self.assertEqual(_field_bytes(jnp.array(9, dtype=F)), struct.pack("<I", 9))
-        arr = jnp.arange(6, dtype=F).reshape(2, 3)
+        self.assertEqual(_field_bytes(fnp.array(9, dtype=F)), struct.pack("<I", 9))
+        arr = fnp.arange(6, dtype=F).reshape(2, 3)
         self.assertEqual(_field_bytes(arr), struct.pack("<6I", *range(6)))
 
     def test_field_bytes_extension_field_flattens_to_base_limbs(self) -> None:
         # One EF element = 4 base limbs on the wire, canonical u32 each.
-        arr = jnp.array([1, 2, 3, 4], dtype=F).view(EF)
+        arr = fnp.array([1, 2, 3, 4], dtype=F).view(EF)
         self.assertEqual(_field_bytes(arr), struct.pack("<4I", 1, 2, 3, 4))
 
     def test_encode_tensor_storage_then_dimensions(self) -> None:
         # Tensor<T> = {storage: Vec<T>, dimensions: Vec<usize>}.
-        arr = jnp.arange(6, dtype=F).reshape(2, 3)
+        arr = fnp.arange(6, dtype=F).reshape(2, 3)
         expected = _u64(6) + struct.pack("<6I", *range(6)) + _u64(2) + _u64(2) + _u64(3)
         self.assertEqual(_encode_tensor(arr, [2, 3]), expected)
 
     def test_encode_point_is_len_prefixed_vec(self) -> None:
-        arr = jnp.array([7, 8], dtype=F)
+        arr = fnp.array([7, 8], dtype=F)
         self.assertEqual(_encode_point(arr), _u64(2) + struct.pack("<2I", 7, 8))
         # Scalar promotes to a 1-vector.
         self.assertEqual(
-            _encode_point(jnp.array(7, dtype=F)), _u64(1) + struct.pack("<I", 7)
+            _encode_point(fnp.array(7, dtype=F)), _u64(1) + struct.pack("<I", 7)
         )
 
     def test_eval_poly_at_horner(self) -> None:
         # p(x) = 2 + 3x + 5x^2 at x=4 -> 2 + 12 + 80 = 94.
-        coeffs = jnp.array([2, 3, 5], dtype=F)
-        alpha = jnp.array(4, dtype=F)
+        coeffs = fnp.array([2, 3, 5], dtype=F)
+        alpha = fnp.array(4, dtype=F)
         self.assertEqual(int(_eval_poly_at(coeffs, alpha)), 94)
 
 
 class EncodeDigestTest(absltest.TestCase):
     def test_field_array_digest_is_32_canonical_bytes(self) -> None:
-        arr = jnp.arange(1, 9, dtype=F)  # [F; 8]
+        arr = fnp.arange(1, 9, dtype=F)  # [F; 8]
         self.assertEqual(_encode_digest(arr), struct.pack("<8I", *range(1, 9)))
 
     def test_plain_int_sequence_digest(self) -> None:
@@ -109,9 +109,9 @@ class EncodePartialSumcheckProofTest(absltest.TestCase):
         # claimed_sum: EF, point_and_eval: (Point<EF>, EF)} — each round poly
         # is its own length-prefixed Vec, and the eval is the last round
         # poly at point[0]: 3 + 4*8 + 5*64 = 355.
-        round_polys = jnp.arange(6, dtype=F).reshape(2, 3)
-        claimed_sum = jnp.array(7, dtype=F)
-        point = jnp.array([8, 9], dtype=F)
+        round_polys = fnp.arange(6, dtype=F).reshape(2, 3)
+        claimed_sum = fnp.array(7, dtype=F)
+        point = fnp.array([8, 9], dtype=F)
         expected = (
             _u64(2)
             + _u64(3)
@@ -133,30 +133,30 @@ def _gkr_proof() -> LogupGkrProof:
     """One-layer synthetic proof; values chosen so every wire chunk is
     recognizable in the golden."""
     rp = JaggedLayerProof(
-        lam=jnp.array(5, dtype=F),
-        claim=jnp.array(6, dtype=F),
-        round_polys=jnp.array([[1, 2, 3]], dtype=F),
-        point=jnp.array([16], dtype=F),
-        numerator_0=jnp.array(7, dtype=F),
-        numerator_1=jnp.array(8, dtype=F),
-        denominator_0=jnp.array(9, dtype=F),
-        denominator_1=jnp.array(10, dtype=F),
+        lam=fnp.array(5, dtype=F),
+        claim=fnp.array(6, dtype=F),
+        round_polys=fnp.array([[1, 2, 3]], dtype=F),
+        point=fnp.array([16], dtype=F),
+        numerator_0=fnp.array(7, dtype=F),
+        numerator_1=fnp.array(8, dtype=F),
+        denominator_0=fnp.array(9, dtype=F),
+        denominator_1=fnp.array(10, dtype=F),
     )
     return LogupGkrProof(
-        witness=jnp.array(15, dtype=F),
+        witness=fnp.array(15, dtype=F),
         circuit_output=LogUpGkrOutput(
-            numerator=jnp.array([1, 2], dtype=F),
-            denominator=jnp.array([3, 4], dtype=F),
+            numerator=fnp.array([1, 2], dtype=F),
+            denominator=fnp.array([3, 4], dtype=F),
         ),
         round_proofs=[rp],
-        eval_point=jnp.array([11, 12], dtype=F),
+        eval_point=fnp.array([11, 12], dtype=F),
         chip_openings={
             # Two chips deliberately out of order: the wire is a BTreeMap,
             # so "add" must serialize before "cpu" regardless of dict order.
-            "cpu": ChipEvaluation(main=jnp.array([13, 14], dtype=F), preprocessed=None),
+            "cpu": ChipEvaluation(main=fnp.array([13, 14], dtype=F), preprocessed=None),
             "add": ChipEvaluation(
-                main=jnp.array([20], dtype=F),
-                preprocessed=jnp.array([21], dtype=F),
+                main=fnp.array([20], dtype=F),
+                preprocessed=fnp.array([21], dtype=F),
             ),
         },
     )
@@ -234,8 +234,8 @@ class EncodeLogupGkrProofTest(absltest.TestCase):
 class EncodeOpenedValuesTest(absltest.TestCase):
     def test_chip_opened_values_with_prep_and_degree_bits(self) -> None:
         cov = ChipOpenedValues(
-            preprocessed_evals=jnp.array([1, 2], dtype=F),
-            main_evals=jnp.array([3, 4, 5], dtype=F),
+            preprocessed_evals=fnp.array([1, 2], dtype=F),
+            main_evals=fnp.array([3, 4, 5], dtype=F),
             degree=4,
         )
         # degree bits are height decomposed MSB-first over
@@ -255,7 +255,7 @@ class EncodeOpenedValuesTest(absltest.TestCase):
         # chip with no preprocessed trace serializes an EMPTY Vec here.
         cov = ChipOpenedValues(
             preprocessed_evals=None,
-            main_evals=jnp.array([3], dtype=F),
+            main_evals=fnp.array([3], dtype=F),
             degree=1,
         )
         expected = (
@@ -269,10 +269,10 @@ class EncodeOpenedValuesTest(absltest.TestCase):
 
     def test_shard_opened_values_sorts_chips_btreemap_order(self) -> None:
         cov_a = ChipOpenedValues(
-            preprocessed_evals=None, main_evals=jnp.array([1], dtype=F), degree=1
+            preprocessed_evals=None, main_evals=fnp.array([1], dtype=F), degree=1
         )
         cov_b = ChipOpenedValues(
-            preprocessed_evals=None, main_evals=jnp.array([2], dtype=F), degree=1
+            preprocessed_evals=None, main_evals=fnp.array([2], dtype=F), degree=1
         )
         out = _encode_shard_opened_values([cov_b, cov_a], ["cpu", "add"], 1)
         expected = (
@@ -290,10 +290,10 @@ class EncodeOpenedValuesTest(absltest.TestCase):
 def _opening(base: int):
     """A 2-query, width-3, depth-2 vmapped SMCS batch opening whose values are
     distinct offsets of ``base`` so each wire chunk is recognizable."""
-    rows = jnp.arange(base, base + 6, dtype=F).reshape(2, 3)
+    rows = fnp.arange(base, base + 6, dtype=F).reshape(2, 3)
     paths = [
-        jnp.arange(base + 10, base + 26, dtype=F).reshape(2, 8),
-        jnp.arange(base + 30, base + 46, dtype=F).reshape(2, 8),
+        fnp.arange(base + 10, base + 26, dtype=F).reshape(2, 8),
+        fnp.arange(base + 30, base + 46, dtype=F).reshape(2, 8),
     ]
     return rows, paths
 
@@ -303,15 +303,15 @@ def _open_proof(num_rounds: int = 1) -> StackedOpenProof:
     rounds."""
     return StackedOpenProof(
         component_commitments=[
-            jnp.arange(70 + 10 * r, 78 + 10 * r, dtype=F) for r in range(num_rounds)
+            fnp.arange(70 + 10 * r, 78 + 10 * r, dtype=F) for r in range(num_rounds)
         ],
-        fri_raw_roots=jnp.arange(80, 88, dtype=F).reshape(1, 8),
-        fri_commitments=jnp.arange(90, 98, dtype=F).reshape(1, 8),
-        univariate_messages=jnp.arange(1, 9, dtype=F).view(EF).reshape(1, 2),
-        final_poly=jnp.array([61, 62, 63, 64], dtype=F).view(EF),
-        pow_witness=jnp.array(77, dtype=F),
+        fri_raw_roots=fnp.arange(80, 88, dtype=F).reshape(1, 8),
+        fri_commitments=fnp.arange(90, 98, dtype=F).reshape(1, 8),
+        univariate_messages=fnp.arange(1, 9, dtype=F).view(EF).reshape(1, 2),
+        final_poly=fnp.array([61, 62, 63, 64], dtype=F).view(EF),
+        pow_witness=fnp.array(77, dtype=F),
         batch_evals=[
-            jnp.array([31 + 10 * r, 32 + 10 * r], dtype=F) for r in range(num_rounds)
+            fnp.array([31 + 10 * r, 32 + 10 * r], dtype=F) for r in range(num_rounds)
         ],
         component_openings=[_opening(200 + 200 * r) for r in range(num_rounds)],
         query_openings=[_opening(300)],
@@ -320,20 +320,20 @@ def _open_proof(num_rounds: int = 1) -> StackedOpenProof:
 
 def _eval_msg() -> JaggedEvalMsg:
     return JaggedEvalMsg(
-        outer_sumcheck_claim=jnp.array(5, dtype=F),
-        outer_sumcheck_polys=jnp.array([[1, 2, 3]], dtype=F),
-        outer_sumcheck_point=jnp.array([4], dtype=F),
-        dense_eval=jnp.array(20, dtype=F),
-        inner_sumcheck_polys=jnp.array([[6, 7, 8]], dtype=F),
-        inner_point=jnp.array([9], dtype=F),
-        inner_claimed_sum=jnp.array(10, dtype=F),
+        outer_sumcheck_claim=fnp.array(5, dtype=F),
+        outer_sumcheck_polys=fnp.array([[1, 2, 3]], dtype=F),
+        outer_sumcheck_point=fnp.array([4], dtype=F),
+        dense_eval=fnp.array(20, dtype=F),
+        inner_sumcheck_polys=fnp.array([[6, 7, 8]], dtype=F),
+        inner_point=fnp.array([9], dtype=F),
+        inner_claimed_sum=fnp.array(10, dtype=F),
     )
 
 
 class PackBatchOpeningsTest(absltest.TestCase):
     def test_values_tensor_then_root_depth_width_and_querymajor_digests(self) -> None:
         rows, paths = _opening(0)
-        root = jnp.arange(100, 108, dtype=F)
+        root = fnp.arange(100, 108, dtype=F)
         expected = (
             # values: Tensor<F> {storage: 6 elems, dimensions: [2, 3]}
             _u64(6)
@@ -365,7 +365,7 @@ class EncodeBasefoldProofTest(absltest.TestCase):
         # the query opening packs with the proof's own fri_raw_roots entry —
         # NOT the bound fri_commitments digest the commitments Vec carries.
         proof = _open_proof()
-        component_raw_roots = [jnp.arange(100, 108, dtype=F)]
+        component_raw_roots = [fnp.arange(100, 108, dtype=F)]
         expected = (
             _u64(1)
             + struct.pack("<8I", *range(1, 9))  # (s(0), s(1)) message pair
@@ -384,10 +384,10 @@ class EncodeBasefoldProofTest(absltest.TestCase):
 class EncodeEvaluationProofTest(absltest.TestCase):
     def test_field_order_final_evals_and_derived_log_m(self) -> None:
         open_proof = _open_proof()
-        component_raw_roots = [jnp.arange(100, 108, dtype=F)]
+        component_raw_roots = [fnp.arange(100, 108, dtype=F)]
         # original_commitments are the SMCS commitments, distinct from the raw
         # roots the batch openings reconstruct.
-        component_commitments = [jnp.arange(200, 208, dtype=F)]
+        component_commitments = [fnp.arange(200, 208, dtype=F)]
         eval_msg = _eval_msg()
         rc = [[(2, 3), (4, 5)], [(6, 7)]]
         expected = (
@@ -449,8 +449,8 @@ def _digest_layers(root_base: int) -> list:
     # bridge holds the digest tree, not the mle -- the open recomputes the mle
     # from the region dense (fractalyze/sp1-zorch#264).
     return [
-        jnp.zeros((2, 8), dtype=F),
-        jnp.arange(root_base, root_base + 8, dtype=F).reshape(1, 8),
+        fnp.zeros((2, 8), dtype=F),
+        fnp.arange(root_base, root_base + 8, dtype=F).reshape(1, 8),
     ]
 
 
@@ -458,7 +458,7 @@ def _bridge() -> ShardBridge:
     # "alpha": 2 main cols x 3 rows + 1 prep col; "lookup": 1 main col x 2
     # rows, no prep. Trailing two counts per region are the stacking dummies.
     main_region = JaggedRegion(
-        dense=jnp.zeros(8, dtype=F),
+        dense=fnp.zeros(8, dtype=F),
         chip_starts=(0, 6, 8),
         row_counts=(3, 2, 4, 1),
         column_counts=(2, 1, 1, 1),
@@ -466,7 +466,7 @@ def _bridge() -> ShardBridge:
         chip_names=("alpha", "lookup"),
     )
     prep_region = JaggedRegion(
-        dense=jnp.zeros(3, dtype=F),
+        dense=fnp.zeros(3, dtype=F),
         chip_starts=(0, 3),
         row_counts=(3, 4, 1),
         column_counts=(1, 1, 1),
@@ -476,12 +476,12 @@ def _bridge() -> ShardBridge:
     return ShardBridge(
         main_region=main_region,
         prep_region=prep_region,
-        public_values=jnp.arange(1, 6, dtype=F),
+        public_values=fnp.arange(1, 6, dtype=F),
         commit_digest_layers=(_digest_layers(100), _digest_layers(400)),
         # SMCS commitments (original_commitments), distinct from the raw roots.
         commit_commitments=(
-            jnp.arange(200, 208, dtype=F),
-            jnp.arange(500, 508, dtype=F),
+            fnp.arange(200, 208, dtype=F),
+            fnp.arange(500, 508, dtype=F),
         ),
         zc_opened_values=_opened_values(),
     )
@@ -492,29 +492,29 @@ def _opened_values() -> dict[str, ChipEvaluation]:
     # evaluation at position 0).
     return {
         "alpha": ChipEvaluation(
-            main=jnp.array([31, 32], dtype=F),
-            preprocessed=jnp.array([33], dtype=F),
+            main=fnp.array([31, 32], dtype=F),
+            preprocessed=fnp.array([33], dtype=F),
         ),
-        "lookup": ChipEvaluation(main=jnp.array([41], dtype=F), preprocessed=None),
+        "lookup": ChipEvaluation(main=fnp.array([41], dtype=F), preprocessed=None),
     }
 
 
 def _zerocheck_proof() -> ZerocheckProof:
     return ZerocheckProof(
-        batching_challenge=jnp.array(1, dtype=F),
-        gkr_opening_batch_challenge=jnp.array(2, dtype=F),
-        lambda_=jnp.array(3, dtype=F),
-        zeta=jnp.array([4], dtype=F),
-        claimed_sum=jnp.array(9, dtype=F),
+        batching_challenge=fnp.array(1, dtype=F),
+        gkr_opening_batch_challenge=fnp.array(2, dtype=F),
+        lambda_=fnp.array(3, dtype=F),
+        zeta=fnp.array([4], dtype=F),
+        claimed_sum=fnp.array(9, dtype=F),
         finals=[
             # [main | prep] column stacks; the evaluation sits at position 0.
-            jnp.array([[31, 0], [32, 0], [33, 0]], dtype=F),
-            jnp.array([[41, 0]], dtype=F),
+            fnp.array([[31, 0], [32, 0], [33, 0]], dtype=F),
+            fnp.array([[41, 0]], dtype=F),
         ],
         opened_values=_opened_values(),
         msgs=RoundMsg(
-            round_poly=jnp.array([[1, 2, 3], [4, 5, 6]], dtype=F),
-            challenge=jnp.array([7, 8], dtype=F),
+            round_poly=fnp.array([[1, 2, 3], [4, 5, 6]], dtype=F),
+            challenge=fnp.array([7, 8], dtype=F),
         ),
     )
 
@@ -540,7 +540,7 @@ class ChipOpenedValuesTest(absltest.TestCase):
         bridge = ShardBridge(
             main_region=_bridge().main_region,
             prep_region=None,
-            public_values=jnp.arange(1, 6, dtype=F),
+            public_values=fnp.arange(1, 6, dtype=F),
         )
         with self.assertRaisesRegex(ValueError, "opened values"):
             chip_opened_values(bridge)
@@ -558,17 +558,17 @@ class EncodeShardProofTest(absltest.TestCase):
         zerocheck = _zerocheck_proof()
         gkr = _gkr_proof()
         jagged = JaggedPcsProof(eval=_eval_msg(), open=_open_proof(num_rounds=2))
-        commitment = jnp.arange(50, 58, dtype=F)
+        commitment = fnp.arange(50, 58, dtype=F)
 
         covs = [
             ChipOpenedValues(
-                preprocessed_evals=jnp.array([33], dtype=F),
-                main_evals=jnp.array([31, 32], dtype=F),
+                preprocessed_evals=fnp.array([33], dtype=F),
+                main_evals=fnp.array([31, 32], dtype=F),
                 degree=3,
             ),
             ChipOpenedValues(
                 preprocessed_evals=None,
-                main_evals=jnp.array([41], dtype=F),
+                main_evals=fnp.array([41], dtype=F),
                 degree=2,
             ),
         ]
@@ -581,16 +581,16 @@ class EncodeShardProofTest(absltest.TestCase):
             + _encode_partial_sumcheck_proof(
                 zerocheck.msgs.round_poly,
                 zerocheck.claimed_sum,
-                jnp.array([8, 7], dtype=F),
+                fnp.array([8, 7], dtype=F),
             )
             + _encode_shard_opened_values(covs, ["alpha", "lookup"], 3)
             + _encode_evaluation_proof(
                 jagged.eval,
                 jagged.open,
                 # Raw roots off the bridge's stacked witnesses, [prep, main].
-                [jnp.arange(100, 108, dtype=F), jnp.arange(400, 408, dtype=F)],
+                [fnp.arange(100, 108, dtype=F), fnp.arange(400, 408, dtype=F)],
                 # original_commitments = the bridge's SMCS commitments, [prep, main].
-                [jnp.arange(200, 208, dtype=F), jnp.arange(500, 508, dtype=F)],
+                [fnp.arange(200, 208, dtype=F), fnp.arange(500, 508, dtype=F)],
                 # Region layouts with the stacking dummies included.
                 [[(3, 1), (4, 1), (1, 1)], [(3, 2), (2, 1), (4, 1), (1, 1)]],
                 max_log_row_count=3,
@@ -616,10 +616,10 @@ class EncodeVkTest(absltest.TestCase):
         # leads with the commit). A swap would still verify locally but be
         # rejected by sp1_verify_shard's deserializer.
         vk = MachineVerifyingKey(
-            preprocessed_commit=jnp.arange(1, 9, dtype=F),
-            pc_start=jnp.array([9, 10, 11], dtype=F),
-            cum_sum_x=jnp.arange(1, 8, dtype=F),
-            cum_sum_y=jnp.arange(8, 15, dtype=F),
+            preprocessed_commit=fnp.arange(1, 9, dtype=F),
+            pc_start=fnp.array([9, 10, 11], dtype=F),
+            cum_sum_x=fnp.arange(1, 8, dtype=F),
+            cum_sum_y=fnp.arange(8, 15, dtype=F),
             enable_untrusted=0,
         )
         expected = (

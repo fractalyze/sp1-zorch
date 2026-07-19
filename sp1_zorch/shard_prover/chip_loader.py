@@ -162,7 +162,7 @@ def load_sp1_chips(
     """Load rw chip definitions with SP1's field dtype bound.
 
     Constraint / boundary / filler functions get ``koalabear_mont``;
-    interactions keep the registry's ``jnp.uint32`` default (bitwise ops).
+    interactions keep the registry's ``fnp.uint32`` default (bitwise ops).
     """
     chips = _registry().load(target, version, constraint_field_dtype=koalabear_mont)
     if chip_names is not None:

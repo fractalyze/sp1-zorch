@@ -21,7 +21,7 @@ from dataclasses import dataclass, replace
 from functools import partial
 
 import frx
-import frx.numpy as jnp
+import frx.numpy as fnp
 from frx import Array
 from rw_constraints import Chip
 from zorch.pcs.jagged.region import structure_counts
@@ -115,7 +115,7 @@ class TraceCommitVerifierStage(Round):
         bridge = replace(
             bridge, commitment_roots=(self._vk.preprocessed_commit, msg)
         )
-        return bridge, transcript, jnp.bool_(True)
+        return bridge, transcript, fnp.bool_(True)
 
 
 class LogupGkrVerifierStage(Round):
@@ -335,7 +335,7 @@ class JaggedPcsVerifierStage(Round):
             rc_rounds.append(rc)
             cc_rounds.append(cc)
             claims_rounds.append(
-                jnp.concatenate([getattr(opened[n], claim_field) for n in names])
+                fnp.concatenate([getattr(opened[n], claim_field) for n in names])
             )
             round_widths.append(aligned >> self._log_stacking_height)
             raw_total += area
@@ -388,14 +388,14 @@ class JaggedPcsVerifierStage(Round):
                 f"({len(statement_roots)}), got "
                 f"{len(msg.open.component_commitments)}"
             )
-        ok_bind = jnp.bool_(True)
+        ok_bind = fnp.bool_(True)
         for component, root, rc, cc in zip(
             msg.open.component_commitments, statement_roots, rc_rounds, cc_rounds
         ):
             rebound = self._smcs.bind_structure(
-                component, jnp.array(rc, dtype=bf), jnp.array(cc, dtype=bf)
+                component, fnp.array(rc, dtype=bf), fnp.array(cc, dtype=bf)
             )
-            ok_bind = ok_bind & jnp.array_equal(rebound, root)
+            ok_bind = ok_bind & fnp.array_equal(rebound, root)
 
         transcript, ok_open = stacked_basefold_verify(
             self._smcs,

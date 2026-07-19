@@ -28,7 +28,7 @@ import json
 import sys
 from pathlib import Path
 
-import frx.numpy as jnp
+import frx.numpy as fnp
 from absl import app, flags
 
 from sp1_zorch.logup_gkr.circuit import GkrCapClass
@@ -112,7 +112,7 @@ def _check_outputs(proof: LogupGkrProof, state: dict[str, str]) -> bool:
     ok &= check_match("den_len", den.shape[0], int(state["den_len"]))
     for label, got in (("output_num", num), ("output_den", den)):
         n_keys = sum(1 for k in state if k.startswith(f"{label}["))
-        want = jnp.concatenate(
+        want = fnp.concatenate(
             [_parse_ef_list(state[f"{label}[{i}]"]) for i in range(n_keys)]
         )
         ok &= check_match(f"{label} ({n_keys} entries)", got[: want.shape[0]], want)
@@ -142,9 +142,9 @@ def _check_public_values_leg(
         public_values, head.pv_challenge, head.alpha, head.betas
     )
     out = proof.circuit_output
-    output_cumulative_sum = jnp.sum(out.numerator / out.denominator)
+    output_cumulative_sum = fnp.sum(out.numerator / out.denominator)
     ok = check_match(
-        "pv constraint accumulator == 0", accumulator, jnp.zeros((), accumulator.dtype)
+        "pv constraint accumulator == 0", accumulator, fnp.zeros((), accumulator.dtype)
     )
     ok &= check_match(
         "bus balance: sum(num/den) == -pv_digest", output_cumulative_sum, -digest
@@ -166,8 +166,8 @@ def _check_rounds(proof: LogupGkrProof, shard_dir: Path) -> bool:
     for i, (rp, ref) in enumerate(zip(proof.round_proofs, rounds)):
         want_lam = _parse_ef_list(ref["lambda"])[0]
         want_claim = _parse_ef_list(ref["claim"])[0]
-        ok_i = bool(jnp.all(rp.lam == want_lam))
-        ok_i &= bool(jnp.all(rp.claim == want_claim))
+        ok_i = bool(fnp.all(rp.lam == want_lam))
+        ok_i &= bool(fnp.all(rp.claim == want_claim))
         print(
             f"{'OK ' if ok_i else 'MISMATCH'} round {i} (nrv={ref['nrv']}) lambda/claim"
         )

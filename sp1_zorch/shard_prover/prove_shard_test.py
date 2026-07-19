@@ -15,7 +15,7 @@ import dataclasses
 from dataclasses import replace
 
 import frx
-import frx.numpy as jnp
+import frx.numpy as fnp
 import numpy as np
 from absl.testing import absltest
 from rw_constraints import Interaction, VirtualPairCol
@@ -74,16 +74,16 @@ class _WitnessChip:
 
     def eval_constraints(self, trace, public_values):
         a, b, c = trace[:, 0], trace[:, 1], trace[:, 2]
-        one = jnp.ones((), trace.dtype)
-        pv0 = jnp.concatenate([public_values[:1], jnp.zeros((3,), BF)]).view(EF)[0]
-        return jnp.stack([(a - one) * (c - one), (a - one) * (b + pv0)], axis=-1)
+        one = fnp.ones((), trace.dtype)
+        pv0 = fnp.concatenate([public_values[:1], fnp.zeros((3,), BF)]).view(EF)[0]
+        return fnp.stack([(a - one) * (c - one), (a - one) * (b + pv0)], axis=-1)
 
 
 class _LookupChip:
     """Constraint-less chip (SP1's Byte / Program / Range shape)."""
 
     def eval_constraints(self, trace, public_values):
-        return jnp.zeros((trace.shape[0], 0), dtype=trace.dtype)
+        return fnp.zeros((trace.shape[0], 0), dtype=trace.dtype)
 
 
 def _interaction(mult_col: int, val_col: int, *, kind: int = 3) -> Interaction:
@@ -95,13 +95,13 @@ def _interaction(mult_col: int, val_col: int, *, kind: int = 3) -> Interaction:
     )
 
 
-def _rand_bf(seed: int, shape) -> jnp.ndarray:
+def _rand_bf(seed: int, shape) -> fnp.ndarray:
     ints = np.random.default_rng(seed).integers(1, 1 << 30, size=shape, dtype=np.int64)
-    return jnp.array(ints, dtype=BF)
+    return fnp.array(ints, dtype=BF)
 
 
 def _u32(a) -> np.ndarray:
-    return np.asarray(frx.lax.bitcast_convert_type(a, jnp.uint32)).reshape(-1)
+    return np.asarray(frx.lax.bitcast_convert_type(a, fnp.uint32)).reshape(-1)
 
 
 def _assert_bytes_equal(got, want, label: str = "") -> None:
@@ -150,12 +150,12 @@ class ProveShardChainTest(absltest.TestCase):
         # split needs even heights), prep 2 cols x 3 rows (shorter than
         # num_real — exercises the prep zero-pad). lookup: 2 main cols x 4
         # rows, no prep, no constraints, receive interaction.
-        alpha_main = jnp.concatenate(
-            [jnp.ones((6, 1), dtype=BF), _rand_bf(1, (6, 2))], axis=1
+        alpha_main = fnp.concatenate(
+            [fnp.ones((6, 1), dtype=BF), _rand_bf(1, (6, 2))], axis=1
         )
         alpha_prep = _rand_bf(2, (3, 2))
-        lookup_main = jnp.concatenate(
-            [jnp.ones((4, 1), dtype=BF), _rand_bf(3, (4, 1))], axis=1
+        lookup_main = fnp.concatenate(
+            [fnp.ones((4, 1), dtype=BF), _rand_bf(3, (4, 1))], axis=1
         )
 
         names = ("alpha", "lookup")
@@ -297,8 +297,8 @@ class ProveShardChainTest(absltest.TestCase):
         self.assertGreater(self.main_region.dense.shape[0], self.main_region.raw_size)
 
         regions = [r for r in (self.prep_region, self.main_region) if r is not None]
-        d = jnp.concatenate([r.dense for r in regions])
-        d = jnp.pad(d, (0, (1 << log2_ceil_usize(d.shape[0])) - d.shape[0]))
+        d = fnp.concatenate([r.dense for r in regions])
+        d = fnp.pad(d, (0, (1 << log2_ceil_usize(d.shape[0])) - d.shape[0]))
         # Fold LSB-first by the round-order challenges (the point is reversed).
         for alpha in self.jagged.eval.outer_sumcheck_point[::-1]:
             d = d[0::2] + alpha * (d[1::2] - d[0::2])
@@ -531,7 +531,7 @@ class PreambleChipMetadataTest(absltest.TestCase):
 
     def test_flat_layout(self) -> None:
         got = preamble_chip_metadata(("ab", "c"), (6, 4), dtype=BF)
-        want = jnp.array([2, 6, 2, ord("a"), ord("b"), 4, 1, ord("c")], dtype=BF)
+        want = fnp.array([2, 6, 2, ord("a"), ord("b"), 4, 1, ord("c")], dtype=BF)
         _assert_bytes_equal(got, want, "chip metadata")
 
 
@@ -626,10 +626,10 @@ class ZerocheckStageTotalCapTest(absltest.TestCase):
     class _PvFreeChip:
         def eval_constraints(self, trace, public_values):
             a, b = trace[:, 0], trace[:, 1]
-            one = jnp.ones((), trace.dtype)
-            return jnp.stack([(a - one) * (b - one)], axis=-1)
+            one = fnp.ones((), trace.dtype)
+            return fnp.stack([(a - one) * (b - one)], axis=-1)
 
-    def _rand_ef(self, seed: int, shape) -> jnp.ndarray:
+    def _rand_ef(self, seed: int, shape) -> fnp.ndarray:
         return _rand_bf(seed, tuple(shape) + (4,)).view(EF).reshape(shape)
 
     def test_total_cap_stage_matches_exact_and_shares_one_compile(self) -> None:
@@ -650,8 +650,8 @@ class ZerocheckStageTotalCapTest(absltest.TestCase):
         for seed, rows in ((40, 5), (50, 9)):
             main_region = JaggedRegion.from_chips(
                 [
-                    jnp.concatenate(
-                        [jnp.ones((rows, 1), dtype=BF), _rand_bf(seed, (rows, 1))],
+                    fnp.concatenate(
+                        [fnp.ones((rows, 1), dtype=BF), _rand_bf(seed, (rows, 1))],
                         axis=1,
                     )
                 ],
@@ -708,7 +708,7 @@ class JaggedPcsStageClassTest(absltest.TestCase):
     tier (fixes n_d and the padded dense) — share ONE ``_jagged_eval_jit``
     compile while byte-matching the eager ``eval_round_core`` path."""
 
-    def _rand_ef(self, seed: int, shape) -> jnp.ndarray:
+    def _rand_ef(self, seed: int, shape) -> fnp.ndarray:
         return _rand_bf(seed, tuple(shape) + (4,)).view(EF).reshape(shape)
 
     def test_eval_zone_matches_eager_and_shares_one_compile(self) -> None:

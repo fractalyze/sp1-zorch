@@ -3,7 +3,7 @@
 
 from pathlib import Path
 
-import frx.numpy as jnp
+import frx.numpy as fnp
 import numpy as np
 from absl.testing import absltest
 from zk_dtypes import koalabear_mont as F
@@ -61,7 +61,7 @@ def _write_dump(root: Path) -> dict[str, np.ndarray]:
 def _bits(a) -> np.ndarray:
     """Montgomery u32 bitpatterns — the parity comparison unit (dtype-blind,
     so a value-level __eq__ on the field dtype can't mask a bit divergence)."""
-    return np.asarray(a.view(jnp.uint32))
+    return np.asarray(a.view(fnp.uint32))
 
 
 class RegionsFromProducerParityTest(absltest.TestCase):
@@ -85,7 +85,7 @@ class RegionsFromProducerParityTest(absltest.TestCase):
         # arrays — so bit-parity below compares two ingests, not one array
         # with itself.
         producer = {
-            "sp1_" + sp1_name_to_rw(name): jnp.array(raw)
+            "sp1_" + sp1_name_to_rw(name): fnp.array(raw)
             for name, raw in raws.items()
         }
         self.producer_order = tuple(sorted(producer))
@@ -94,7 +94,7 @@ class RegionsFromProducerParityTest(absltest.TestCase):
         self.p_main, self.p_prep, self.p_shard = regions_from_producer(
             self.producer_chips,
             num_reals=num_reals,
-            public_values=jnp.array(pv_raw),
+            public_values=fnp.array(pv_raw),
             vk=self.fixture_shard.vk,
             preprocessed=self.fixture_shard.preprocessed_traces,
         )
@@ -165,10 +165,10 @@ class RegionsFromProducerErrorsTest(absltest.TestCase):
     """Ingest-time failure modes: torn num_reals and unmappable rw names."""
 
     _VK = MachineVerifyingKey(
-        preprocessed_commit=jnp.zeros(8, F),
-        pc_start=jnp.zeros(3, F),
-        cum_sum_x=jnp.zeros(7, F),
-        cum_sum_y=jnp.zeros(7, F),
+        preprocessed_commit=fnp.zeros(8, F),
+        pc_start=fnp.zeros(3, F),
+        cum_sum_x=fnp.zeros(7, F),
+        cum_sum_y=fnp.zeros(7, F),
         enable_untrusted=0,
     )
 
@@ -176,17 +176,17 @@ class RegionsFromProducerErrorsTest(absltest.TestCase):
         return regions_from_producer(
             chips,
             num_reals=num_reals,
-            public_values=jnp.zeros(187, dtype=jnp.uint32),
+            public_values=fnp.zeros(187, dtype=fnp.uint32),
             vk=self._VK,
         )
 
     def test_num_reals_height_mismatch_fails_at_ingest(self):
-        chips = {"add": jnp.ones((4, 3), dtype=jnp.uint32)}
+        chips = {"add": fnp.ones((4, 3), dtype=fnp.uint32)}
         with self.assertRaisesRegex(ValueError, "num_reals"):
             self._ingest(chips, {"add": 3})
 
     def test_unknown_rw_chip_name_fails(self):
-        chips = {"no_such_chip": jnp.ones((2, 3), dtype=jnp.uint32)}
+        chips = {"no_such_chip": fnp.ones((2, 3), dtype=fnp.uint32)}
         with self.assertRaisesRegex(ValueError, "unknown rw chip name"):
             self._ingest(chips, {"no_such_chip": 2})
 

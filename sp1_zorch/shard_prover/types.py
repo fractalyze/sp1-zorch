@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-import frx.numpy as jnp
+import frx.numpy as fnp
 from frx import Array
 
 if TYPE_CHECKING:
@@ -45,8 +45,8 @@ class MachineVerifyingKey:
         transcript = transcript.observe(self.pc_start)
         transcript = transcript.observe(self.cum_sum_x)
         transcript = transcript.observe(self.cum_sum_y)
-        transcript = transcript.observe(jnp.array(self.enable_untrusted, dtype))
-        return transcript.observe(jnp.zeros(6, dtype))
+        transcript = transcript.observe(fnp.array(self.enable_untrusted, dtype))
+        return transcript.observe(fnp.zeros(6, dtype))
 
 
 @dataclass(frozen=True)

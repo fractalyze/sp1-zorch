@@ -22,7 +22,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Sequence
 
-import frx.numpy as jnp
+import frx.numpy as fnp
 from frx import Array
 from rw_constraints import Chip
 
@@ -91,7 +91,7 @@ def chip_traces(
         if mw > 0 and nr > 0:
             cols = main_region.dense[start : start + nr * mw].reshape(mw, nr)
         else:
-            cols = jnp.zeros((mw, nr), dtype=bf)
+            cols = fnp.zeros((mw, nr), dtype=bf)
         if prep_region is not None and name in prep_idx:
             k = prep_idx[name]
             pw = int(prep_region.chip_widths[k])
@@ -102,11 +102,11 @@ def chip_traces(
                 if p_h > nr:
                     prep = prep[:, :nr]
                 else:
-                    prep = jnp.pad(prep, ((0, 0), (0, nr - p_h)))
+                    prep = fnp.pad(prep, ((0, 0), (0, nr - p_h)))
             else:
-                prep = jnp.zeros((pw, nr), dtype=bf)
+                prep = fnp.zeros((pw, nr), dtype=bf)
             if pw > 0:
-                cols = jnp.concatenate([cols, prep], axis=0)
+                cols = fnp.concatenate([cols, prep], axis=0)
         traces.append(cols)
     return traces
 
@@ -131,7 +131,7 @@ def export_order_eval_fn(
         return fn
 
     def eval_fn(rows: Array, public_values: Array) -> Array:
-        export_rows = jnp.concatenate(
+        export_rows = fnp.concatenate(
             [rows[..., main_width:], rows[..., :main_width]], axis=-1
         )
         return fn(export_rows, public_values)
@@ -158,7 +158,7 @@ def probe_num_constraints(
     off the manifest. One definition: it sizes the constraint-RLC fold on
     both the prover and the verifier dual. ``eval_fn`` is the chip's 2-ary
     ``eval_constraints``; the statement is threaded, not closed over."""
-    return eval_fn(jnp.zeros((1, width), dtype=ef), public_values).shape[-1]
+    return eval_fn(fnp.zeros((1, width), dtype=ef), public_values).shape[-1]
 
 
 def sample_stage_challenges(
@@ -192,9 +192,9 @@ def gkr_opening_claims(
     gkr_all = (
         gkr_powers(gkr_batch, max_cols)
         if max_cols
-        else jnp.zeros(0, gkr_batch.dtype)
+        else fnp.zeros(0, gkr_batch.dtype)
     )
-    return jnp.stack([jnp.sum(gkr_all[: e.shape[0]] * e) for e in evals])
+    return fnp.stack([fnp.sum(gkr_all[: e.shape[0]] * e) for e in evals])
 
 
 def split_opened_values(
@@ -222,7 +222,7 @@ def split_opened_values(
         evals = (
             final[:, 0]
             if final.shape[1] > 0
-            else jnp.zeros((final.shape[0],), dtype=final.dtype)
+            else fnp.zeros((final.shape[0],), dtype=final.dtype)
         )
         mw = int(main_region.chip_widths[i])
         pw = prep_widths.get(name, 0)
@@ -368,7 +368,7 @@ def prove_shard_zerocheck(
             evals = (
                 final[:, 0]
                 if final.shape[1] > 0
-                else jnp.zeros((final.shape[0],), dtype=final.dtype)
+                else fnp.zeros((final.shape[0],), dtype=final.dtype)
             )
             mw = int(main_widths[i])
             pw = pw_list[i]
@@ -379,7 +379,7 @@ def prove_shard_zerocheck(
         _, transcript, _ = OpenedValuesRound(opened_values, chip_names)(
             None, transcript
         )
-        claimed_sum = jnp.sum(claims * lambdas)
+        claimed_sum = fnp.sum(claims * lambdas)
         return transcript, ZerocheckProof(
             batching_challenge=batching_challenge,
             gkr_opening_batch_challenge=gkr_batch,
@@ -414,7 +414,7 @@ def prove_shard_zerocheck(
         # height; zero them — the round driver's zero-tail contract is
         # load-bearing (the fold touches the full buffer width).
         traces = [
-            jnp.where(jnp.arange(t.shape[1]) < nr, t, jnp.zeros((), t.dtype))
+            fnp.where(fnp.arange(t.shape[1]) < nr, t, fnp.zeros((), t.dtype))
             for t, nr in zip(traces, num_reals, strict=True)
         ]
     # The chip's 2-ary ``eval_constraints`` is the eval_fn; the statement is
@@ -460,7 +460,7 @@ def prove_shard_zerocheck(
 
     # The wire's claimed_sum: the per-chip claims under the same chip RLC
     # weights the round engine applies.
-    claimed_sum = jnp.sum(claims * lambdas)
+    claimed_sum = fnp.sum(claims * lambdas)
 
     return transcript, ZerocheckProof(
         batching_challenge=batching_challenge,

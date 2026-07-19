@@ -29,7 +29,7 @@ from functools import partial
 from pathlib import Path
 
 import frx
-import frx.numpy as jnp
+import frx.numpy as fnp
 import numpy as np
 from absl.testing import absltest
 from zk_dtypes import koalabear_mont, koalabearx4_mont
@@ -54,16 +54,16 @@ EF = koalabearx4_mont
 _FIXTURE = Path(__file__).parent / "testdata" / "gpu_fibonacci"
 
 
-def _from_u32(u32: np.ndarray, dtype) -> jnp.ndarray:
+def _from_u32(u32: np.ndarray, dtype) -> fnp.ndarray:
     """Raw u32 Mont bitpatterns -> field array (EF collapses a trailing 4)."""
-    return frx.lax.bitcast_convert_type(jnp.asarray(u32, dtype=jnp.uint32), dtype)
+    return frx.lax.bitcast_convert_type(fnp.asarray(u32, dtype=fnp.uint32), dtype)
 
 
-def _load_npy(name: str, dtype) -> jnp.ndarray:
+def _load_npy(name: str, dtype) -> fnp.ndarray:
     return _from_u32(np.load(_FIXTURE / "inputs" / name), dtype)
 
 
-def _load_region(name: str, dense: jnp.ndarray) -> JaggedRegion:
+def _load_region(name: str, dense: fnp.ndarray) -> JaggedRegion:
     meta = json.loads((_FIXTURE / "inputs" / name).read_text())
     return JaggedRegion(
         dense=dense,
@@ -87,8 +87,8 @@ class _ScriptedTranscript:
     the round ``lax.scan`` carry; ``sample`` advances it with
     ``dynamic_slice``."""
 
-    challenges: jnp.ndarray
-    pos: jnp.ndarray
+    challenges: fnp.ndarray
+    pos: fnp.ndarray
 
     @classmethod
     def replaying(cls, challenges) -> "_ScriptedTranscript":
@@ -96,8 +96,8 @@ class _ScriptedTranscript:
         # (one extension element = degree base squeezes, the
         # ``sample_challenge`` rule — fractalyze/sp1-zorch#88), so the script
         # stores flat base limbs.
-        flat = frx.lax.bitcast_convert_type(jnp.asarray(challenges), BF).reshape(-1)
-        return cls(flat, jnp.asarray(0, jnp.int32))
+        flat = frx.lax.bitcast_convert_type(fnp.asarray(challenges), BF).reshape(-1)
+        return cls(flat, fnp.asarray(0, fnp.int32))
 
     def observe(self, values):
         del values
@@ -109,7 +109,7 @@ class _ScriptedTranscript:
 
 
 def _u32(a) -> np.ndarray:
-    return np.asarray(frx.lax.bitcast_convert_type(a, jnp.uint32)).reshape(-1)
+    return np.asarray(frx.lax.bitcast_convert_type(a, fnp.uint32)).reshape(-1)
 
 
 class JaggedZerocheckByteMatchTest(absltest.TestCase):
@@ -143,10 +143,10 @@ class JaggedZerocheckByteMatchTest(absltest.TestCase):
         for chip, trace in zip(chips, traces):
             assert chip.num_cols == trace.shape[0], (chip.name, chip.num_cols)
 
-        pv = jnp.concatenate(
+        pv = fnp.concatenate(
             [
                 public_values,
-                jnp.zeros((PROOF_MAX_NUM_PVS - public_values.shape[0],), dtype=BF),
+                fnp.zeros((PROOF_MAX_NUM_PVS - public_values.shape[0],), dtype=BF),
             ]
         )
         # The chip's 2-ary ``eval_constraints`` is the eval_fn; the padded
@@ -159,7 +159,7 @@ class JaggedZerocheckByteMatchTest(absltest.TestCase):
         # one-row probe — a chip's constraint functions may emit several
         # columns each, so it is not readable off the manifest.
         alphas = [
-            rlc_coeffs(alpha, fn(jnp.zeros((1, t.shape[0]), dtype=EF), pv).shape[-1])
+            rlc_coeffs(alpha, fn(fnp.zeros((1, t.shape[0]), dtype=EF), pv).shape[-1])
             for fn, t in zip(eval_fns, traces)
         ]
 
@@ -224,8 +224,8 @@ class JaggedZerocheckByteMatchTest(absltest.TestCase):
             if final.shape[1] > 0:
                 vals = final[:, 0]
             else:
-                vals = jnp.zeros((nc,), dtype=EF)
-            got = jnp.concatenate([vals[mw:], vals[:mw], eq_final.reshape(1)])
+                vals = fnp.zeros((nc,), dtype=EF)
+            got = fnp.concatenate([vals[mw:], vals[:mw], eq_final.reshape(1)])
             expected = self.expected_finals[i, : nc + 1]
             self.assertTrue(
                 bool(np.array_equal(_u32(got), _u32(expected))),

@@ -15,7 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-import frx.numpy as jnp
+import frx.numpy as fnp
 import numpy as np
 from rw_constraints import Interaction, VirtualPairCol
 from zk_dtypes import koalabear_mont as BF
@@ -49,9 +49,9 @@ LOG_STACKING_HEIGHT = 3
 _NUM_BETAS = 3
 
 
-def rand_bf(seed: int, shape) -> jnp.ndarray:
+def rand_bf(seed: int, shape) -> fnp.ndarray:
     ints = np.random.default_rng(seed).integers(1, 1 << 30, size=shape, dtype=np.int64)
-    return jnp.array(ints, dtype=BF)
+    return fnp.array(ints, dtype=BF)
 
 
 class _WitnessChip:
@@ -61,8 +61,8 @@ class _WitnessChip:
 
     def eval_constraints(self, trace, public_values):
         a, b = trace[:, 0], trace[:, 1]
-        one = jnp.ones((), trace.dtype)
-        return jnp.stack([(a - one) * (b - one)], axis=-1)
+        one = fnp.ones((), trace.dtype)
+        return fnp.stack([(a - one) * (b - one)], axis=-1)
 
 
 @dataclass(frozen=True)
@@ -76,7 +76,7 @@ class ShardChainFixture:
 
     smcs: SingleMatrixCommitmentScheme
     vk: MachineVerifyingKey
-    public_values: jnp.ndarray
+    public_values: fnp.ndarray
     chips: dict[str, Any]
     prove_chain: ProveChain
     dual: VerifyChain
@@ -88,9 +88,9 @@ def small_shard_chain_fixture() -> ShardChainFixture:
     """Build the fixture and run the four-stage prover once."""
     main_region = JaggedRegion.from_chips(
         [
-            jnp.concatenate(
+            fnp.concatenate(
                 [
-                    jnp.ones((CHIP_HEIGHT, 1), dtype=BF),
+                    fnp.ones((CHIP_HEIGHT, 1), dtype=BF),
                     rand_bf(1, (CHIP_HEIGHT, 1)),
                 ],
                 axis=1,

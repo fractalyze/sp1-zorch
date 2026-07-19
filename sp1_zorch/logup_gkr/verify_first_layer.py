@@ -26,7 +26,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import frx.numpy as jnp
+import frx.numpy as fnp
 from absl import app, flags
 from zk_dtypes import koalabear_mont as F
 from zk_dtypes import koalabearx4_mont as EF
@@ -162,7 +162,7 @@ def main(argv) -> None:
     while f"beta_seed[{len(seeds)}]" in state:
         seeds.append(_parse_ef_list(state[f"beta_seed[{len(seeds)}]"]))
     betas = expand_eq_to_hypercube(
-        jnp.concatenate(seeds), jnp.array(1, dtype=EF)
+        fnp.concatenate(seeds), fnp.array(1, dtype=EF)
     )
 
     gkr_chips = build_gkr_chips(shard.main_trace_data.chips, order)
@@ -198,7 +198,7 @@ def main(argv) -> None:
     # SP1 stores the same four stride-2 planes we do (n0 = even rows, ...);
     # the dump heads print the n0 / d0 planes directly. Only the diag's
     # row-count bookkeeping above is in col_h units.
-    num_head = jnp.array(_parse_int_list(ref["num_buf_head"]), dtype=F)
+    num_head = fnp.array(_parse_int_list(ref["num_buf_head"]), dtype=F)
     ok &= check_match(
         "num_buf head (n0 plane)",
         layer.numerator_0[: len(num_head)],
