@@ -717,8 +717,16 @@ def _prove_total_cap(
             [fnp.zeros((1,), fnp.int32), fnp.cumsum(seg_lens)]
         )
         j = fnp.arange(area_out // 2, dtype=fnp.int32)
+        # `scan_unrolled` unrolls the ~log2(num_segments) binary-search steps
+        # inline; the default `scan` lowers to a while loop whose per-trip carry
+        # is the full [area_out//2] index array, which XLA copies every trip —
+        # the dominant ZerocheckStage MemcpyD2D cost (one such while per round).
+        # Byte-identical (same search, just unrolled).
         seg = fnp.clip(
-            fnp.searchsorted(seg_starts, j, side="right") - 1, 0, sum_cols - 1
+            fnp.searchsorted(seg_starts, j, side="right", method="scan_unrolled")
+            - 1,
+            0,
+            sum_cols - 1,
         )
         rh = j - seg_starts[seg]
         chip = chip_of_seg[seg]
@@ -751,8 +759,8 @@ def _prove_total_cap(
                 f"flat_arrival must be the class-shaped [{area_cap}] buffer, "
                 f"got {flat_arrival.shape}"
             )
-        p0h0 = flat_arrival[0::2].astype(ef)
-        diffh0 = (flat_arrival[1::2] - flat_arrival[0::2]).astype(ef)
+        p0h0 = flat_arrival[0::2]
+        diffh0 = flat_arrival[1::2] - flat_arrival[0::2]
     else:
         arr_rows = [int(t.shape[1]) for t in traces]
         arr_off_list: list[int] = []
