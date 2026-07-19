@@ -86,7 +86,7 @@ _GKR_POW_BITS = flags.DEFINE_integer(
 _ZC_CLASS_JSON = flags.DEFINE_string(
     "zc_class_json",
     None,
-    'JSON {"area_cap", "window"} pinning the shard-invariant zerocheck '
+    'JSON {"area_cap"} pinning the shard-invariant zerocheck '
     "TotalCapClass (sp1-zorch#242): the stage runs the traced flat-arrival "
     "route, so every shard of one class shares one zerocheck compile. Unset "
     "runs the static per-shard path (this shard's own class).",
@@ -248,11 +248,11 @@ def main(argv) -> None:
         # ZerocheckStage.__call__'s flat prologue.
         with open(_ZC_CLASS_JSON.value) as f:
             c = {k: int(v) for k, v in json.load(f).items()}
-        cls = TotalCapClass(area_cap=c["area_cap"], window=c["window"])
+        cls = TotalCapClass(area_cap=c["area_cap"])
         order = main_region.chip_names
         heights_host = [int(h) for h in main_region.chip_heights]
         traces = chip_traces(order, heights_host, main_region, prep_region)
-        flat = pack_flat_arrival(traces, heights_host, cls)
+        flat = pack_flat_arrival(traces, heights_host, cls, MAX_LOG_ROW_COUNT)
         prep_w = (
             {
                 n: int(w)

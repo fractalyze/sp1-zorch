@@ -26,6 +26,7 @@ from functools import partial
 import frx
 import frx.numpy as fnp
 import numpy as np
+
 from absl.testing import absltest
 from zk_dtypes import koalabear_mont as KB
 from zk_dtypes import koalabearx4_mont as EF
@@ -44,6 +45,7 @@ from sp1_zorch.zerocheck.jagged import (
     TotalCapClass,
     _reduce_and_assemble,
     _summand_values,
+    eq_widths,
     prove_jagged_zerocheck,
 )
 from sp1_zorch.zerocheck.coeffs import gkr_powers, rlc_coeffs
@@ -386,14 +388,17 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
         self.assertEqual(len(bounded), (3 * round_bodies + 1) * nchips)
         shapes = {re.search(r"tensor<(\d+(?:x\d+)?)x", c).group(1) for c in bounded}  # type: ignore[union-attr]
         # Every t-point trace is the round's shared FLAT jagged half
-        # `[area_cap_r/2]`, halving per shrink round; each chip reads its
-        # `[W_r, cols]` window IN PLACE via constraint_eval's
-        # start_offset/col_stride (both runtime — the operand stays the one
-        # flat buffer, so it keeps ONE shape across chips within a round). The
-        # C_alpha(0_row) probe stays a clean rank-2 1-row block (the loop-form
-        # emitter engages on a single-row trace, fractalyze/xla#704).
+        # `[cap_r/2]`, halving per shrink round; each chip reads its window IN
+        # PLACE via constraint_eval's start_offset/col_stride (both runtime —
+        # the operand stays the one flat buffer, so it keeps ONE shape across
+        # chips within a round). The schedule is area-only; the machine
+        # window tail rides each cap. The C_alpha(0_row) probe stays a clean
+        # rank-2 1-row block (the loop-form emitter engages on a single-row
+        # trace, fractalyze/xla#704).
         cls = TotalCapClass.from_heights(num_reals, [_NUM_COLS] * nchips)
-        caps_r, _ = cls.shrink_schedule(nchips * _NUM_COLS, jagged._SHRINK_ROUNDS)
+        caps_r = cls.shrink_schedule(
+            nchips * _NUM_COLS, jagged._SHRINK_ROUNDS, num_vars
+        )
         want_shapes = {
             f"{caps_r[r] // 2}" for r in range(round_bodies)
         } | {f"1x{_NUM_COLS}"}
@@ -635,11 +640,13 @@ class TotalCapTracedTest(absltest.TestCase):
 
     _NUM_VARS = 4
     _NCHIPS = 2
-    # A class bounding both shards below: W = max ceil(h/2) over {5,2} and {3,4}
-    # is 3; each 3-column `_witness_trace` chip's area is 3*evenpad(h), so
-    # Σ areas = 24 for both shards and area_cap ≥ 24 + 2W = 30 — 32 is a valid
-    # class bound.
-    _CLASS = TotalCapClass(area_cap=32, window=3)
+    # A class bounding both shards below: each 3-column `_witness_trace`
+    # chip's area is 3*evenpad(h), so Σ areas = 24 for both {5,2} and {3,4}
+    # — 24 is the tight area-only class (the machine window tail rides the
+    # buffer sizing, not the class). The traced arrival
+    # cap is a caller choice; 2*eq_widths[0] = 16 rows bounds every height.
+    _CLASS = TotalCapClass(area_cap=24)
+    _ROW_BLOCK = 2 * eq_widths(_NUM_VARS, 0)[0]
 
     def _summand(self, alphas, lambdas, beta):
         return JaggedZerocheckSummand(
@@ -657,7 +664,7 @@ class TotalCapTracedTest(absltest.TestCase):
 
     def test_traced_total_cap_shares_one_compile_and_byte_matches(self) -> None:
         num_vars, nchips = self._NUM_VARS, self._NCHIPS
-        row_block = 2 * self._CLASS.window
+        row_block = self._ROW_BLOCK
         alphas = [rlc_coeffs(_rand(99 + i, ()), _K) for i in range(nchips)]
         lambdas = _rand(55, (nchips,))
         beta = _rand(77, ())
@@ -713,7 +720,7 @@ class TotalCapTracedTest(absltest.TestCase):
         # A chip live at compile time but empty at run time (height 0) must fall
         # to the trivial claim identity and zero finals, sharing the compile.
         num_vars, nchips = self._NUM_VARS, self._NCHIPS
-        row_block = 2 * self._CLASS.window
+        row_block = self._ROW_BLOCK
         alphas = [rlc_coeffs(_rand(99 + i, ()), _K) for i in range(nchips)]
         lambdas = _rand(55, (nchips,))
         beta = _rand(77, ())

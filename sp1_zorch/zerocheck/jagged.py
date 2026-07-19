@@ -449,6 +449,23 @@ def _reduce_and_assemble(vals, eq, interp, claim, last, eq_adj, padded_row_adj,
     return round_coeffs_from_matrix(interp, y0, claim, (y2, y4))
 
 
+def eq_widths(num_vars: int, rounds: int) -> list[int]:
+    """Machine-derived per-round window widths for the shrinking prefix: round
+    ``r`` bounds any chip's live pair count by ``2**(num_vars-1-r)`` — the
+    round-``r`` half-width of the ``num_vars``-cube — floored at 2. Depends only
+    on ``num_vars``, never a shard's heights, so the window drops out of
+    ``TotalCapClass`` (fractalyze/zorch#482) and the class stays area-only.
+    Returns ``rounds + 1`` entries (entry 0 is the round-0 half-width).
+
+    The floor-2 WORKAROUND (byte-neutral — the extra row is masked dead): a
+    width-1 window makes eval_fn's scalar-constant lift a RESHAPE (scalar ->
+    [1]; any wider width is a broadcast), and XLA layout normalization mis-folds
+    reshape(bitcast-convert(s32[] constant)) into an s32[1] constant whose
+    literal stays rank-0 — the verifier then rejects the module. Drop the floor
+    once XLA's constant-literal layout handling lands."""
+    return [max(2 ** max(num_vars - 1 - r, 0), 2) for r in range(rounds + 1)]
+
+
 @dataclass(frozen=True)
 class TotalCapClass:
     """The static shard-invariance class of the total-cap zerocheck round
@@ -475,64 +492,59 @@ class TotalCapClass:
     fallback); a whole block passes a class bounding every shard it contains."""
 
     area_cap: int
-    window: int
 
     @classmethod
     def from_heights(
         cls, num_reals: Sequence[int], num_cols: Sequence[int]
     ) -> "TotalCapClass":
-        window = max([1, *((nr + 1) // 2 for nr in num_reals)])
+        # No height-derived window: the per-round window is machine-derived
+        # (`eq_widths`, num_vars-only), added to each cap in `shrink_schedule`.
+        # area is the even-padded packed live area.
         area = sum(
             nc * (nr + nr % 2)
             for nr, nc in zip(num_reals, num_cols, strict=True)
         )
-        return cls(area_cap=area + 2 * window, window=window)
+        return cls(area_cap=area)
 
     def shrink_schedule(
-        self, sum_cols: int, rounds: int
-    ) -> tuple[list[int], list[int]]:
-        """Static per-round buffer bounds for the shrinking round prefix: at
+        self, sum_cols: int, rounds: int, num_vars: int
+    ) -> list[int]:
+        """Static per-round BUFFER caps for the shrinking round prefix: at
         round ``r`` every chip's live height is ``ceil(h / 2^r)``, so the
-        packed area halves per round while these bounds stay static.
+        packed area halves per round while these caps stay static.
         ``evenpad(ceil(h/2)) <= evenpad(h)/2 + 1`` per COLUMN gives the
         packed-area recurrence ``area' = area/2 + sum_cols`` (rounded up to
-        even, so segment offsets stay pair-aligned), and the window bound
-        halves exactly (``ceil(ceil(h/2^r)/2) = ceil(h/2^{r+1})``). Returns
-        ``rounds + 1`` entries of ``(area_cap_r, window_r)``; entry 0 is the
-        class itself. Every value derives from the class + the chip set's
-        static total column count alone, never a shard's heights, so a compile
-        keyed on these stays keyed on the class."""
-        caps, wins = [self.area_cap], [self.window]
-        area = self.area_cap - 2 * self.window
-        for _ in range(rounds):
-            # WORKAROUND (floor 2, byte-neutral — the extra row is masked dead):
-            # a width-1 window makes eval_fn's scalar-constant lift a RESHAPE
-            # (scalar -> [1]; any wider width is a broadcast), and XLA layout
-            # normalization mis-folds reshape(bitcast-convert(s32[] constant))
-            # into an s32[1] constant whose literal stays rank-0 — the verifier
-            # then rejects the module. Real fix: the constant-literal handling
-            # in XLA layout normalization; drop the floor once that lands.
-            w = max((wins[-1] + 1) // 2, 2)
+        even, so segment offsets stay pair-aligned). Each cap is the round's
+        packed area plus the MACHINE window tail ``2*eq_widths(num_vars, r)``
+        (num_vars-derived, never a shard's heights, so a compile keyed on these
+        stays keyed on the class + chip column count alone). Returns
+        ``rounds + 1`` caps; entry 0 is the class area plus round-0 tail."""
+        wins = eq_widths(num_vars, rounds)
+        caps = [self.area_cap + 2 * wins[0]]
+        area = self.area_cap
+        for r in range(rounds):
             area = area // 2 + sum_cols
             area += area % 2
-            caps.append(area + 2 * w)
-            wins.append(w)
-        return caps, wins
+            caps.append(area + 2 * wins[r + 1])
+        return caps
 
 
 def pack_flat_arrival(
     traces: Sequence[Array],
     num_reals: Sequence[int],
     cap_class: TotalCapClass,
+    num_vars: int,
 ) -> Array:
     """The class-shaped flat jagged arrival, packed EAGERLY with host-known
     heights: chip c's exact-height columns as ``evenpad(h_c)``-row segments at
     the same ``cols*evenpad(h)`` cumsum offsets ``_prove_total_cap`` derives
-    from the traced heights (the two layouts MUST agree), zeros to
-    ``area_cap``. Stays in the traces' own (base) field — the body lifts per
-    element. No chip is padded to the class window, so the arrival is the live
-    area, not ``2W`` per chip (a wide class made that uniform padding overflow
-    int32 element indexing and dwarf the packed buffer itself).
+    from the traced heights (the two layouts MUST agree), zeros to the round-0
+    buffer ``area_cap + 2*eq_widths(num_vars, 0)[0]`` (the area-only class plus
+    the machine window tail). Stays in the traces' own
+    (base) field — the body lifts per element. No chip is padded to the class
+    window, so the arrival is the live area, not ``2W`` per chip (a wide class
+    made that uniform padding overflow int32 element indexing and dwarf the
+    packed buffer itself).
 
     Heights are host ints here, so this ALSO closes the traced-path validation
     gap: an under-bounding class fails loud at pack time instead of silently
@@ -540,10 +552,10 @@ def pack_flat_arrival(
     need = TotalCapClass.from_heights(
         [int(nr) for nr in num_reals], [int(t.shape[0]) for t in traces]
     )
-    if cap_class.area_cap < need.area_cap or cap_class.window < need.window:
+    if cap_class.area_cap < need.area_cap:
         raise ValueError(
             f"total_cap_class {cap_class} does not bound this shard "
-            f"(needs area_cap >= {need.area_cap}, window >= {need.window})"
+            f"(needs area_cap >= {need.area_cap})"
         )
     dtype = traces[0].dtype if traces else fnp.int32
     pieces = []
@@ -561,7 +573,8 @@ def pack_flat_arrival(
             t = fnp.pad(t, ((0, 0), (0, 1)))
         pieces.append(t.reshape(-1))
         used += t.shape[0] * t.shape[1]
-    pieces.append(fnp.zeros((cap_class.area_cap - used,), dtype))
+    buf_len = cap_class.area_cap + 2 * eq_widths(num_vars, 0)[0]
+    pieces.append(fnp.zeros((buf_len - used,), dtype))
     return fnp.concatenate(pieces)
 
 
@@ -571,7 +584,6 @@ def pack_flat_arrival(
 # another round only buys compile time (each prefix round compiles its own
 # body).
 _SHRINK_ROUNDS = 5
-
 
 def _prove_total_cap(
     summand: JaggedZerocheckSummand,
@@ -637,21 +649,24 @@ def _prove_total_cap(
     # keeps the last column's W-window read in bounds on the halved buffer;
     # area_cap and every segment are even, so the whole-buffer stride-2 fold
     # stays pair-aligned.
-    W = cap_class.window
+    # W is the round-0 window height every chip's constraint reads through —
+    # MACHINE-derived (num_vars-only), not a class field.
+    W = eq_widths(num_vars, 0)[0]
     area_cap = cap_class.area_cap
     row_block = 2 * W  # each chip's even-padded UNFOLDED arrival height
     if not traced:
         # Static heights can check the class bound; traced heights cannot (a
         # runtime value cannot gate a compile), so an under-bounding class on
         # the traced path silently corrupts — the caller owns the bound, built
-        # from the per-shard ZC_CLASS maxima.
+        # from the per-shard ZC_CLASS maxima. The class is area-only; the
+        # machine window W already bounds any chip's round-0 pair count.
         need = TotalCapClass.from_heights(
             [int(nr) for nr in static_nrs], cols_arr  # type: ignore[arg-type]
         )
-        if area_cap < need.area_cap or W < need.window:
+        if area_cap < need.area_cap:
             raise ValueError(
                 f"total_cap_class {cap_class} does not bound this shard "
-                f"(needs area_cap >= {need.area_cap}, window >= {need.window})"
+                f"(needs area_cap >= {need.area_cap})"
             )
     if traced and flat_arrival is None:
         for i, t in enumerate(traces):
@@ -754,10 +769,14 @@ def _prove_total_cap(
         # subtract embeds exactly into the extension field (the embedding is a
         # ring homomorphism on the base subfield), byte-matching the
         # convert-then-subtract order.
-        if flat_arrival.shape != (area_cap,):
+        # `pack_flat_arrival` sized the buffer to the round-0 cap `area_cap +
+        # 2*W` (area-only class + machine window tail), so
+        # every chip's W-row window read stays in bounds on the halved buffer.
+        buf_len = area_cap + 2 * W
+        if flat_arrival.shape != (buf_len,):
             raise ValueError(
-                f"flat_arrival must be the class-shaped [{area_cap}] buffer, "
-                f"got {flat_arrival.shape}"
+                f"flat_arrival must be the round-0 buffer [{buf_len}] "
+                f"(area_cap + 2*W), got {flat_arrival.shape}"
             )
         p0h0 = flat_arrival[0::2]
         diffh0 = flat_arrival[1::2] - flat_arrival[0::2]
@@ -778,7 +797,7 @@ def _prove_total_cap(
             else fnp.zeros((0,), ef)
         )
         p0h0, diffh0 = _gather_halves(
-            area_cap,
+            area_cap + 2 * W,  # round-0 cap: packed area + machine window tail
             live_rows=heights,
             src_off=fnp.asarray(arr_off_list, fnp.int32),
             src_stride=fnp.asarray(arr_rows, fnp.int32),
@@ -800,14 +819,11 @@ def _prove_total_cap(
     is_round0_xs = fnp.arange(num_vars) == 0
 
     eq_buf = expand_eq_to_hypercube(zeta[: num_vars - 1], one)
-    eq_width = eq_buf.shape[0]
-    if W > eq_width:
-        raise ValueError(
-            f"total_cap_class.window {W} exceeds the round-0 half-width "
-            f"{eq_width} (2**(num_vars-1)); a pair count cannot exceed it"
-        )
-
-    two, four = fnp.array(2, ef), fnp.array(4, ef)
+    # W == the round-0 half-width by construction (eq_widths, floored at 2 —
+    # the floor only engages on tiny fixtures, where the eq buffer is
+    # zero-extended to match).
+    if eq_buf.shape[0] < W:
+        eq_buf = _zero_extend(eq_buf, W)
 
     def _jagged_window(flat: Array, off: Array, stride: Array, n_rows: int,
                        n_cols: int) -> Array:
@@ -827,7 +843,6 @@ def _prove_total_cap(
         a flat ``[cap_out]`` buffer. ``shrink_eq`` lets the eq table halve
         (the unrolled shrink prefix); the scan tail keeps every carry shape
         fixed instead (``cap_out`` = the input cap, eq zero-extended back)."""
-        rows_w = fnp.arange(w_in, dtype=fnp.int32)
 
         def fold_eq(buf: Array) -> Array:
             if buf.shape[0] < 2:
@@ -859,7 +874,7 @@ def _prove_total_cap(
             # so all three markers share one kernel shape. diffh stays materialized:
             # it is SHARED across the 3 t-points, so one full-buffer subtract is cheaper
             # than folding `p1h-p0h` in-kernel 3x (measured: fold-in was +68ms).
-            t_coeffs = (zero, two, four)
+            t_coeffs = tuple(fnp.array(t, p0h.dtype) for t in (0, 2, 4))
 
             polys_list = []
             for i in range(num_chips):
@@ -869,47 +884,38 @@ def _prove_total_cap(
                 live_pair = (heights[i] + 1) // 2
                 off_i = folded_off[i]
                 stride_i = half_stride[i]
-                if summand.alphas[i].shape[-1] > 0:
-                    alpha = summand.alphas[i]
-                    # Round 0 drops the constraint at t=0 (that term IS the zerocheck
-                    # statement) by zeroing alpha; the column term stays.
-                    a0 = fnp.where(is_round0, fnp.zeros_like(alpha), alpha)
-                    vals = tuple(
-                        constraint_eval(
-                            summand.eval_fns[i],
-                            p0h,
-                            a0 if k == 0 else alpha,
-                            live_width=live_pair,
-                            start_offset=off_i,
-                            window_rows=w_in,
-                            col_stride=stride_i,
-                            num_cols=cols_arr[i],
-                            delta=diffh,
-                            fold_coeff=t_coeffs[k],
-                            column_weights=chip_gkr[i],
-                            aux_operands=(summand.public_values,),
-                        )
-                        for k in range(3)
+                constrained = summand.alphas[i].shape[-1] > 0
+                alpha = summand.alphas[i]
+                # Round 0 drops the constraint at t=0 (that term IS the
+                # zerocheck statement) by zeroing alpha; the column term stays.
+                a0 = (
+                    fnp.where(is_round0, fnp.zeros_like(alpha), alpha)
+                    if constrained
+                    else alpha
+                )
+                # A lookup-only chip (no transition constraints) takes the
+                # constraint-free form — empty alpha, eval_fn None — whose per-row
+                # value is just the masked GKR column term; one call serves both
+                # chip kinds.
+                vals = tuple(
+                    constraint_eval(
+                        summand.eval_fns[i] if constrained else None,
+                        p0h,
+                        a0 if k == 0 else alpha,
+                        live_width=live_pair,
+                        start_offset=off_i,
+                        window_rows=w_in,
+                        col_stride=stride_i,
+                        num_cols=cols_arr[i],
+                        delta=diffh,
+                        fold_coeff=t_coeffs[k],
+                        column_weights=chip_gkr[i],
+                        aux_operands=(
+                            (summand.public_values,) if constrained else ()
+                        ),
                     )
-                else:
-                    # Lookup-only chip (no transition constraints): just the GKR
-                    # column term, on explicitly masked windows (dead rows
-                    # straddle the next segment, so they are NOT zero in place).
-                    mask = (rows_w < live_pair)[:, None]  # [w_in, 1]
-                    win_p0 = fnp.where(
-                        mask,
-                        _jagged_window(p0h, off_i, stride_i, w_in, cols_arr[i]),
-                        zero,
-                    )
-                    win_diff = fnp.where(
-                        mask,
-                        _jagged_window(diffh, off_i, stride_i, w_in, cols_arr[i]),
-                        zero,
-                    )
-                    t_traces = (
-                        win_p0, win_p0 + two * win_diff, win_p0 + four * win_diff
-                    )
-                    vals = tuple(t_traces[k] @ chip_gkr[i] for k in range(3))
+                    for k in range(3)
+                )
                 polys_list.append(
                     zerocheck_round_poly(
                         vals, eq_slice, interp, chip_claims[i], last, eq_adj, adjs[i],
@@ -961,7 +967,8 @@ def _prove_total_cap(
     # zero-adds are exact. Each prefix round compiles its own body (shapes
     # differ), still keyed on the class alone; kernel sharing across chips and
     # t-points within a round is untouched.
-    caps_r, wins_r = cap_class.shrink_schedule(sum_cols, _SHRINK_ROUNDS)
+    caps_r = cap_class.shrink_schedule(sum_cols, _SHRINK_ROUNDS, num_vars)
+    wins_r = eq_widths(num_vars, _SHRINK_ROUNDS)
     unroll = min(_SHRINK_ROUNDS, num_vars)
     carry = (p0h0, diffh0, vgeqs, chip_claims, eq_adj, heights, eq_buf, transcript)
     prefix_msgs = []
