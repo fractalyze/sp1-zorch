@@ -17,7 +17,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 import frx
-import frx.numpy as jnp
+import frx.numpy as fnp
 import numpy as np
 from absl.testing import absltest
 from zk_dtypes import koalabear_mont
@@ -41,7 +41,7 @@ BF = koalabear_mont
 
 
 def _u32(a) -> np.ndarray:
-    return np.asarray(frx.lax.bitcast_convert_type(a, jnp.uint32)).reshape(-1)
+    return np.asarray(frx.lax.bitcast_convert_type(a, fnp.uint32)).reshape(-1)
 
 
 def _assert_bytes_equal(got, want, label: str = "") -> None:
@@ -102,7 +102,7 @@ class VerifyShardChainTest(absltest.TestCase):
         """One representative stage-2 tamper rejecting at the chain level;
         the per-leg coverage is the stage's own test file."""
         rp = self.gkr_proof.round_proofs[0]
-        bad_polys = rp.round_polys.at[0, 0].add(jnp.ones((), rp.round_polys.dtype))
+        bad_polys = rp.round_polys.at[0, 0].add(fnp.ones((), rp.round_polys.dtype))
         bad_rounds = [replace(rp, round_polys=bad_polys)] + list(
             self.gkr_proof.round_proofs[1:]
         )
@@ -131,7 +131,7 @@ class VerifyShardChainTest(absltest.TestCase):
     def test_tampered_zerocheck_message_rejected_through_the_chain(self) -> None:
         """One representative stage-3 tamper rejecting at the chain level;
         the per-leg coverage is the stage's own test file."""
-        bad_sum = self.zc_proof.claimed_sum + jnp.ones(
+        bad_sum = self.zc_proof.claimed_sum + fnp.ones(
             (), self.zc_proof.claimed_sum.dtype
         )
         _, _, ok = self.fx.dual(
@@ -152,7 +152,7 @@ class VerifyShardChainTest(absltest.TestCase):
         bad_eval = replace(
             self.je_proof.eval,
             dense_eval=self.je_proof.eval.dense_eval
-            + jnp.ones((), self.je_proof.eval.dense_eval.dtype),
+            + fnp.ones((), self.je_proof.eval.dense_eval.dtype),
         )
         _, _, ok = self.fx.dual(
             ShardVerifierBridge(self.fx.public_values),

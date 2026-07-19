@@ -3,7 +3,7 @@
 
 from pathlib import Path
 
-import frx.numpy as jnp
+import frx.numpy as fnp
 import numpy as np
 from absl.testing import absltest
 from zk_dtypes import koalabear_mont as F
@@ -52,13 +52,13 @@ def _write_dump(root: Path, trace_subdir: str = "gpu_traces") -> dict[str, np.nd
 
 class CheckMatchTest(absltest.TestCase):
     def test_equal_arrays_match(self):
-        self.assertTrue(check_match("eq", jnp.ones((2,), F), jnp.ones((2,), F)))
+        self.assertTrue(check_match("eq", fnp.ones((2,), F), fnp.ones((2,), F)))
 
     def test_shape_divergence_is_a_mismatch(self):
         # (1,) vs (1, 1) broadcast as all-equal; the harness must still
         # report a mismatch.
         self.assertFalse(
-            check_match("shape", jnp.ones((1,), F), jnp.ones((1, 1), F))
+            check_match("shape", fnp.ones((1,), F), fnp.ones((1, 1), F))
         )
 
 
@@ -73,8 +73,8 @@ class ReadDumpTest(absltest.TestCase):
         add = self.dump.traces["Add"]
         self.assertEqual(add.shape, (4, 3))
         self.assertEqual(add.dtype, F)
-        expected = jnp.array(self.raws["Add"].reshape(4, 3)).view(F)
-        self.assertTrue(bool(jnp.all(add == expected)))
+        expected = fnp.array(self.raws["Add"].reshape(4, 3)).view(F)
+        self.assertTrue(bool(fnp.all(add == expected)))
         self.assertEqual(self.dump.num_reals, {"Add": 4, "DivRem": 0})
 
     def test_zero_height_chip_loads_as_empty(self):
@@ -84,22 +84,22 @@ class ReadDumpTest(absltest.TestCase):
     def test_preprocessed_trace_loaded(self):
         prog = self.dump.preprocessed["Program"]
         self.assertEqual(prog.shape, (2, 4))
-        expected = jnp.array(self.raws["prep/Program"].reshape(2, 4)).view(F)
-        self.assertTrue(bool(jnp.all(prog == expected)))
+        expected = fnp.array(self.raws["prep/Program"].reshape(2, 4)).view(F)
+        self.assertTrue(bool(fnp.all(prog == expected)))
 
     def test_public_values(self):
         pv = self.dump.public_values
         self.assertEqual(pv.shape, (7,))
-        expected = jnp.array(self.raws["public_values"]).view(F)
-        self.assertTrue(bool(jnp.all(pv == expected)))
+        expected = fnp.array(self.raws["public_values"]).view(F)
+        self.assertTrue(bool(fnp.all(pv == expected)))
 
     def test_vk_canonical_ints(self):
         vk = self.dump.vk
         self.assertTrue(
             bool(
-                jnp.all(
+                fnp.all(
                     vk.preprocessed_commit
-                    == jnp.arange(1, 9, dtype=jnp.int32).astype(F)
+                    == fnp.arange(1, 9, dtype=fnp.int32).astype(F)
                 )
             )
         )
@@ -125,7 +125,7 @@ class ReadDumpTest(absltest.TestCase):
         self.assertEqual(dump.traces["Add"].shape, (4, 3))
         self.assertTrue(
             bool(
-                jnp.all(dump.public_values == jnp.array(raws["public_values"]).view(F))
+                fnp.all(dump.public_values == fnp.array(raws["public_values"]).view(F))
             )
         )
         self.assertEqual(dump.vk.pc_start.shape, (3,))

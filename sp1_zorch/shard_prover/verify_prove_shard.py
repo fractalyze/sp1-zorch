@@ -45,7 +45,7 @@ per-stage timings printed during the run show the split. Pass ``--runs=N``
 to prove the chain N times in one process: run 1 is cold (compiles), runs
 2+ are warm (executables reused), so the warm per-stage ``[stage X] Yms``
 lines are the ones to compare against SP1's native prover. Across separate
-processes, set ``JAX_COMPILATION_CACHE_DIR`` to a per-toolchain directory so
+processes, set ``FRX_COMPILATION_CACHE_DIR`` to a per-toolchain directory so
 every run after the first skips the compiles; leave it unset for byte-match
 gates (a cache shared across toolchains has served wrong executables).
 
@@ -66,7 +66,7 @@ import time
 from pathlib import Path
 
 import frx
-import frx.numpy as jnp
+import frx.numpy as fnp
 from absl import app, flags
 from zk_dtypes import koalabear_mont as F
 
@@ -355,7 +355,7 @@ def _verify_shard(
         gkr_state = _parse_kv_lines(
             (shard_dir / "gpu_gkr_state.txt").read_text(), skip_unkeyed=True
         )
-        witness = jnp.array(int(gkr_state["witness"]), F)
+        witness = fnp.array(int(gkr_state["witness"]), F)
     # The zerocheck and GKR jits key statically on the chips / gkr_chips
     # tuples, so a multi-shard run must present the SAME objects to every
     # same-chip-set shard — a fresh fixture load's chips would miss the
@@ -389,7 +389,7 @@ def _verify_shard(
     # The trace commit must equal SP1's dumped commitment; gpu_commitment.txt
     # carries canonical integers, so encode to compare.
     commit_kv = _parse_kv_lines((shard_dir / "gpu_commitment.txt").read_text())
-    want_commit = jnp.array(_parse_int_list(commit_kv["main_commit"]), F)
+    want_commit = fnp.array(_parse_int_list(commit_kv["main_commit"]), F)
     # gpu_z_row.txt is SP1's `zeta` -- the LogUp-GKR eval point's row tail
     # (eval_point[-MAX_LOG_ROW_COUNT:]), NOT the zerocheck point. zeta is a sponge
     # image of every byte observed through the GKR leg, so matching it seals the

@@ -8,7 +8,7 @@ reference dump, which runs against the rsp capture separately (GPU)."""
 
 from types import SimpleNamespace
 
-import frx.numpy as jnp
+import frx.numpy as fnp
 from absl.testing import absltest
 from rw_constraints import Interaction, VirtualPairCol
 from zk_dtypes import koalabear_mont as F
@@ -55,8 +55,8 @@ def generate_circuit_layers(
         layers.append(jagged_layer_transition(layers[-1], counts))
     return layers
 
-ALPHA = jnp.array(7, F)
-BETAS = jnp.array([5, 11], F)
+ALPHA = fnp.array(7, F)
+BETAS = fnp.array([5, 11], F)
 
 
 def _interaction(mult_col: int, val_col: int, *, kind: int = 3, is_send: bool = True):
@@ -79,7 +79,7 @@ def _region(*chips, names):
 
 def _main(height: int, width: int = 2, offset: int = 0):
     return (
-        jnp.arange(offset, offset + height * width, dtype=jnp.uint32)
+        fnp.arange(offset, offset + height * width, dtype=fnp.uint32)
         .reshape(height, width)
         .view(F)
     )
@@ -90,7 +90,7 @@ def _expected_vals(trace, inter, prep=None):
     mult = inter.multiplicity.apply_batch(prep, trace)
     if not inter.is_send:
         mult = -mult
-    fp = jnp.broadcast_to(ALPHA + BETAS[0] * inter.kind, (trace.shape[0],))
+    fp = fnp.broadcast_to(ALPHA + BETAS[0] * inter.kind, (trace.shape[0],))
     for i, vpc in enumerate(inter.values):
         fp = fp + BETAS[i + 1] * vpc.apply_batch(prep, trace)
     return mult, fp
@@ -115,14 +115,14 @@ class GenerateFirstLayerTest(absltest.TestCase):
 
         # col_h(6) = 2 -> 4 slots; (6+1)//2 = 3 real pairs + 1 neutral pad.
         self.assertEqual(layer.row_counts, (4,))
-        self.assertTrue(bool(jnp.all(layer.numerator_0[:3] == mult[0::2])))
-        self.assertTrue(bool(jnp.all(layer.numerator_1[:3] == mult[1::2])))
-        self.assertTrue(bool(jnp.all(layer.denominator_0[:3] == fp[0::2])))
-        self.assertTrue(bool(jnp.all(layer.denominator_1[:3] == fp[1::2])))
-        self.assertTrue(bool(layer.numerator_0[3] == jnp.array(0, F)))
-        self.assertTrue(bool(layer.numerator_1[3] == jnp.array(0, F)))
-        self.assertTrue(bool(layer.denominator_0[3] == jnp.array(1, F)))
-        self.assertTrue(bool(layer.denominator_1[3] == jnp.array(1, F)))
+        self.assertTrue(bool(fnp.all(layer.numerator_0[:3] == mult[0::2])))
+        self.assertTrue(bool(fnp.all(layer.numerator_1[:3] == mult[1::2])))
+        self.assertTrue(bool(fnp.all(layer.denominator_0[:3] == fp[0::2])))
+        self.assertTrue(bool(fnp.all(layer.denominator_1[:3] == fp[1::2])))
+        self.assertTrue(bool(layer.numerator_0[3] == fnp.array(0, F)))
+        self.assertTrue(bool(layer.numerator_1[3] == fnp.array(0, F)))
+        self.assertTrue(bool(layer.denominator_0[3] == fnp.array(1, F)))
+        self.assertTrue(bool(layer.denominator_1[3] == fnp.array(1, F)))
 
     def test_receive_negates_multiplicity(self) -> None:
         main = _main(8)
@@ -131,7 +131,7 @@ class GenerateFirstLayerTest(absltest.TestCase):
             [GkrChip("A", (recv,))], _region(main, names=("A",)), None, ALPHA, BETAS
         )
         mult = recv.multiplicity.apply_batch(None, main)
-        self.assertTrue(bool(jnp.all(layer.numerator_0 == -mult[0::2])))
+        self.assertTrue(bool(fnp.all(layer.numerator_0 == -mult[0::2])))
 
     def test_interactions_pad_to_power_of_two(self) -> None:
         main_a, main_b = _main(8), _main(4, offset=100)
@@ -147,9 +147,9 @@ class GenerateFirstLayerTest(absltest.TestCase):
         self.assertEqual(layer.row_counts, (4, 4, 4, 4))
         self.assertEqual(layer.num_batch_variables, 2)
         lo = layer.start_indices[3]
-        self.assertTrue(bool(jnp.all(layer.numerator_0[lo:] == jnp.array(0, F))))
-        self.assertTrue(bool(jnp.all(layer.denominator_0[lo:] == jnp.array(1, F))))
-        self.assertTrue(bool(jnp.all(layer.denominator_1[lo:] == jnp.array(1, F))))
+        self.assertTrue(bool(fnp.all(layer.numerator_0[lo:] == fnp.array(0, F))))
+        self.assertTrue(bool(fnp.all(layer.denominator_0[lo:] == fnp.array(1, F))))
+        self.assertTrue(bool(fnp.all(layer.denominator_1[lo:] == fnp.array(1, F))))
 
     def test_zero_interaction_chip_contributes_nothing(self) -> None:
         main_a, main_b = _main(8), _main(4, offset=100)
@@ -160,8 +160,8 @@ class GenerateFirstLayerTest(absltest.TestCase):
         mult, _ = _expected_vals(main_b, chips[1].interactions[0])
         # col_h clamps at max(real_h, 8): h=4 still reserves 4 slots.
         self.assertEqual(layer.row_counts, (4,))
-        self.assertTrue(bool(jnp.all(layer.numerator_0[:2] == mult[0::2])))
-        self.assertTrue(bool(jnp.all(layer.numerator_0[2:] == jnp.array(0, F))))
+        self.assertTrue(bool(fnp.all(layer.numerator_0[:2] == mult[0::2])))
+        self.assertTrue(bool(fnp.all(layer.numerator_0[2:] == fnp.array(0, F))))
 
     def test_prep_column_feeds_fingerprint_and_trims_to_main_height(self) -> None:
         main = _main(4)
@@ -181,8 +181,8 @@ class GenerateFirstLayerTest(absltest.TestCase):
         )
         _, fp = _expected_vals(main, inter, prep=prep[:4])
         # h=4 -> 4 slots, 2 real pairs; the rest is neutral padding.
-        self.assertTrue(bool(jnp.all(layer.denominator_0[:2] == fp[0::2])))
-        self.assertTrue(bool(jnp.all(layer.denominator_1[:2] == fp[1::2])))
+        self.assertTrue(bool(fnp.all(layer.denominator_0[:2] == fp[0::2])))
+        self.assertTrue(bool(fnp.all(layer.denominator_1[:2] == fp[1::2])))
 
     def test_rejects_odd_real_height(self) -> None:
         # An odd height makes the n1 side one slot short of n0's — the SP1
@@ -233,10 +233,10 @@ class GenerateCircuitLayersTest(absltest.TestCase):
         layers = generate_circuit_layers(self._first_layer(), 4)
         last = layers[-1]
         b_pad = last.start_indices[1] + 1
-        self.assertTrue(bool(last.numerator_0[b_pad] == jnp.array(0, F)))
-        self.assertTrue(bool(last.numerator_1[b_pad] == jnp.array(0, F)))
-        self.assertTrue(bool(last.denominator_0[b_pad] == jnp.array(1, F)))
-        self.assertTrue(bool(last.denominator_1[b_pad] == jnp.array(1, F)))
+        self.assertTrue(bool(last.numerator_0[b_pad] == fnp.array(0, F)))
+        self.assertTrue(bool(last.numerator_1[b_pad] == fnp.array(0, F)))
+        self.assertTrue(bool(last.denominator_0[b_pad] == fnp.array(1, F)))
+        self.assertTrue(bool(last.denominator_1[b_pad] == fnp.array(1, F)))
 
     def test_depth_one_keeps_only_the_first_layer(self) -> None:
         first = self._first_layer()
@@ -278,7 +278,7 @@ class ScanBuildJaggedPyramidWiringTest(absltest.TestCase):
                 gp, wp = getattr(g, plane), getattr(w, plane)
                 self.assertEqual(gp.dtype, wp.dtype, msg=f"layer {i} {plane} dtype")
                 self.assertEqual(gp.shape, wp.shape, msg=f"layer {i} {plane} shape")
-                self.assertTrue(bool(jnp.all(gp == wp)), msg=f"layer {i} {plane}")
+                self.assertTrue(bool(fnp.all(gp == wp)), msg=f"layer {i} {plane}")
 
     def test_schedule_is_the_eager_loop_count_sequence(self) -> None:
         # sp1_schedules is exactly the per-transition out_row_counts
@@ -368,38 +368,38 @@ def _reference_first_layer(chips, main_region, prep_region, alpha, betas):
         prep = _chip_view(prep_region, p_idx[chip.name])[:h] if chip.name in p_idx else None
         slot = 2 * sp1_col_h(h)
         pad = slot - h // 2
-        pn, pd = jnp.zeros(pad, dtype=bf), jnp.ones(pad, dtype=ef)
+        pn, pd = fnp.zeros(pad, dtype=bf), fnp.ones(pad, dtype=ef)
         for inter in chip.interactions:
             mult = inter.multiplicity.apply_batch(prep, main)
             if not inter.is_send:
                 mult = -mult
-            fp = jnp.broadcast_to(alpha + betas[0] * inter.kind, (h,))
+            fp = fnp.broadcast_to(alpha + betas[0] * inter.kind, (h,))
             for i, v in enumerate(inter.values):
                 fp = fp + betas[i + 1] * v.apply_batch(prep, main)
-            n0.append(jnp.concatenate([mult[0::2], pn]))
-            n1.append(jnp.concatenate([mult[1::2], pn]))
-            d0.append(jnp.concatenate([fp[0::2], pd]))
-            d1.append(jnp.concatenate([fp[1::2], pd]))
+            n0.append(fnp.concatenate([mult[0::2], pn]))
+            n1.append(fnp.concatenate([mult[1::2], pn]))
+            d0.append(fnp.concatenate([fp[0::2], pd]))
+            d1.append(fnp.concatenate([fp[1::2], pd]))
             rc.append(slot)
     pad_slot = 2 * sp1_col_h(0)
     if (npad := padded - total) > 0:
         t = npad * pad_slot
-        n0.append(jnp.zeros(t, dtype=bf))
-        n1.append(jnp.zeros(t, dtype=bf))
-        d0.append(jnp.ones(t, dtype=ef))
-        d1.append(jnp.ones(t, dtype=ef))
+        n0.append(fnp.zeros(t, dtype=bf))
+        n1.append(fnp.zeros(t, dtype=bf))
+        d0.append(fnp.ones(t, dtype=ef))
+        d1.append(fnp.ones(t, dtype=ef))
         rc.extend([pad_slot] * npad)
     return (
-        jnp.concatenate(n0),
-        jnp.concatenate(n1),
-        jnp.concatenate(d0),
-        jnp.concatenate(d1),
+        fnp.concatenate(n0),
+        fnp.concatenate(n1),
+        fnp.concatenate(d0),
+        fnp.concatenate(d1),
         tuple(rc),
     )
 
 
 # Betas long enough to fingerprint up to three value columns (betas[0]..[3]).
-BETAS3 = jnp.array([5, 11, 13, 2], F)
+BETAS3 = fnp.array([5, 11, 13, 2], F)
 
 
 def _vpc(constant, *terms):
@@ -427,7 +427,7 @@ class FirstLayerBatchedEquivalenceTest(absltest.TestCase):
             ("denominator_1", rd1),
         ):
             self.assertTrue(
-                bool(jnp.all(getattr(got, name) == ref)), f"{name} diverged"
+                bool(fnp.all(getattr(got, name) == ref)), f"{name} diverged"
             )
 
     def test_multi_term_constant_and_duplicate_columns(self) -> None:
@@ -657,11 +657,11 @@ class CappedFirstLayerTest(absltest.TestCase):
                 got = getattr(capped, plane)[c_lo : c_lo + cap_rc]
                 want = getattr(exact, plane)[e_lo : e_lo + exact_rc]
                 self.assertTrue(
-                    bool(jnp.all(got[:exact_rc] == want)),
+                    bool(fnp.all(got[:exact_rc] == want)),
                     msg=f"interaction {k} {plane} live prefix",
                 )
                 self.assertTrue(
-                    bool(jnp.all(got[exact_rc:] == jnp.array(neutral, F))),
+                    bool(fnp.all(got[exact_rc:] == fnp.array(neutral, F))),
                     msg=f"interaction {k} {plane} class tail",
                 )
 
@@ -680,7 +680,7 @@ class CappedFirstLayerTest(absltest.TestCase):
             "denominator_1",
         ):
             self.assertTrue(
-                bool(jnp.all(getattr(capped, plane) == getattr(exact, plane))),
+                bool(fnp.all(getattr(capped, plane) == getattr(exact, plane))),
                 msg=plane,
             )
 

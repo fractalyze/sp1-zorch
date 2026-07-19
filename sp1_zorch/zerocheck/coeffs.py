@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-import frx.numpy as jnp
+import frx.numpy as fnp
 from frx import Array
 
 from zorch.constraint_eval import constraint_eval
@@ -36,7 +36,7 @@ def rlc_coeffs(alpha: Array, num_constraints: int) -> Array:
     — a lookup-only chip (SP1's Byte / Program / Range) has no transition
     constraints and folds to nothing."""
     if num_constraints == 0:
-        return jnp.zeros((0,), alpha.dtype)
+        return fnp.zeros((0,), alpha.dtype)
     return powers(alpha, num_constraints)[::-1]
 
 

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pathlib
 
-import frx.numpy as jnp
+import frx.numpy as fnp
 import numpy as np
 from absl.testing import absltest
 from zk_dtypes import koalabear_mont, koalabearx4_mont
@@ -33,11 +33,11 @@ EF = koalabearx4_mont
 
 # Inlined zorch.testkit.random_field.rand_ext_field — its bazel target is not
 # visible outside the zorch workspace at the current pin.
-def _rand_ef(seed: int, shape) -> jnp.ndarray:
+def _rand_ef(seed: int, shape) -> fnp.ndarray:
     ints = np.random.default_rng(seed).integers(
         0, 1 << 30, size=tuple(shape) + (4,), dtype=np.int64
     )
-    return jnp.array(ints, dtype=BF).view(EF).reshape(shape)
+    return fnp.array(ints, dtype=BF).view(EF).reshape(shape)
 
 
 def _u32(a) -> np.ndarray:
@@ -49,7 +49,7 @@ class GkrCacheRoundtripTest(absltest.TestCase):
         # A transcript mid-stream: absorbed values and a consumed sample leave
         # non-trivial buffer positions, the state a naive cache would drop.
         t = fresh_transcript()
-        t = t.observe(jnp.arange(1, 6, dtype=jnp.uint32).view(BF))
+        t = t.observe(fnp.arange(1, 6, dtype=fnp.uint32).view(BF))
         t, _ = t.sample(3)
 
         eval_point = _rand_ef(1, (5,))
@@ -74,7 +74,7 @@ class GkrCacheRoundtripTest(absltest.TestCase):
 
         # The streams must stay interchangeable through both absorb and
         # squeeze: observe fresh data on each and demand the same challenge.
-        probe = jnp.arange(7, 10, dtype=jnp.uint32).view(BF)
+        probe = fnp.arange(7, 10, dtype=fnp.uint32).view(BF)
         _, want = sample_challenge(t.observe(probe), EF, 4)
         _, got = sample_challenge(t2.observe(probe), EF, 4)
         np.testing.assert_array_equal(_u32(got), _u32(want))
@@ -100,7 +100,7 @@ class ParsePhase3Test(absltest.TestCase):
 
         def _ef(lo: int, hi: int) -> np.ndarray:
             # The dump carries canonical limbs; the parser Mont-encodes them.
-            return _u32(jnp.arange(lo, hi, dtype=jnp.int32).astype(BF).view(EF))
+            return _u32(fnp.arange(lo, hi, dtype=fnp.int32).astype(BF).view(EF))
 
         self.assertEqual(sorted(parsed), ["Add", "Byte"])
         np.testing.assert_array_equal(_u32(parsed["Add"]["main"]), _ef(1, 9))

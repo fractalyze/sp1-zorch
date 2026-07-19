@@ -35,7 +35,7 @@ from __future__ import annotations
 
 from typing import Mapping, Sequence
 
-import frx.numpy as jnp
+import frx.numpy as fnp
 from frx import Array
 from rw_constraints import Chip
 from zk_dtypes import efinfo
@@ -107,16 +107,16 @@ def verify_shard_zerocheck(
         [chip_openings[name] for name in chip_names], gkr_batch
     )
     lambdas = rlc_coeffs(lambda_, len(chip_names))
-    claimed_sum = jnp.sum(claims * lambdas)
+    claimed_sum = fnp.sum(claims * lambdas)
 
     # Pin the wire's challenge and claim copies. Shape-strict: a
     # broadcastable wrong-shape copy must reject, not broadcast.
     ok_wire = (
-        jnp.array_equal(batching, proof.batching_challenge)
-        & jnp.array_equal(gkr_batch, proof.gkr_opening_batch_challenge)
-        & jnp.array_equal(lambda_, proof.lambda_)
-        & jnp.array_equal(zeta, proof.zeta)
-        & jnp.array_equal(claimed_sum, proof.claimed_sum)
+        fnp.array_equal(batching, proof.batching_challenge)
+        & fnp.array_equal(gkr_batch, proof.gkr_opening_batch_challenge)
+        & fnp.array_equal(lambda_, proof.lambda_)
+        & fnp.array_equal(zeta, proof.zeta)
+        & fnp.array_equal(claimed_sum, proof.claimed_sum)
     )
 
     point, final_claim, transcript, ok_rounds = verify(
@@ -125,7 +125,7 @@ def verify_shard_zerocheck(
         proof.msgs.round_poly,
         transcript,
     )
-    ok_point = jnp.array_equal(point, proof.msgs.challenge)
+    ok_point = fnp.array_equal(point, proof.msgs.challenge)
 
     # The final oracle check, SP1's trace-openings consistency block: at the
     # bound point, each chip's constraint RLC on its opened row — corrected
@@ -164,18 +164,18 @@ def verify_shard_zerocheck(
             # gotcha).
             both = constraint_rlc(
                 eval_fn,
-                jnp.stack([opened_row, jnp.zeros_like(opened_row)]),
+                fnp.stack([opened_row, fnp.zeros_like(opened_row)]),
                 batching,
                 num_constraints,
                 public_values,
             )
             constraint_term, padded_row_adj = both[0], both[1]
         else:
-            constraint_term = jnp.zeros((), ef)
-            padded_row_adj = jnp.zeros((), ef)
+            constraint_term = fnp.zeros((), ef)
+            padded_row_adj = fnp.zeros((), ef)
         terms.append(constraint_term - padded_row_adj * geq)
-    rlc_eval = eq_val * jnp.sum((jnp.stack(terms) + batch_terms) * lambdas)
-    ok_eval = jnp.array_equal(final_claim, rlc_eval)
+    rlc_eval = eq_val * fnp.sum((fnp.stack(terms) + batch_terms) * lambdas)
+    ok_eval = fnp.array_equal(final_claim, rlc_eval)
 
     # The stage's transcript tail, through the same shared Round the prover
     # drives: every evaluation-stage challenge samples after these absorbs.

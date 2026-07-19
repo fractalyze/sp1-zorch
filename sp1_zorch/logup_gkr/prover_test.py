@@ -12,7 +12,7 @@ import hashlib
 from dataclasses import fields
 from types import SimpleNamespace
 
-import frx.numpy as jnp
+import frx.numpy as fnp
 import numpy as np
 from absl.testing import absltest
 from rw_constraints import Interaction, VirtualPairCol
@@ -62,9 +62,9 @@ def _region(*chips, names) -> JaggedRegion:
     )
 
 
-def _main(height: int, width: int = 2, offset: int = 0) -> jnp.ndarray:
+def _main(height: int, width: int = 2, offset: int = 0) -> fnp.ndarray:
     return (
-        jnp.arange(offset, offset + height * width, dtype=jnp.uint32)
+        fnp.arange(offset, offset + height * width, dtype=fnp.uint32)
         .reshape(height, width)
         .view(F)
     )
@@ -72,10 +72,10 @@ def _main(height: int, width: int = 2, offset: int = 0) -> jnp.ndarray:
 
 def _jagged(row_counts, n0, n1, d0, d1):
     return JaggedGkrLayer(
-        numerator_0=jnp.array(n0, F),
-        numerator_1=jnp.array(n1, F),
-        denominator_0=jnp.array(d0, F),
-        denominator_1=jnp.array(d1, F),
+        numerator_0=fnp.array(n0, F),
+        numerator_1=fnp.array(n1, F),
+        denominator_0=fnp.array(d0, F),
+        denominator_1=fnp.array(d1, F),
         row_counts=row_counts,
     )
 
@@ -112,9 +112,9 @@ class ExtractSp1OutputsTest(absltest.TestCase):
         folded = jagged_layer_transition(layer, (1, 1))
         self.assertTrue(
             bool(
-                jnp.all(
+                fnp.all(
                     out.numerator
-                    == jnp.stack(
+                    == fnp.stack(
                         [folded.numerator_0, folded.numerator_1], axis=-1
                     ).flatten()
                 )
@@ -125,7 +125,7 @@ class ExtractSp1OutputsTest(absltest.TestCase):
     def test_all_ones_floor_passes_through(self) -> None:
         layer = _jagged((1, 1), [1, 2], [3, 4], [5, 6], [7, 8])
         out = extract_sp1_outputs(layer)
-        self.assertTrue(bool(jnp.all(out.numerator == jnp.array([1, 3, 2, 4], F))))
+        self.assertTrue(bool(fnp.all(out.numerator == fnp.array([1, 3, 2, 4], F))))
 
     def test_mixed_floor_rejected(self) -> None:
         layer = _jagged((2, 1), [1, 0, 2], [3, 0, 4], [5, 1, 6], [7, 1, 8])
@@ -158,7 +158,7 @@ def _proof_digest(proof: object) -> str:
     h = hashlib.sha256()
     for key, arr in sorted(leaves.items()):
         h.update(key.encode())
-        h.update(np.ascontiguousarray(np.asarray(jnp.asarray(arr))).tobytes())
+        h.update(np.ascontiguousarray(np.asarray(fnp.asarray(arr))).tobytes())
     return h.hexdigest()
 
 
@@ -209,7 +209,7 @@ class ProveLogupGkrTest(absltest.TestCase):
             carry, proof.round_proofs, transcript
         )
         self.assertTrue(bool(ok))
-        self.assertTrue(bool(jnp.all(point == proof.eval_point)))
+        self.assertTrue(bool(fnp.all(point == proof.eval_point)))
         del num_eval, den_eval
 
     def test_round_proofs_carry_layer_points(self) -> None:
@@ -218,7 +218,7 @@ class ProveLogupGkrTest(absltest.TestCase):
         # per-round point invariant itself is zorch's contract, tested there.
         proof = self._prove()
         self.assertTrue(
-            bool(jnp.all(proof.round_proofs[-1].point == proof.eval_point[:-1]))
+            bool(fnp.all(proof.round_proofs[-1].point == proof.eval_point[:-1]))
         )
 
     def test_round_claims_recorded_per_layer(self) -> None:
@@ -278,16 +278,16 @@ class ProveLogupGkrTest(absltest.TestCase):
         # so it must reach the sponge. Zeroing a passed witness diverged that
         # replay from the judged pow_bits > 0 path.
         zero = self._prove()
-        self.assertTrue(bool(jnp.all(zero.witness == jnp.zeros((), F))))
+        self.assertTrue(bool(fnp.all(zero.witness == fnp.zeros((), F))))
 
-        passed = jnp.ones((), F)
+        passed = fnp.ones((), F)
         proof = self._prove(witness=passed)
         # Kept, not discarded: the proof carries exactly the witness observed.
-        self.assertTrue(bool(jnp.all(proof.witness == passed)))
+        self.assertTrue(bool(fnp.all(proof.witness == passed)))
         # And observing it perturbs the post-grind sponge, so the head
         # challenges -- and the eval_point they drive -- diverge from the
         # zero-witness run.
-        self.assertFalse(bool(jnp.all(proof.eval_point == zero.eval_point)))
+        self.assertFalse(bool(fnp.all(proof.eval_point == zero.eval_point)))
 
 
 class CappedProveTest(absltest.TestCase):
@@ -323,8 +323,8 @@ class CappedProveTest(absltest.TestCase):
             if ev.preprocessed is None:
                 self.assertIsNone(got_prep)
             else:
-                self.assertTrue(bool(jnp.all(got_prep == ev.preprocessed)))
-        self.assertTrue(bool(jnp.all(got.witness == want.witness)))
+                self.assertTrue(bool(fnp.all(got_prep == ev.preprocessed)))
+        self.assertTrue(bool(fnp.all(got.witness == want.witness)))
 
     def test_capped_prove_matches_exact_across_one_class(self) -> None:
         shards = self._shards()
@@ -359,7 +359,7 @@ class CappedProveTest(absltest.TestCase):
             )
             _, c_exact = exact_t.sample(1)
             _, c_capped = capped_t.sample(1)
-            self.assertTrue(bool(jnp.all(c_exact == c_capped)))
+            self.assertTrue(bool(fnp.all(c_exact == c_capped)))
 
     def test_capped_open_shares_one_compile_across_the_class(self) -> None:
         shards = self._shards()
@@ -417,9 +417,9 @@ class ChipOpeningsRoundTest(absltest.TestCase):
         # absorb; write the schedule out a second time as raw transcript ops
         # (count, then per chip prep-before-main, each eval length-prefixed)
         # and pin that the round leaves the sponge in the same state.
-        prep = jnp.arange(3, dtype=jnp.uint32).view(F).astype(EF)
-        main_a = jnp.arange(10, 12, dtype=jnp.uint32).view(F).astype(EF)
-        main_b = jnp.arange(20, 24, dtype=jnp.uint32).view(F).astype(EF)
+        prep = fnp.arange(3, dtype=fnp.uint32).view(F).astype(EF)
+        main_a = fnp.arange(10, 12, dtype=fnp.uint32).view(F).astype(EF)
+        main_b = fnp.arange(20, 24, dtype=fnp.uint32).view(F).astype(EF)
         openings = {
             "A": ChipEvaluation(main=main_a, preprocessed=prep),
             "B": ChipEvaluation(main=main_b, preprocessed=None),
@@ -430,14 +430,14 @@ class ChipOpeningsRoundTest(absltest.TestCase):
         )
 
         raw = cheap_transcript(F)
-        raw = raw.observe(jnp.array(2, F))
+        raw = raw.observe(fnp.array(2, F))
         for ev in (prep, main_a, main_b):
-            raw = raw.observe(jnp.array(ev.shape[0], F))
+            raw = raw.observe(fnp.array(ev.shape[0], F))
             raw = raw.observe(ev)
 
         _, round_next = transcript.sample(1)
         _, raw_next = raw.sample(1)
-        self.assertTrue(bool(jnp.all(round_next == raw_next)))
+        self.assertTrue(bool(fnp.all(round_next == raw_next)))
         self.assertIs(msg, openings)
 
 
@@ -462,16 +462,16 @@ class LiveGrindTest(absltest.TestCase):
         t_replay, w_replay = resolve_witness_and_grind(
             orig, pow_bits=pow_bits, witness=witness, bf_dtype=F
         )
-        self.assertTrue(bool(jnp.all(w_replay == witness)))
+        self.assertTrue(bool(fnp.all(w_replay == witness)))
         _, c_grind = t_grind.sample(1)
         _, c_replay = t_replay.sample(1)
-        self.assertTrue(bool(jnp.all(c_grind == c_replay)))
+        self.assertTrue(bool(fnp.all(c_grind == c_replay)))
 
     def test_zero_pow_bits_defaults_to_zero_witness(self) -> None:
         _, witness = resolve_witness_and_grind(
             cheap_transcript(F), pow_bits=0, witness=None, bf_dtype=F
         )
-        self.assertTrue(bool(jnp.all(witness == jnp.zeros((), witness.dtype))))
+        self.assertTrue(bool(fnp.all(witness == fnp.zeros((), witness.dtype))))
 
     def test_negative_pow_bits_rejected(self) -> None:
         with self.assertRaises(ValueError):

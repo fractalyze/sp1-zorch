@@ -28,7 +28,7 @@ from __future__ import annotations
 
 from typing import Iterable, Mapping, Sequence
 
-import frx.numpy as jnp
+import frx.numpy as fnp
 from frx import Array
 
 from sp1_zorch.logup_gkr.circuit import GkrChip, generate_interaction_vals_batch
@@ -58,9 +58,9 @@ def virtual_padding_geq(threshold: Array | int, point: Array) -> Array:
     """
     dtype = point.dtype
     geq = VirtualGeq(
-        threshold=jnp.asarray(threshold, jnp.int32),
-        geq_coefficient=jnp.ones((), dtype),
-        eq_coefficient=jnp.zeros((), dtype),
+        threshold=fnp.asarray(threshold, fnp.int32),
+        geq_coefficient=fnp.ones((), dtype),
+        eq_coefficient=fnp.zeros((), dtype),
     )
     # Indexed iteration: direct iteration over an extension-field array
     # dispatches `lax.sign` (the gotcha noted in zorch's `expand_eq`).
@@ -81,7 +81,7 @@ def padding_geqs(
     the prepended zero pins the evaluation to the real half (SP1's
     ``point_extended``).
     """
-    point_extended = jnp.pad(trace_point, (1, 0))
+    point_extended = fnp.pad(trace_point, (1, 0))
     return {h: virtual_padding_geq(h, point_extended) for h in set(heights)}
 
 
@@ -119,10 +119,10 @@ def _leaf_evaluations(
         # Row 0 is the opening, row 1 all-zero columns: one batched call
         # yields the real evaluation and the interaction's value on zero
         # columns (the padding row's worth) together.
-        main = jnp.stack([opening.main, jnp.zeros_like(opening.main)])
+        main = fnp.stack([opening.main, fnp.zeros_like(opening.main)])
         prep = (
-            jnp.stack(
-                [opening.preprocessed, jnp.zeros_like(opening.preprocessed)]
+            fnp.stack(
+                [opening.preprocessed, fnp.zeros_like(opening.preprocessed)]
             )
             if opening.preprocessed is not None
             else None
@@ -133,14 +133,14 @@ def _leaf_evaluations(
                 interaction, prep, main, alpha, betas
             )
             numerator_values.append(nums[0] - nums[1] * geq)
-            denominator_values.append(dens[0] + (jnp.ones((), ef) - dens[1]) * geq)
+            denominator_values.append(dens[0] + (fnp.ones((), ef) - dens[1]) * geq)
 
     pad_count = (1 << log2_ceil_usize(len(numerator_values))) - len(numerator_values)
-    numerator = jnp.pad(jnp.stack(numerator_values), (0, pad_count))
-    denominator = jnp.pad(
-        jnp.stack(denominator_values), (0, pad_count), constant_values=1
+    numerator = fnp.pad(fnp.stack(numerator_values), (0, pad_count))
+    denominator = fnp.pad(
+        fnp.stack(denominator_values), (0, pad_count), constant_values=1
     )
-    return jnp.stack([numerator, denominator])
+    return fnp.stack([numerator, denominator])
 
 
 def verify_logup_gkr(
@@ -197,7 +197,7 @@ def verify_logup_gkr(
     # bus-balance fractions divide by it, and a zero would let an adversary
     # park unbalanced mass in an undefined term.
     denominator = proof.circuit_output.denominator
-    ok_denominator = jnp.all(denominator != jnp.zeros((), denominator.dtype))
+    ok_denominator = fnp.all(denominator != fnp.zeros((), denominator.dtype))
 
     chain = VerifyChain([JaggedGkrLayerRound(EF_LIMBS) for _ in proof.round_proofs])
     (num_eval, den_eval, eval_point), transcript, ok_layers = chain(
@@ -206,7 +206,7 @@ def verify_logup_gkr(
     # The wire carries the point for non-verifier consumers; pin the copy so
     # a stale serialization cannot drift past the dual. Shape-strict: a
     # broadcastable wrong-length copy must reject, not broadcast.
-    ok_point = jnp.array_equal(eval_point, proof.eval_point)
+    ok_point = fnp.array_equal(eval_point, proof.eval_point)
 
     _, transcript, _ = ChipOpeningsRound(proof.chip_openings, chip_names)(
         None, transcript
@@ -224,7 +224,7 @@ def verify_logup_gkr(
     # One batched eval contracts the interaction axis for the numerator and
     # denominator rows together — the eq hypercube expands once, not twice.
     expected = eval_mle(leaf, interaction_point, axis=1)
-    ok_leaf = jnp.array_equal(jnp.stack([num_eval, den_eval]), expected)
+    ok_leaf = fnp.array_equal(fnp.stack([num_eval, den_eval]), expected)
 
     ok = ok_pow & ok_denominator & ok_layers & ok_point & ok_leaf
 
@@ -237,9 +237,9 @@ def verify_logup_gkr(
             public_values, head.pv_challenge, head.alpha, head.betas
         )
         output = proof.circuit_output
-        output_cumulative_sum = jnp.sum(output.numerator / output.denominator)
+        output_cumulative_sum = fnp.sum(output.numerator / output.denominator)
         ok_bus = output_cumulative_sum == -digest
-        ok_accumulator = accumulator == jnp.zeros((), accumulator.dtype)
+        ok_accumulator = accumulator == fnp.zeros((), accumulator.dtype)
         ok = ok & ok_bus & ok_accumulator
 
     return transcript, eval_point, ok

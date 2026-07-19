@@ -23,7 +23,7 @@ from functools import partial
 from typing import Any, Mapping, Sequence
 
 import frx
-import frx.numpy as jnp
+import frx.numpy as fnp
 from frx import Array, lax
 from rw_constraints import Chip
 from zk_dtypes import efinfo
@@ -79,7 +79,7 @@ class ChipEvaluation:
         beta-power batching shared by the GKR opening claims and the
         zerocheck column batch."""
         if self.preprocessed is not None:
-            return jnp.concatenate([self.main, self.preprocessed])
+            return fnp.concatenate([self.main, self.preprocessed])
         return self.main
 
 
@@ -130,16 +130,16 @@ def _open_chip(trace: Array, rev_point: Array, real_height: int) -> Array:
     full-height pad buffer (SP1 evaluates the same factorization).
     """
     if real_height == 0:
-        return jnp.zeros((trace.shape[1],), dtype=rev_point.dtype)
+        return fnp.zeros((trace.shape[1],), dtype=rev_point.dtype)
     log_h = max((real_height - 1).bit_length(), 0)
     pad = (1 << log_h) - real_height
     if pad > 0:
-        trace = jnp.pad(trace, ((0, pad), (0, 0)))
+        trace = fnp.pad(trace, ((0, pad), (0, 0)))
     mles = trace.T
     for i in range(log_h):
         mles = _bind_rows(mles, rev_point[i])
-    one = jnp.ones((), dtype=rev_point.dtype)
-    correction = jnp.prod(one - rev_point[log_h:])
+    one = fnp.ones((), dtype=rev_point.dtype)
+    correction = fnp.prod(one - rev_point[log_h:])
     return mles[:, 0] * correction
 
 
@@ -172,18 +172,18 @@ def flat_openings_absorb(
     one builder is what stops them drifting apart.
     """
     bf_dtype = efinfo(evaluations[0].main.dtype).base_field_dtype
-    flat_parts: list[Array] = [jnp.array([len(evaluations)], bf_dtype)]
+    flat_parts: list[Array] = [fnp.array([len(evaluations)], bf_dtype)]
     for ev in evaluations:
         if ev.preprocessed is not None:
-            flat_parts.append(jnp.array([ev.preprocessed.shape[0]], bf_dtype))
+            flat_parts.append(fnp.array([ev.preprocessed.shape[0]], bf_dtype))
             flat_parts.append(
                 lax.bitcast_convert_type(ev.preprocessed, bf_dtype).reshape(-1)
             )
         elif empty_prep_absorbs_zero:
-            flat_parts.append(jnp.array([0], bf_dtype))
-        flat_parts.append(jnp.array([ev.main.shape[0]], bf_dtype))
+            flat_parts.append(fnp.array([0], bf_dtype))
+        flat_parts.append(fnp.array([ev.main.shape[0]], bf_dtype))
         flat_parts.append(lax.bitcast_convert_type(ev.main, bf_dtype).reshape(-1))
-    return jnp.concatenate(flat_parts)
+    return fnp.concatenate(flat_parts)
 
 
 class ChipOpeningsRound(Round):
@@ -317,7 +317,7 @@ def resolve_witness_and_grind(
         # without host-reading the verdict, so the stage stays jit-traceable AND
         # the transcript matches the judged pow_bits > 0 path. Zeroing it here
         # would diverge that transcript, so keep the caller's witness.
-        witness = jnp.zeros((), dtype=bf_dtype)
+        witness = fnp.zeros((), dtype=bf_dtype)
     # The head schedule (grind, challenges, output binding) runs as the
     # shared glue Rounds -- the byte-match harness and the phase benchmark
     # thread the same definitions, so the three cannot drift.

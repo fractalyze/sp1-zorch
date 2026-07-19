@@ -82,7 +82,7 @@ from functools import partial
 from typing import TYPE_CHECKING, ClassVar
 
 import frx
-import frx.numpy as jnp
+import frx.numpy as fnp
 from frx import Array, lax
 from zk_dtypes import efinfo
 
@@ -117,7 +117,7 @@ def _zero_extend(arr: Array, width: int) -> Array:
         raise ValueError(f"width {width} < last-axis size {arr.shape[-1]}")
     if pad == 0:
         return arr
-    return jnp.concatenate([arr, jnp.zeros((*arr.shape[:-1], pad), arr.dtype)], axis=-1)
+    return fnp.concatenate([arr, fnp.zeros((*arr.shape[:-1], pad), arr.dtype)], axis=-1)
 
 
 def _challenge_limbs(dtype) -> int:
@@ -270,7 +270,7 @@ class JaggedZerocheckSummand:
         """SP1's materialized extra points ``{2, 4}`` — degree 4 makes
         d - 2 = 2 extras beyond s(0) (the Gruen seam's invariant); the
         {0, 2, 4} choice is SP1's ``sum_as_poly_in_last_variable``."""
-        return (jnp.array(2, dtype), jnp.array(4, dtype))
+        return (fnp.array(2, dtype), fnp.array(4, dtype))
 
     def chip_raw_evals(
         self,
@@ -312,11 +312,11 @@ class JaggedZerocheckSummand:
         here — keeping this method's summed-tuple return byte-identical while
         the per-row seam stays reusable outside the `GruenSummand` slot."""
         if is_zero:
-            zero = jnp.zeros((), p0.dtype)
+            zero = fnp.zeros((), p0.dtype)
             return zero, zero, zero
         v0, v2, v4 = _summand_values(self._term_fns[i], self.alphas[i], p0, diff,
                                      gkr_powers, nr_live, is_round0)
-        return jnp.sum(v0 * eq), jnp.sum(v2 * eq), jnp.sum(v4 * eq)
+        return fnp.sum(v0 * eq), fnp.sum(v2 * eq), fnp.sum(v4 * eq)
 
     def correct(
         self,
@@ -350,9 +350,9 @@ class JaggedZerocheckSummand:
         short-circuits with its `chip_raw_evals`: zero evals and zero
         adjustment leave the claim identity alone."""
         ef = last.dtype
-        zero = jnp.zeros((), ef)
-        two = jnp.array(2, ef)
-        four = jnp.array(4, ef)
+        zero = fnp.zeros((), ef)
+        two = fnp.array(2, ef)
+        four = fnp.array(4, ef)
 
         if is_zero:
             return zero, zero, zero
@@ -374,7 +374,7 @@ class JaggedZerocheckSummand:
     def combine_chips(self, polys: Array) -> Array:
         """The cross-chip lambda-RLC of the per-chip coefficient polys —
         re-applied every round; the wire carries only the RLC'd poly."""
-        return jnp.dot(self.lambdas, polys)
+        return fnp.dot(self.lambdas, polys)
 
 
 # Wire-shape alias: the verifier and the byte-match harness size the round
@@ -397,12 +397,12 @@ def _summand_values(term, alpha, p0, diff, gkr_powers, nr_live, is_round0):
     of the carry, so each t-trace is handed to ``term`` with no transpose
     (fractalyze/sp1-zorch#242)."""
     ef = p0.dtype
-    two, four = jnp.array(2, ef), jnp.array(4, ef)
+    two, four = fnp.array(2, ef), fnp.array(4, ef)
     num_non_padded = (nr_live + 1) // 2
     t_traces = (p0, p0 + two * diff, p0 + four * diff)
 
     def one(rows, *, mask_round0):
-        a = jnp.where(is_round0, jnp.zeros_like(alpha), alpha) if mask_round0 else alpha
+        a = fnp.where(is_round0, fnp.zeros_like(alpha), alpha) if mask_round0 else alpha
         # per-row, eq-unweighted; the carry is row-major, so no transpose
         return term(rows, a, gkr_powers, num_non_padded)
 
@@ -415,7 +415,7 @@ def _zero_chip_poly(interp, claim, ef):
     """A statically-empty chip's round poly: nothing sums, so every computed
     point is zero and only the claim identity survives — the trivial
     claim-identity Gruen poly, no reduce or correction."""
-    z = jnp.zeros((), ef)
+    z = fnp.zeros((), ef)
     return round_coeffs_from_matrix(interp, z, claim, (z, z))
 
 
@@ -426,7 +426,7 @@ def _reduce_and_assemble(vals, eq, interp, claim, last, eq_adj, padded_row_adj,
     chip_raw_evals+correct+round_coeffs_from_matrix; also the marker's
     decomposition body (`_round_composite._decomp` mirrors it)."""
     ef = last.dtype
-    y_raw = tuple(jnp.sum(v * eq) for v in vals)
+    y_raw = tuple(fnp.sum(v * eq) for v in vals)
     # A runtime-empty chip (nr_live == 0 — a cap-class chip the program never
     # exercised) has no live row: the last-live-row index (nr_live+1)//2 - 1 is
     # -1, which corrupts the padding correction and leaks a spurious term for a
@@ -435,16 +435,16 @@ def _reduce_and_assemble(vals, eq, interp, claim, last, eq_adj, padded_row_adj,
     # to the exact path's static `is_zero_chip` branch (its width-0 buffer
     # reaches _zero_chip_poly by another route), at no extra Gruen dot.
     empty = nr_live == 0
-    threshold_half = jnp.maximum((nr_live + 1) // 2 - 1, 0)
+    threshold_half = fnp.maximum((nr_live + 1) // 2 - 1, 0)
     msb_lagrange = eq_adj * eq[threshold_half]
 
     def corr(y, t_val):
         eq_last = eq_factor(t_val, last)
         vg = vgeq.fix_last_variable(t_val).eval_at(threshold_half)
         val = eq_last * (y * eq_adj - padded_row_adj * vg * msb_lagrange)
-        return jnp.where(empty, jnp.zeros((), ef), val)
+        return fnp.where(empty, fnp.zeros((), ef), val)
 
-    zero, two, four = jnp.zeros((), ef), jnp.array(2, ef), jnp.array(4, ef)
+    zero, two, four = fnp.zeros((), ef), fnp.array(2, ef), fnp.array(4, ef)
     y0, y2, y4 = corr(y_raw[0], zero), corr(y_raw[1], two), corr(y_raw[2], four)
     return round_coeffs_from_matrix(interp, y0, claim, (y2, y4))
 
@@ -545,7 +545,7 @@ def pack_flat_arrival(
             f"total_cap_class {cap_class} does not bound this shard "
             f"(needs area_cap >= {need.area_cap}, window >= {need.window})"
         )
-    dtype = traces[0].dtype if traces else jnp.int32
+    dtype = traces[0].dtype if traces else fnp.int32
     pieces = []
     used = 0
     for t, nr in zip(traces, num_reals, strict=True):
@@ -558,11 +558,11 @@ def pack_flat_arrival(
                 f"{t.shape[1]} rows for height {h}"
             )
         if h % 2:
-            t = jnp.pad(t, ((0, 0), (0, 1)))
+            t = fnp.pad(t, ((0, 0), (0, 1)))
         pieces.append(t.reshape(-1))
         used += t.shape[0] * t.shape[1]
-    pieces.append(jnp.zeros((cap_class.area_cap - used,), dtype))
-    return jnp.concatenate(pieces)
+    pieces.append(fnp.zeros((cap_class.area_cap - used,), dtype))
+    return fnp.concatenate(pieces)
 
 
 # Rounds unrolled at statically halving buffer bounds before the fixed-shape
@@ -615,8 +615,8 @@ def _prove_total_cap(
     the per-round fold re-pack are whole-buffer gathers driven by the traced
     segment starts, so no per-chip slice/update materializes."""
     num_chips = len(num_cols) if num_cols is not None else len(traces)
-    one = jnp.ones((), ef)
-    zero = jnp.zeros((), ef)
+    one = fnp.ones((), ef)
+    zero = fnp.zeros((), ef)
 
     cols_arr = (
         [int(c) for c in num_cols]
@@ -667,18 +667,18 @@ def _prove_total_cap(
     # Per-chip column weights, exactly the chip's own columns — jagged packing
     # has no padded columns to weight.
     widest = max(cols_arr) if cols_arr else 0
-    gkr_all = gkr_powers(summand.beta, widest) if widest else jnp.zeros(0, ef)
+    gkr_all = gkr_powers(summand.beta, widest) if widest else fnp.zeros(0, ef)
     chip_gkr = [gkr_all[: cols_arr[i]] for i in range(num_chips)]
 
     # Static segment maps: the flat buffer is sum_cols column segments in chip
     # order; a whole-buffer gather resolves (chip, column) per element from
     # these compile-time tables plus the traced segment starts.
-    cols_v = jnp.asarray(cols_arr, jnp.int32)
-    chip_of_seg = jnp.asarray(
-        [i for i, nc in enumerate(cols_arr) for _ in range(nc)], jnp.int32
+    cols_v = fnp.asarray(cols_arr, fnp.int32)
+    chip_of_seg = fnp.asarray(
+        [i for i, nc in enumerate(cols_arr) for _ in range(nc)], fnp.int32
     )
-    col_of_seg = jnp.asarray(
-        [c for nc in cols_arr for c in range(nc)], jnp.int32
+    col_of_seg = fnp.asarray(
+        [c for nc in cols_arr for c in range(nc)], fnp.int32
     )
 
     def _evenpad(h: Array) -> Array:
@@ -689,7 +689,7 @@ def _prove_total_cap(
         prior chips' areas ``cols_j * evenpad(h_j)``. Every term is even, so
         offsets stay pair-aligned for the whole-buffer stride-2 fold."""
         per_chip = cols_v * _evenpad(h)
-        return jnp.concatenate([jnp.zeros((1,), jnp.int32), jnp.cumsum(per_chip)])[
+        return fnp.concatenate([fnp.zeros((1,), fnp.int32), fnp.cumsum(per_chip)])[
             :num_chips
         ]
 
@@ -713,12 +713,12 @@ def _prove_total_cap(
         ``p0h[j] = v0`` and ``diffh[j] = v1 - v0`` match the unfolded pack's
         stride-2 slices byte for byte."""
         seg_lens = (_evenpad(live_rows) // 2)[chip_of_seg]
-        seg_starts = jnp.concatenate(
-            [jnp.zeros((1,), jnp.int32), jnp.cumsum(seg_lens)]
+        seg_starts = fnp.concatenate(
+            [fnp.zeros((1,), fnp.int32), fnp.cumsum(seg_lens)]
         )
-        j = jnp.arange(area_out // 2, dtype=jnp.int32)
-        seg = jnp.clip(
-            jnp.searchsorted(seg_starts, j, side="right") - 1, 0, sum_cols - 1
+        j = fnp.arange(area_out // 2, dtype=fnp.int32)
+        seg = fnp.clip(
+            fnp.searchsorted(seg_starts, j, side="right") - 1, 0, sum_cols - 1
         )
         rh = j - seg_starts[seg]
         chip = chip_of_seg[seg]
@@ -726,8 +726,8 @@ def _prove_total_cap(
         live = live_rows[chip]
 
         def at(row):
-            src = jnp.clip(base + row, 0, None)
-            return jnp.where(row < live, fetch(src), zero)
+            src = fnp.clip(base + row, 0, None)
+            return fnp.where(row < live, fetch(src), zero)
 
         v0 = at(2 * rh)
         v1 = at(2 * rh + 1)
@@ -738,7 +738,7 @@ def _prove_total_cap(
     # arrival-height segments; arrival offsets/strides are static). Rows past
     # a chip's live height read the arrival zero-pad or are masked to zero, so
     # the packed buffer is live rows + exact field zeros.
-    heights = jnp.stack([jnp.asarray(nr, jnp.int32) for nr in num_reals])
+    heights = fnp.stack([fnp.asarray(nr, fnp.int32) for nr in num_reals])
     if flat_arrival is not None:
         # The prologue already packed the class layout eagerly
         # (`pack_flat_arrival`, same cumsum offsets the traced heights derive),
@@ -765,20 +765,20 @@ def _prove_total_cap(
         # into the pack — an eager `.astype(ef)` would materialize a 4x-wider
         # copy of the whole arrival.
         arr_flat = (
-            jnp.concatenate([t.reshape(-1) for t in traces])
+            fnp.concatenate([t.reshape(-1) for t in traces])
             if num_chips
-            else jnp.zeros((0,), ef)
+            else fnp.zeros((0,), ef)
         )
         p0h0, diffh0 = _gather_halves(
             area_cap,
             live_rows=heights,
-            src_off=jnp.asarray(arr_off_list, jnp.int32),
-            src_stride=jnp.asarray(arr_rows, jnp.int32),
-            fetch=lambda src: jnp.take(arr_flat, src, mode="clip").astype(ef),
+            src_off=fnp.asarray(arr_off_list, fnp.int32),
+            src_stride=fnp.asarray(arr_rows, fnp.int32),
+            fetch=lambda src: fnp.take(arr_flat, src, mode="clip").astype(ef),
         )
 
-    vgeqs = [VirtualGeq(jnp.asarray(nr, jnp.int32), one, zero) for nr in num_reals]
-    chip_claims = jnp.stack(list(claims))
+    vgeqs = [VirtualGeq(fnp.asarray(nr, fnp.int32), one, zero) for nr in num_reals]
+    chip_claims = fnp.stack(list(claims))
     eq_adj = one
 
     extra_ts = summand.extra_ts(ef)
@@ -789,7 +789,7 @@ def _prove_total_cap(
         )
     last_xs = zeta[::-1]
     interp_xs = frx.vmap(lambda z: interp_matrix(extra_ts, z))(last_xs)
-    is_round0_xs = jnp.arange(num_vars) == 0
+    is_round0_xs = fnp.arange(num_vars) == 0
 
     eq_buf = expand_eq_to_hypercube(zeta[: num_vars - 1], one)
     eq_width = eq_buf.shape[0]
@@ -799,14 +799,14 @@ def _prove_total_cap(
             f"{eq_width} (2**(num_vars-1)); a pair count cannot exceed it"
         )
 
-    two, four = jnp.array(2, ef), jnp.array(4, ef)
+    two, four = fnp.array(2, ef), fnp.array(4, ef)
 
     def _jagged_window(flat: Array, off: Array, stride: Array, n_rows: int,
                        n_cols: int) -> Array:
         """A chip's ``[n_rows, n_cols]`` window out of the flat halved buffer:
         column ``c`` is the rank-1 slice at ``off + c*stride`` (unmasked — the
         caller owns the dead-row zeroing)."""
-        return jnp.stack(
+        return fnp.stack(
             [
                 lax.dynamic_slice(flat, (off + c * stride,), (n_rows,))
                 for c in range(n_cols)
@@ -819,7 +819,7 @@ def _prove_total_cap(
         a flat ``[cap_out]`` buffer. ``shrink_eq`` lets the eq table halve
         (the unrolled shrink prefix); the scan tail keeps every carry shape
         fixed instead (``cap_out`` = the input cap, eq zero-extended back)."""
-        rows_w = jnp.arange(w_in, dtype=jnp.int32)
+        rows_w = fnp.arange(w_in, dtype=fnp.int32)
 
         def fold_eq(buf: Array) -> Array:
             if buf.shape[0] < 2:
@@ -865,7 +865,7 @@ def _prove_total_cap(
                     alpha = summand.alphas[i]
                     # Round 0 drops the constraint at t=0 (that term IS the zerocheck
                     # statement) by zeroing alpha; the column term stays.
-                    a0 = jnp.where(is_round0, jnp.zeros_like(alpha), alpha)
+                    a0 = fnp.where(is_round0, fnp.zeros_like(alpha), alpha)
                     vals = tuple(
                         constraint_eval(
                             summand.eval_fns[i],
@@ -888,12 +888,12 @@ def _prove_total_cap(
                     # column term, on explicitly masked windows (dead rows
                     # straddle the next segment, so they are NOT zero in place).
                     mask = (rows_w < live_pair)[:, None]  # [w_in, 1]
-                    win_p0 = jnp.where(
+                    win_p0 = fnp.where(
                         mask,
                         _jagged_window(p0h, off_i, stride_i, w_in, cols_arr[i]),
                         zero,
                     )
-                    win_diff = jnp.where(
+                    win_diff = fnp.where(
                         mask,
                         _jagged_window(diffh, off_i, stride_i, w_in, cols_arr[i]),
                         zero,
@@ -909,7 +909,7 @@ def _prove_total_cap(
                     )
                 )
 
-            polys = jnp.stack(polys_list)
+            polys = fnp.stack(polys_list)
             rlc = summand.combine_chips(polys)
             transcript = transcript.observe(rlc)
             transcript, r = sample_challenge(transcript, ef, ef_limbs)
@@ -928,8 +928,8 @@ def _prove_total_cap(
                 src_off=folded_off,
                 src_stride=half_stride,
                 fetch=lambda src: (
-                    jnp.take(p0h, src, mode="clip")
-                    + r * jnp.take(diffh, src, mode="clip")
+                    fnp.take(p0h, src, mode="clip")
+                    + r * fnp.take(diffh, src, mode="clip")
                 ),
             )
 
@@ -962,14 +962,14 @@ def _prove_total_cap(
         carry, msg = step(carry, (last_xs[rnd], interp_xs[rnd], is_round0_xs[rnd]))
         prefix_msgs.append(msg)
     if prefix_msgs:
-        msgs = frx.tree.map(lambda *ls: jnp.stack(ls), *prefix_msgs)
+        msgs = frx.tree.map(lambda *ls: fnp.stack(ls), *prefix_msgs)
     if unroll < num_vars or not prefix_msgs:
         step = make_round_step(wins_r[unroll], caps_r[unroll], shrink_eq=False)
         carry, tail_msgs = lax.scan(
             step, carry, (last_xs[unroll:], interp_xs[unroll:], is_round0_xs[unroll:])
         )
         msgs = (
-            frx.tree.map(lambda a, b: jnp.concatenate([a, b]), msgs, tail_msgs)
+            frx.tree.map(lambda a, b: fnp.concatenate([a, b]), msgs, tail_msgs)
             if prefix_msgs
             else tail_msgs
         )
@@ -984,18 +984,18 @@ def _prove_total_cap(
     # no elements at all.
     off = _area_offsets(heights) // 2
     stride = _evenpad(heights) // 2
-    row2 = jnp.arange(2, dtype=jnp.int32)[:, None]
+    row2 = fnp.arange(2, dtype=fnp.int32)[:, None]
     finals = []
     for i in range(num_chips):
         if is_zero_chip[i]:
-            finals.append(jnp.zeros((cols_arr[i], 2), ef))
+            finals.append(fnp.zeros((cols_arr[i], 2), ef))
             continue
         # Row 0 of a chip's final column is p0, row 1 is p0 + diff — the
         # halves hold the final fold pair directly.
         p0row = _jagged_window(p0h, off[i], stride[i], 1, cols_arr[i])
         drow = _jagged_window(diffh, off[i], stride[i], 1, cols_arr[i])
-        win = jnp.concatenate([p0row, p0row + drow], axis=0)
-        win = jnp.where(row2 < heights[i], win, zero)
+        win = fnp.concatenate([p0row, p0row + drow], axis=0)
+        win = fnp.where(row2 < heights[i], win, zero)
         finals.append(win.T)
     return finals, transcript, msgs
 
@@ -1104,8 +1104,8 @@ def prove_jagged_zerocheck(
 
     ef = zeta.dtype
     ef_limbs = _challenge_limbs(ef)
-    one = jnp.ones((), ef)
-    zero = jnp.zeros((), ef)
+    one = fnp.ones((), ef)
+    zero = fnp.zeros((), ef)
 
     # C_alpha(0_row), the constant every padded row contributes — probed once
     # per chip; num_real == 0 and constraint-less chips never trace their
@@ -1125,7 +1125,7 @@ def prove_jagged_zerocheck(
         if static_nrs[i] == 0 or alphas[i].shape[-1] == 0
         else constraint_eval(
             eval_fns[i],
-            jnp.zeros((1, probe_cols[i]), dtype=ef),
+            fnp.zeros((1, probe_cols[i]), dtype=ef),
             alphas[i],
             live_width=1,
             aux_operands=(public_values,),

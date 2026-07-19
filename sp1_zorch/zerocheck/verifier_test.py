@@ -18,7 +18,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 import frx
-import frx.numpy as jnp
+import frx.numpy as fnp
 import numpy as np
 from absl.testing import absltest
 from zk_dtypes import koalabear_mont, koalabearx4_mont
@@ -53,29 +53,29 @@ class _WitnessChip:
 
     def eval_constraints(self, trace, public_values):
         a, b, c = trace[:, 2], trace[:, 3], trace[:, 4]
-        one = jnp.ones((), trace.dtype)
-        pv0 = jnp.concatenate([public_values[:1], jnp.zeros((3,), BF)]).view(EF)[0]
-        return jnp.stack([(a - one) * (c - one), (a - one) * (b + pv0)], axis=-1)
+        one = fnp.ones((), trace.dtype)
+        pv0 = fnp.concatenate([public_values[:1], fnp.zeros((3,), BF)]).view(EF)[0]
+        return fnp.stack([(a - one) * (c - one), (a - one) * (b + pv0)], axis=-1)
 
 
 class _LookupChip:
     """Constraint-less chip (SP1's Byte / Program / Range shape)."""
 
     def eval_constraints(self, trace, public_values):
-        return jnp.zeros((trace.shape[0], 0), dtype=trace.dtype)
+        return fnp.zeros((trace.shape[0], 0), dtype=trace.dtype)
 
 
-def _rand_bf(seed: int, shape) -> jnp.ndarray:
+def _rand_bf(seed: int, shape) -> fnp.ndarray:
     ints = np.random.default_rng(seed).integers(1, 1 << 30, size=shape, dtype=np.int64)
-    return jnp.array(ints, dtype=BF)
+    return fnp.array(ints, dtype=BF)
 
 
-def _rand_ef(seed: int, shape) -> jnp.ndarray:
+def _rand_ef(seed: int, shape) -> fnp.ndarray:
     return _rand_bf(seed, tuple(shape) + (4,)).view(EF).reshape(shape)
 
 
 def _u32(a) -> np.ndarray:
-    return np.asarray(frx.lax.bitcast_convert_type(a, jnp.uint32)).reshape(-1)
+    return np.asarray(frx.lax.bitcast_convert_type(a, fnp.uint32)).reshape(-1)
 
 
 def _assert_bytes_equal(got, want, label: str = "") -> None:
@@ -88,8 +88,8 @@ class VerifyShardZerocheckTest(absltest.TestCase):
         # alpha: 3 main cols x 5 real rows (col a == 1), prep 2 cols x 3 rows
         # (shorter than num_real — exercises the prep zero-pad). lookup: one
         # main col x 3 rows, no prep, no constraints.
-        alpha_main = jnp.concatenate(
-            [jnp.ones((5, 1), dtype=BF), _rand_bf(1, (5, 2))], axis=1
+        alpha_main = fnp.concatenate(
+            [fnp.ones((5, 1), dtype=BF), _rand_bf(1, (5, 2))], axis=1
         )
         alpha_prep = _rand_bf(2, (3, 2))
         lookup_main = _rand_bf(3, (3, 1))
@@ -176,7 +176,7 @@ class VerifyShardZerocheckTest(absltest.TestCase):
             self.proof,
             msgs=replace(
                 self.proof.msgs,
-                round_poly=polys.at[1, 0].add(jnp.ones((), polys.dtype)),
+                round_poly=polys.at[1, 0].add(fnp.ones((), polys.dtype)),
             ),
         )
         _, _, ok = self._verify(bad)
@@ -185,17 +185,17 @@ class VerifyShardZerocheckTest(absltest.TestCase):
     def test_tampered_challenge_copies_rejected(self) -> None:
         for field in ("batching_challenge", "gkr_opening_batch_challenge", "lambda_"):
             value = getattr(self.proof, field)
-            bad = replace(self.proof, **{field: value + jnp.ones((), value.dtype)})
+            bad = replace(self.proof, **{field: value + fnp.ones((), value.dtype)})
             _, _, ok = self._verify(bad)
             self.assertFalse(bool(ok), field)
 
     def test_tampered_zeta_copy_rejected(self) -> None:
-        bad_zeta = self.proof.zeta.at[0].add(jnp.ones((), self.proof.zeta.dtype))
+        bad_zeta = self.proof.zeta.at[0].add(fnp.ones((), self.proof.zeta.dtype))
         _, _, ok = self._verify(replace(self.proof, zeta=bad_zeta))
         self.assertFalse(bool(ok))
 
     def test_tampered_claimed_sum_rejected(self) -> None:
-        bad = self.proof.claimed_sum + jnp.ones((), self.proof.claimed_sum.dtype)
+        bad = self.proof.claimed_sum + fnp.ones((), self.proof.claimed_sum.dtype)
         _, _, ok = self._verify(replace(self.proof, claimed_sum=bad))
         self.assertFalse(bool(ok))
 
@@ -203,7 +203,7 @@ class VerifyShardZerocheckTest(absltest.TestCase):
         ch = self.proof.msgs.challenge
         bad = replace(
             self.proof,
-            msgs=replace(self.proof.msgs, challenge=ch.at[0].add(jnp.ones((), ch.dtype))),
+            msgs=replace(self.proof.msgs, challenge=ch.at[0].add(fnp.ones((), ch.dtype))),
         )
         _, _, ok = self._verify(bad)
         self.assertFalse(bool(ok))
@@ -212,7 +212,7 @@ class VerifyShardZerocheckTest(absltest.TestCase):
         opening = self.proof.opened_values["alpha"]
         bad_openings = dict(self.proof.opened_values)
         bad_openings["alpha"] = ChipEvaluation(
-            main=opening.main.at[0].add(jnp.ones((), opening.main.dtype)),
+            main=opening.main.at[0].add(fnp.ones((), opening.main.dtype)),
             preprocessed=opening.preprocessed,
         )
         _, _, ok = self._verify(replace(self.proof, opened_values=bad_openings))

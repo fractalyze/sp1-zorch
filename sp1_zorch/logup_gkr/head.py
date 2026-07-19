@@ -21,7 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-import frx.numpy as jnp
+import frx.numpy as fnp
 from frx import Array
 from zk_dtypes import efinfo
 from zk_dtypes import koalabearx4_mont as EF
@@ -99,12 +99,12 @@ class HeadChallengesRound(Round):
             transcript, seed = sample_challenge(transcript, EF, EF_LIMBS)
             seeds.append(seed)
         transcript, pv_challenge = sample_challenge(transcript, EF, EF_LIMBS)
-        one = jnp.ones((), dtype=EF)
+        one = fnp.ones((), dtype=EF)
         if seeds:
-            beta_seeds = jnp.stack(seeds)
+            beta_seeds = fnp.stack(seeds)
             betas = expand_eq_to_hypercube(beta_seeds, one)
         else:
-            beta_seeds = jnp.zeros((0,), EF)
+            beta_seeds = fnp.zeros((0,), EF)
             betas = one[None]
         return carry, transcript, HeadChallenges(alpha, beta_seeds, betas, pv_challenge)
 
@@ -129,13 +129,13 @@ class OutputBindRound(Round):
         num = self._output.numerator
         den = self._output.denominator
         prefix_dtype = efinfo(num.dtype).base_field_dtype
-        transcript = transcript.observe(jnp.array(num.shape[0], prefix_dtype))
+        transcript = transcript.observe(fnp.array(num.shape[0], prefix_dtype))
         transcript = transcript.observe(num)
-        transcript = transcript.observe(jnp.array(den.shape[0], prefix_dtype))
+        transcript = transcript.observe(fnp.array(den.shape[0], prefix_dtype))
         transcript = transcript.observe(den)
         coords = []
         for _ in range(log2_strict_usize(num.shape[0])):
             transcript, c = sample_challenge(transcript, EF, EF_LIMBS)
             coords.append(c)
-        z1 = jnp.stack(coords)
+        z1 = fnp.stack(coords)
         return (eval_mle(num, z1), eval_mle(den, z1), z1), transcript, z1

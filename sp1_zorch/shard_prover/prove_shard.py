@@ -17,7 +17,7 @@ from functools import partial
 from typing import Any
 
 import frx
-import frx.numpy as jnp
+import frx.numpy as fnp
 from frx import Array
 from rw_constraints import Chip
 from zk_dtypes import koalabearx4_mont
@@ -120,7 +120,7 @@ def preamble_chip_metadata(
         metadata.append(int(num_real))
         metadata.append(len(name))
         metadata.extend(name.encode("ascii"))
-    return jnp.array(metadata, dtype)
+    return fnp.array(metadata, dtype)
 
 
 class PreambleStage(Round):
@@ -405,7 +405,7 @@ class ZerocheckStage(Round):
             bridge.public_values,
             bridge.gkr_eval_point,
             bridge.gkr_chip_openings,
-            jnp.asarray(heights_host, jnp.int32),
+            fnp.asarray(heights_host, fnp.int32),
             transcript,
             chips=tuple(self._chips.items()),
             max_log_row_count=self._max_log_row_count,
@@ -472,7 +472,7 @@ def _jagged_eval_jit(
     (chip set + area tier) — shards differing only in heights share the
     executable."""
     transcript, z_col = sample_z_col(transcript, num_columns, dtype)
-    weights = expand_eq_to_hypercube(z_col, jnp.ones((), dtype))[:num_columns]
+    weights = expand_eq_to_hypercube(z_col, fnp.ones((), dtype))[:num_columns]
     # z_row is the zerocheck sumcheck point in SP1's insert-at-front
     # (reversed) order.
     eval_msg, transcript = eval_round_core(
@@ -552,7 +552,7 @@ class JaggedPcsStage(Round):
             rc_rounds.append(region.row_counts)
             cc_rounds.append(region.column_counts)
             claims_rounds.append(
-                jnp.concatenate(
+                fnp.concatenate(
                     [getattr(openings[n], claim_field) for n in region.chip_names]
                 )
             )
@@ -572,9 +572,9 @@ class JaggedPcsStage(Round):
         # Pad the combined dense to its power-of-two tier eagerly: raw region
         # lengths vary within a class, the padded tier does not — only the
         # padded form may cross the jit boundary.
-        dense = jnp.concatenate(denses)
+        dense = fnp.concatenate(denses)
         target = 1 << log2_ceil_usize(dense.shape[0])
-        dense = jnp.pad(dense, (0, target - dense.shape[0]))
+        dense = fnp.pad(dense, (0, target - dense.shape[0]))
 
         if self._jit:
             transcript, eval_msg = _jagged_eval_jit(
@@ -592,7 +592,7 @@ class JaggedPcsStage(Round):
             del dense, offsets, merged, all_claims
         else:
             transcript, z_col = sample_z_col(transcript, len(col_heights), ef)
-            weights = expand_eq_to_hypercube(z_col, jnp.ones((), ef))[
+            weights = expand_eq_to_hypercube(z_col, fnp.ones((), ef))[
                 : len(col_heights)
             ]
             eval_msg, transcript = eval_round_core(

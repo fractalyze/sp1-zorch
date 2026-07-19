@@ -21,7 +21,7 @@ from functools import partial
 from typing import Mapping, Sequence
 
 import frx
-import frx.numpy as jnp
+import frx.numpy as fnp
 from frx import Array, lax
 from rw_constraints import Chip, Interaction
 
@@ -84,7 +84,7 @@ def generate_interaction_vals_batch(
         mult = -mult
 
     height = main_trace.shape[0]
-    fingerprint = jnp.broadcast_to(alpha + betas[0] * interaction.kind, (height,))
+    fingerprint = fnp.broadcast_to(alpha + betas[0] * interaction.kind, (height,))
     for i, val_col in enumerate(interaction.values):
         value = val_col.apply_batch(preprocessed_trace, main_trace)
         fingerprint = fingerprint + betas[i + 1] * value
@@ -195,22 +195,22 @@ def _chip_mult_fingerprint(
     # forms[f] = const[f] + Σ_w W[f, w] · trace_cat[:, w]. Without a used prep
     # column total_w == main_w, so this is just the main trace.
     trace_cat = (
-        jnp.concatenate([main_trace, prep_trace], axis=1) if uses_prep else main_trace
+        fnp.concatenate([main_trace, prep_trace], axis=1) if uses_prep else main_trace
     )
-    w_all = jnp.asarray(weight_rows, dtype=bf_dtype)  # [forms, total_w]
-    c_all = jnp.asarray(constants, dtype=bf_dtype)  # [forms]
+    w_all = fnp.asarray(weight_rows, dtype=bf_dtype)  # [forms, total_w]
+    c_all = fnp.asarray(constants, dtype=bf_dtype)  # [forms]
     forms = c_all[:, None] + w_all @ trace_cat.T  # [forms, height], BF
 
     # Multiplicity per interaction; receives negate (× field -1 == negation).
-    mult = forms[jnp.asarray(mult_form)] * jnp.asarray(mult_sign, dtype=bf_dtype)[:, None]
+    mult = forms[fnp.asarray(mult_form)] * fnp.asarray(mult_sign, dtype=bf_dtype)[:, None]
 
     # Fingerprint = alpha + betas[0]·kind + Σ_i betas[i+1]·valueᵢ, the value sum
     # unrolled over the (small) widest fingerprint. Padded slots gather the zero
     # form, so betas[v+1]·0 adds a field zero (identity) -- byte-identical to the
     # per-interaction sum, all element-wise field ops the GPU emitter lowers.
-    base = (alpha + betas[0] * jnp.asarray(kinds, dtype=bf_dtype))[:, None]
-    fingerprint = jnp.broadcast_to(base, (num_inter, height))
-    value_idx_arr = jnp.asarray(value_idx)  # [num_inter, max_values]
+    base = (alpha + betas[0] * fnp.asarray(kinds, dtype=bf_dtype))[:, None]
+    fingerprint = fnp.broadcast_to(base, (num_inter, height))
+    value_idx_arr = fnp.asarray(value_idx)  # [num_inter, max_values]
     for v in range(max_values):
         fingerprint = fingerprint + betas[v + 1] * forms[value_idx_arr[:, v]]
     return mult, fingerprint
@@ -243,7 +243,7 @@ def _chip_first_layer_capped(
     keys on the chip and class constants alone. Slots below
     ``live_height // 2`` hold the real pairs; the rest force the
     fold-neutral ``(n=0, d=1)``, byte-identical to the tight-class build's
-    ``jnp.pad`` values. One ``@jit`` per chip — fusing all chips hands XLA
+    ``fnp.pad`` values. One ``@jit`` per chip — fusing all chips hands XLA
     every build's intermediates at once and blows the wide-shard budget."""
     height = cap
     main_trace = (
@@ -263,24 +263,24 @@ def _chip_first_layer_capped(
         if prep_height >= cap:
             prep_trace = prep_trace[:cap]
         else:
-            prep_trace = jnp.pad(prep_trace, ((0, cap - prep_height), (0, 0)))
+            prep_trace = fnp.pad(prep_trace, ((0, cap - prep_height), (0, 0)))
     mult, fingerprint = _chip_mult_fingerprint(
         chip, main_trace, prep_trace, alpha, betas
     )
 
-    live = jnp.arange(height // 2) < live_height // 2
-    zero = jnp.zeros((), dtype=mult.dtype)
-    one = jnp.ones((), dtype=fingerprint.dtype)
+    live = fnp.arange(height // 2) < live_height // 2
+    zero = fnp.zeros((), dtype=mult.dtype)
+    one = fnp.ones((), dtype=fingerprint.dtype)
     slot_count = 2 * sp1_col_h(height)
     pad = ((0, 0), (0, slot_count - height // 2))
     return (
-        jnp.pad(jnp.where(live, mult[:, 0::2], zero), pad).reshape(-1),
-        jnp.pad(jnp.where(live, mult[:, 1::2], zero), pad).reshape(-1),
-        jnp.pad(
-            jnp.where(live, fingerprint[:, 0::2], one), pad, constant_values=1
+        fnp.pad(fnp.where(live, mult[:, 0::2], zero), pad).reshape(-1),
+        fnp.pad(fnp.where(live, mult[:, 1::2], zero), pad).reshape(-1),
+        fnp.pad(
+            fnp.where(live, fingerprint[:, 0::2], one), pad, constant_values=1
         ).reshape(-1),
-        jnp.pad(
-            jnp.where(live, fingerprint[:, 1::2], one), pad, constant_values=1
+        fnp.pad(
+            fnp.where(live, fingerprint[:, 1::2], one), pad, constant_values=1
         ).reshape(-1),
     )
 
@@ -501,12 +501,12 @@ def _pack_main_zone(
         start = starts[i]
         block = frx.vmap(
             lambda c: lax.dynamic_slice(dense, (start + c * h,), (cap,))
-        )(jnp.arange(w, dtype=jnp.int32))  # [w, cap]
-        live = jnp.arange(cap, dtype=jnp.int32)[None, :] < h
+        )(fnp.arange(w, dtype=fnp.int32))  # [w, cap]
+        live = fnp.arange(cap, dtype=fnp.int32)[None, :] < h
         parts.append(
-            jnp.where(live, block, jnp.zeros((), dense.dtype)).reshape(-1)
+            fnp.where(live, block, fnp.zeros((), dense.dtype)).reshape(-1)
         )
-    return jnp.concatenate(parts)
+    return fnp.concatenate(parts)
 
 
 def pack_gkr_arrival(
@@ -544,11 +544,11 @@ def pack_gkr_arrival(
             f"dense length {dense.shape[0]} exceeds the class bound "
             f"{dense_cap}; the class does not admit this shard"
         )
-    dense = jnp.pad(dense, (0, dense_cap - dense.shape[0]))
-    heights = jnp.asarray(heights_host, jnp.int32)
+    dense = fnp.pad(dense, (0, dense_cap - dense.shape[0]))
+    heights = fnp.asarray(heights_host, fnp.int32)
     main_flat = _pack_main_zone(
         dense,
-        jnp.asarray([int(s) for s in main_region.chip_starts], jnp.int32),
+        fnp.asarray([int(s) for s in main_region.chip_starts], fnp.int32),
         heights,
         cap_class=cap_class,
         main_widths=main_widths,
@@ -560,7 +560,7 @@ def pack_gkr_arrival(
             _chip_view(prep_region, idx).T.reshape(-1)
             for idx in range(len(prep_region.chip_names))
         ]
-        prep_flat = jnp.concatenate(prep_parts)
+        prep_flat = fnp.concatenate(prep_parts)
 
     return main_flat, prep_flat, heights
 
@@ -634,16 +634,16 @@ def generate_first_layer_capped(
     n_pad = padded_interactions - total_interactions
     if n_pad > 0:
         pad_total = n_pad * pad_slot_count
-        n0_parts.append(jnp.zeros(pad_total, dtype=bf_dtype))
-        n1_parts.append(jnp.zeros(pad_total, dtype=bf_dtype))
-        d0_parts.append(jnp.ones(pad_total, dtype=ef_dtype))
-        d1_parts.append(jnp.ones(pad_total, dtype=ef_dtype))
+        n0_parts.append(fnp.zeros(pad_total, dtype=bf_dtype))
+        n1_parts.append(fnp.zeros(pad_total, dtype=bf_dtype))
+        d0_parts.append(fnp.ones(pad_total, dtype=ef_dtype))
+        d1_parts.append(fnp.ones(pad_total, dtype=ef_dtype))
         row_counts.extend([pad_slot_count] * n_pad)
 
     return JaggedGkrLayer(
-        numerator_0=jnp.concatenate(n0_parts),
-        numerator_1=jnp.concatenate(n1_parts),
-        denominator_0=jnp.concatenate(d0_parts),
-        denominator_1=jnp.concatenate(d1_parts),
+        numerator_0=fnp.concatenate(n0_parts),
+        numerator_1=fnp.concatenate(n1_parts),
+        denominator_0=fnp.concatenate(d0_parts),
+        denominator_1=fnp.concatenate(d1_parts),
         row_counts=tuple(row_counts),
     )
