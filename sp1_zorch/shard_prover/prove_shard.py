@@ -389,7 +389,9 @@ class ZerocheckStage(Round):
         total_cap_class = self._total_cap_class or TotalCapClass.from_heights(
             heights_host, [int(t.shape[0]) for t in traces]
         )
-        flat = pack_flat_arrival(traces, heights_host, total_cap_class)
+        flat = pack_flat_arrival(
+            traces, heights_host, total_cap_class, self._max_log_row_count
+        )
         prep_w = (
             {
                 n: int(w)

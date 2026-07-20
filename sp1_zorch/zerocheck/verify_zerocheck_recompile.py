@@ -81,7 +81,7 @@ def main() -> int:
     parser.add_argument(
         "--zc_class_json",
         required=True,
-        help='JSON {"area_cap", "window"} pinning the shard-invariant '
+        help='JSON {"area_cap"} pinning the shard-invariant '
         "zerocheck TotalCapClass; it must bound every --shard-dirs shard. "
         "Assemble it as the per-field max of the ZC_CLASS lines "
         "verify_prove_shard prints.",
@@ -94,7 +94,7 @@ def main() -> int:
     cache_dir = Path(args.gkr_cache_dir)
     with open(args.zc_class_json) as f:
         c = {k: int(v) for k, v in json.load(f).items()}
-    cap_class = TotalCapClass(area_cap=c["area_cap"], window=c["window"])
+    cap_class = TotalCapClass(area_cap=c["area_cap"])
 
     stage = None
     chip_set = None

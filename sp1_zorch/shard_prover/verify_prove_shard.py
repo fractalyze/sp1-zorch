@@ -146,7 +146,7 @@ _MAX_STAGE = flags.DEFINE_integer(
 _ZC_CLASS_JSON = flags.DEFINE_string(
     "zc_class_json",
     None,
-    'JSON {"area_cap", "window"} pinning the shard-invariant zerocheck '
+    'JSON {"area_cap"} pinning the shard-invariant zerocheck '
     "TotalCapClass; every shard of one class shares ONE zerocheck compile. "
     "Default: each shard's own a-priori-tight class (per-shard compile). "
     "Assemble a cross-shard class as the per-field max of the printed "
@@ -296,7 +296,7 @@ def _verify_shard(
     print(
         "ZC_CLASS "
         + json.dumps(
-            {"area_cap": own_class.area_cap, "window": own_class.window}
+            {"area_cap": own_class.area_cap}
         ),
         flush=True,
     )
@@ -304,7 +304,7 @@ def _verify_shard(
     if _ZC_CLASS_JSON.value:
         with open(_ZC_CLASS_JSON.value) as f:
             c = {k: int(v) for k, v in json.load(f).items()}
-        tc_class = TotalCapClass(area_cap=c["area_cap"], window=c["window"])
+        tc_class = TotalCapClass(area_cap=c["area_cap"])
 
     # LogUp-GKR rides the same shard-invariant contract on per-chip height
     # bounds; --gkr_class_json pins a cross-shard class (per-chip max of the

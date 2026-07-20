@@ -633,17 +633,17 @@ class ZerocheckStageTotalCapTest(absltest.TestCase):
 
     def test_total_cap_stage_matches_exact_and_shares_one_compile(self) -> None:
         # The sp1-zorch#242 stage-level deliverable: a `total_cap_class` Stage
-        # repacks each chip to `2*window` rows, rides the shard's heights as one
+        # packs the flat class-shaped arrival, rides the shard's heights as one
         # traced int32 vector into the single shared-buffer stage, and two shards
         # of one class share its compile while byte-matching an exact-heights
-        # prove. Class bounds both shards: window >= max ceil(rows/2) over {5, 9}
-        # = 5; the 2-column chip's area is 2*evenpad(rows) <= 20, so
-        # area_cap >= 20 + 2*window = 30.
+        # prove. Class bounds both shards: the 2-column chip's live area is
+        # 2*evenpad(rows) <= 20 over rows {5, 9} — area only, the machine
+        # window tail rides the buffer sizing.
         chips = {"alpha": self._PvFreeChip()}
         total = ZerocheckStage(
             chips,
             max_log_row_count=_MAX_LOG_ROW_COUNT,
-            total_cap_class=TotalCapClass(area_cap=30, window=5),
+            total_cap_class=TotalCapClass(area_cap=20),
         )
         before = ZerocheckStage._jit_body_totalcap_traced._cache_size()
         for seed, rows in ((40, 5), (50, 9)):

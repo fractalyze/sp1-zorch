@@ -298,8 +298,8 @@ def prove_shard_zerocheck(
     ``total_cap_class`` + chip set, never a shard's exact heights
     (byte-identical to the exact-heights path): the single shared
     total-Σ-heights-cap buffer (fractalyze/sp1-zorch#242) — ``main_region``
-    arrives repacked to ``2*window`` rows per chip and each trace is that
-    wide.
+    arrives repacked to a caller-chosen shard-invariant per-chip row cap and
+    each trace is that wide.
     """
     ef = eval_point.dtype
 
@@ -399,16 +399,12 @@ def prove_shard_zerocheck(
                 "runtime (traced) num_reals require total_cap_class: the "
                 "trace slicing cannot derive from a traced height"
             )
-        # The total-cap shared buffer presents one shard-invariant per-chip
-        # cap for the trace slice: `2*window`. The region must already be
-        # repacked to that cap.
-        caps = [2 * total_cap_class.window] * len(chip_names)
-        if tuple(main_region.chip_heights) != tuple(int(c) for c in caps):
-            raise ValueError(
-                "runtime num_reals expect a main region repacked to "
-                "2*total_cap_class.window rows per chip: chip heights "
-                f"{main_region.chip_heights} != caps {tuple(caps)}"
-            )
+        # The region arrives repacked to a caller-chosen shard-invariant
+        # per-chip cap (its own chip_heights): trace shapes are static, so the
+        # compile keys on the caller's repack choice. The class carries no
+        # height-derived arrival cap to check against — bounding every live
+        # height is the caller's contract.
+        caps = [int(h) for h in main_region.chip_heights]
         traces = chip_traces(chip_names, caps, main_region, prep_region)
         # The cap slice keeps real preprocessed rows past a shard's live
         # height; zero them — the round driver's zero-tail contract is
