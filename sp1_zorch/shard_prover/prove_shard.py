@@ -32,6 +32,7 @@ from zorch.pcs.jagged.open import (
 )
 from zorch.pcs.jagged.prover import (
     JaggedEvalMsg,
+    assemble_col_heights,
     assemble_columns,
     eval_column_arrays,
     eval_round_core,
@@ -86,11 +87,11 @@ class ShardBridge:
     prep_region: JaggedRegion | None
     public_values: Array
     # Written by TraceCommitStage; read by the jagged-eval open stage (which
-    # rebuilds each StackedRound, recomputing the [S,K] mle from the region dense
-    # it already holds) and by proof assembly (the digest-tree root). [prep, main]
-    # order, matching SP1's round_evaluation_claims. Only the digest tree is kept
-    # here: the mle is a transpose of the region dense, so keeping it too would
-    # duplicate the trace on-device through the LogUp-GKR + zerocheck stages.
+    # rebuilds each StackedRound from a [K, S] view of the region dense it
+    # already holds) and by proof assembly (the digest-tree root). [prep, main]
+    # order, matching SP1's round_evaluation_claims. Only the digest tree is
+    # kept here — a retained message matrix would duplicate the trace on-device
+    # through the LogUp-GKR + zerocheck stages.
     commit_digest_layers: tuple[list[Array], ...] | None = None
     # Written by TraceCommitStage; read by proof assembly as the jagged proof's
     # original_commitments -- each round's SMCS commitment (pre-structure-binding),
@@ -453,6 +454,27 @@ class JaggedPcsProof:
     open: StackedOpenProof
 
 
+@partial(frx.jit, static_argnames=("rc_rounds", "cc_rounds", "target", "dtype"))
+def _jagged_pack_jit(
+    denses: list[Array],
+    claims_chips: list[list[Array]],
+    *,
+    rc_rounds: tuple[tuple[int, ...], ...],
+    cc_rounds: tuple[tuple[int, ...], ...],
+    target: int,
+    dtype: Any,
+) -> tuple[Array, Array]:
+    """Pack zone: the tier-padded combined dense and the ordered claim buffer
+    as one fused executable — eagerly these are several full-buffer copies per
+    prove. Keyed per region shape tuple (a cheap concat/pad graph)."""
+    claims_rounds = [fnp.concatenate(chips) for chips in claims_chips]
+    _, all_claims = assemble_columns(
+        list(rc_rounds), list(cc_rounds), claims_rounds, dtype=dtype
+    )
+    dense = fnp.concatenate(denses)
+    return fnp.pad(dense, (0, target - dense.shape[0])), all_claims
+
+
 @partial(frx.jit, static_argnames=("num_columns", "dtype"))
 def _jagged_eval_jit(
     offsets: Array,
@@ -542,7 +564,7 @@ class JaggedPcsStage(Round):
         # stacking-aligned dense for the combined committed D.
         rc_rounds: list[Sequence[int]] = []
         cc_rounds: list[Sequence[int]] = []
-        claims_rounds: list[Array] = []
+        claims_chips: list[list[Array]] = []
         denses: list[Array] = []
         prep = bridge.prep_region
         regions = ([(prep, "preprocessed")] if prep is not None else []) + [
@@ -551,10 +573,8 @@ class JaggedPcsStage(Round):
         for region, claim_field in regions:
             rc_rounds.append(region.row_counts)
             cc_rounds.append(region.column_counts)
-            claims_rounds.append(
-                fnp.concatenate(
-                    [getattr(openings[n], claim_field) for n in region.chip_names]
-                )
+            claims_chips.append(
+                [getattr(openings[n], claim_field) for n in region.chip_names]
             )
             # Full region buffer, stacking pad included: col_heights counts each
             # region's pad pair, so the indicator J̃ (and the stacked open) place
@@ -562,21 +582,24 @@ class JaggedPcsStage(Round):
             # would misalign it against J̃.
             denses.append(region.dense)
 
-        col_heights, all_claims = assemble_columns(
-            rc_rounds, cc_rounds, claims_rounds, dtype=ef
-        )
+        col_heights = assemble_col_heights(rc_rounds, cc_rounds)
         # Heights become traced-array VALUES here, off the eval zone's
         # compile key.
         offsets, merged = eval_column_arrays(col_heights, dtype=ef)
-
-        # Pad the combined dense to its power-of-two tier eagerly: raw region
-        # lengths vary within a class, the padded tier does not — only the
-        # padded form may cross the jit boundary.
-        dense = fnp.concatenate(denses)
-        target = 1 << log2_ceil_usize(dense.shape[0])
-        dense = fnp.pad(dense, (0, target - dense.shape[0]))
+        # The combined dense pads to its power-of-two tier: raw region lengths
+        # vary within a class, the padded tier does not — only the padded form
+        # may cross into the eval zone.
+        target = 1 << log2_ceil_usize(sum(int(d.shape[0]) for d in denses))
 
         if self._jit:
+            dense, all_claims = _jagged_pack_jit(
+                denses,
+                claims_chips,
+                rc_rounds=tuple(tuple(rc) for rc in rc_rounds),
+                cc_rounds=tuple(tuple(cc) for cc in cc_rounds),
+                target=target,
+                dtype=ef,
+            )
             transcript, eval_msg = _jagged_eval_jit(
                 offsets,
                 merged,
@@ -591,6 +614,12 @@ class JaggedPcsStage(Round):
             # the open allocates its [N, K] round codewords.
             del dense, offsets, merged, all_claims
         else:
+            claims_rounds = [fnp.concatenate(chips) for chips in claims_chips]
+            _, all_claims = assemble_columns(
+                rc_rounds, cc_rounds, claims_rounds, dtype=ef
+            )
+            dense = fnp.concatenate(denses)
+            dense = fnp.pad(dense, (0, target - dense.shape[0]))
             transcript, z_col = sample_z_col(transcript, len(col_heights), ef)
             weights = expand_eq_to_hypercube(z_col, fnp.ones((), ef))[
                 : len(col_heights)
@@ -612,12 +641,10 @@ class JaggedPcsStage(Round):
             blowup=1 << self._log_blowup,
             dtype=main.dense.dtype,
         )
-        # Rebuild each StackedRound: the mle is recomputed from the region dense,
-        # joined to the carried digest tree, in the same [prep, main] order.
-        # stacked_basefold_open re-encodes the codeword from the mle -- no
-        # host<->device round-trip.
+        # Rebuild each StackedRound from the region's [K, S] block view (no
+        # copy), joined to the carried digest tree, in [prep, main] order.
         commit_rounds = tuple(
-            StackedRound(_region_mle(region), digests)
+            StackedRound(region.block, digests)
             for (region, _), digests in zip(
                 regions, bridge.commit_digest_layers, strict=True
             )
@@ -634,17 +661,6 @@ class JaggedPcsStage(Round):
             transcript=transcript,
         )
         return bridge, transcript, JaggedPcsProof(eval=eval_msg, open=open_proof)
-
-
-def _region_mle(region: JaggedRegion) -> Array:
-    """The commit's ``[S, K]`` stacked message for a region, recomputed from its
-    dense buffer (``mle == dense.reshape(K, S).T``, S = 2^log_stacking_height) --
-    identical to what ``commit_region`` returned. The open reconstructs it here
-    instead of the bridge pinning a trace-sized copy through the whole chain
-    (fractalyze/sp1-zorch#264)."""
-    S = 1 << region.log_stacking_height
-    K = region.dense.shape[0] // S
-    return region.dense.reshape(K, S).T
 
 
 def prove_shard_chain(
