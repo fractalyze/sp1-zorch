@@ -422,7 +422,7 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
         are the column dot inside each t-point's composite decomposition
         (each composite call emits its own decomposition func — three per
         constrained chip, shape-divergent by design) plus, since the
-        ``variant=zerocheck`` round marker (sp1-zorch#242), the per-chip
+        ``variant=sp1-zerocheck`` round marker (sp1-zorch#242), the per-chip
         Gruen interpolation dot inside each live chip's own
         `zerocheck_round_poly` decomposition (one more per constrained
         chip) — the cross-chip λ-RLC (`combine_chips`) stays a single batched
@@ -458,7 +458,7 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
         return len(re.findall(r"stablehlo\.dot_general", txt))
 
     def test_interp_rlc_tail_scales_per_chip_marker(self) -> None:
-        # Since the `variant=zerocheck` round marker (sp1-zorch#242) the
+        # Since the `variant=sp1-zerocheck` round marker (sp1-zorch#242) the
         # Gruen interpolation assembly is de-batched: it runs INSIDE each
         # live chip's own `zerocheck_round_poly` decomposition, not one
         # shared [num_chips, ...] matmul — required so the round reduce has

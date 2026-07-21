@@ -1,5 +1,5 @@
 # Copyright 2026 The sp1-zorch Authors. SPDX-License-Identifier: Apache-2.0
-"""The variant=zerocheck marker is byte-transparent: an unclaimed marker
+"""The variant=sp1-zerocheck marker is byte-transparent: an unclaimed marker
 (CPU) decomposes inline, reproducing the plain _reduce_and_assemble exactly."""
 from __future__ import annotations
 

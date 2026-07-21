@@ -1,5 +1,5 @@
 # Copyright 2026 The sp1-zorch Authors. SPDX-License-Identifier: Apache-2.0
-"""`zorch.sumcheck.round` marker, variant=zerocheck (fractalyze/zorch#394).
+"""`zorch.sumcheck.round` marker, variant=sp1-zerocheck (fractalyze/zorch#394).
 
 Wraps the SP1 jagged-zerocheck round reduce (eq-weighted sum of the summand
 value + geq zero-extension correction + Gruen degree-4 assembly). The summand
@@ -17,7 +17,7 @@ from zorch.sumcheck.gruen import round_coeffs_from_matrix
 from zorch.sumcheck.prover import SUMCHECK_ROUND_MARKER, SUMCHECK_ROUND_MARKER_VERSION
 
 # The PJRT plugin only recognizes the sumcheck round marker for variant
-# dense/jagged (LogUp-GKR); the variant=zerocheck recognizer is a later zorch#394
+# dense/jagged (LogUp-GKR); the variant=sp1-zerocheck recognizer is a later zorch#394
 # slice than this producer. Emitting the marker before the plugin knows the
 # variant hard-errors on GPU (missing composite attributes / unknown variant),
 # while CPU decomposes inline and hides it. Keep the marker off -- run the
@@ -60,9 +60,9 @@ def _decomp(v0, v2, v4, eq, interp, claim, last, eq_adj, padded_row_adj,
 
 def zerocheck_round_poly(vals, eq, interp, claim, last, eq_adj, padded_row_adj,
                          nr_live, vgeq):
-    """Emit the variant=zerocheck marker around one LIVE chip's round reduce
+    """Emit the variant=sp1-zerocheck marker around one LIVE chip's round reduce
     (gated: see `_MARK_ZEROCHECK_ROUNDS` -- default runs the inline decomposition,
-    byte-identical, until the zkx plugin ships the variant=zerocheck emitter)."""
+    byte-identical, until the zkx plugin ships the variant=sp1-zerocheck emitter)."""
     v0, v2, v4 = vals
     operands = (
         v0, v2, v4, eq, interp, claim, last, eq_adj, padded_row_adj,
@@ -73,5 +73,5 @@ def zerocheck_round_poly(vals, eq, interp, claim, last, eq_adj, padded_row_adj,
     return composite(
         _decomp, *operands,
         name=SUMCHECK_ROUND_MARKER, version=SUMCHECK_ROUND_MARKER_VERSION,
-        phase="mid", variant="zerocheck", degree=4, poly_form="coefficient",
+        phase="mid", variant="sp1-zerocheck", degree=4, poly_form="coefficient",
     )
