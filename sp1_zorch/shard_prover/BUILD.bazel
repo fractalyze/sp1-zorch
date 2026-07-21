@@ -269,6 +269,38 @@ py_binary(
 )
 
 py_binary(
+    name = "warm_shard_cache",
+    srcs = [
+        "verify_prove_shard.py",
+        "warm_shard_cache.py",
+        "warm_worker.py",
+    ],
+    main = "warm_shard_cache.py",
+    # Analyze a shard dump for optimal grouped compilation + parallel
+    # persistent-cache fill:
+    #   bazel run //sp1_zorch/shard_prover:warm_shard_cache -- \
+    #       --shard_dir=/path/to/rsp_dump --out_manifest=/tmp/manifest.json
+    deps = [
+        ":prove_shard",
+        ":replay",
+        ":shard_prover",
+        ":sp1_ffi",
+        "//sp1_zorch/logup_gkr",
+        "//sp1_zorch/poseidon2:koalabear16",
+        "@zorch//zorch/commit:smcs",
+        "@zorch//zorch/hash:compression",
+        "@zorch//zorch/hash:sponge",
+        "@zorch//zorch/hash/poseidon2",
+        "@zorch//zorch/poly",
+        requirement("absl_py"),
+        requirement("frx"),
+        requirement("frx_cuda12_plugin"),
+        requirement("zk_dtypes"),
+        requirement("frx_cuda12_pjrt"),
+    ],
+)
+
+py_binary(
     name = "verify_shard_fixture",
     srcs = ["verify_shard_fixture.py"],
     # Fixture check over a local rsp GPU-trace capture (~1.5 GB/shard) — a

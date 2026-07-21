@@ -163,6 +163,16 @@ _GKR_CLASS_JSON = flags.DEFINE_string(
     "compile). Assemble a cross-shard class as the per-chip max of the "
     "printed GKR_CLASS lines.",
 )
+_GROUP_MANIFEST_JSON = flags.DEFINE_string(
+    "group_manifest_json",
+    None,
+    'JSON {shard_name: {"area_cap": N, "gkr": {chip: bound}}} pinning a '
+    "per-shard zerocheck + GKR class, so a single multi-shard process can "
+    "prove several chip-set groups at once and still share one compile within "
+    "each group (the group-max class per chip set). Overrides "
+    "--zc_class_json / --gkr_class_json for any shard it names; shards absent "
+    "from the manifest fall back to those flags or their own tight class.",
+)
 _JAXPROF_DIR = flags.DEFINE_string(
     "jaxprof_dir",
     None,
@@ -332,6 +342,22 @@ def _verify_shard(
             tuple(int(gkr_spec["chip_heights"][name]) for name in order),
             gkr_spec.get("slot_cap"),
         )
+
+    # Per-shard group class (multi-shard single process): the manifest pins
+    # each shard's zerocheck to its chip-set group's max area_cap, so the whole
+    # group shares one zerocheck compile (the expensive #284-pole stage; the
+    # area spread within a chip set is ~1%, so the buffer inflation is
+    # negligible). GKR is pinned only if the entry carries an explicit "gkr" —
+    # a group-max GKR class inflates the pyramid ~1.5x (per-chip heights vary
+    # widely across shards) and OOMs the big shards, so by default each shard
+    # keeps its own tight GKR class. Overrides the global class flags.
+    if _GROUP_MANIFEST_JSON.value:
+        with open(_GROUP_MANIFEST_JSON.value) as f:
+            entry = json.load(f).get(shard_dir.name)
+        if entry is not None:
+            tc_class = TotalCapClass(area_cap=int(entry["area_cap"]))
+            if "gkr" in entry:
+                gkr_class = GkrCapClass(tuple(int(entry["gkr"][name]) for name in order))
 
     # The jagged class is fully derived — no pin flag. Same (L, n_d) ⇒
     # eval-zone cache hit; same K ⇒ open prologue/query hit; the fold zone is

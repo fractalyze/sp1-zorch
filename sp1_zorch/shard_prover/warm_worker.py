@@ -1,0 +1,83 @@
+# Copyright 2026 The sp1-zorch Authors. SPDX-License-Identifier: Apache-2.0
+"""Compile-only cache-fill worker: prove the given shards WITHOUT executing.
+
+Every heavy stage/zorch zone is a `frx.jit`. We intercept `frx.jit` so the
+OUTERMOST call in the eager orchestration lowers+compiles the zone (writing the
+persistent cache) and returns `eval_shape`'d zeros — the chain flows to the next
+stage on correct shapes without ever running a kernel. A depth guard keeps
+nested zone calls running the real jit, so each zone lowers with its nested jits
+inlined exactly as the real prove compiles them (verified: a real prove then
+hits every cache entry byte-for-byte). Peak device memory is a couple GiB (no
+20 GiB execute workspace), so many workers pack on one card.
+
+`frx.jit` MUST be patched before the chain imports bind their decorators, so
+this module patches at import top, before any sp1/zorch import. Run as a
+subprocess per partition from ``warm_shard_cache --warm``.
+"""
+
+import sys
+
+import frx  # establish the frx jax fork before anything imports `jax`
+import jax
+import frx.numpy as fnp
+
+_real_jit = frx.jit
+_depth = [0]
+_stats = {"compiled": 0}
+
+
+def _compile_only_jit(fn=None, **kw):
+    if fn is None:
+        return lambda f: _compile_only_jit(f, **kw)
+    jitted = _real_jit(fn, **kw)
+
+    def wrapper(*args, **kwargs):
+        # Nested (under an outer lower/eval_shape trace): run the real jit so it
+        # inlines into the outer zone's module — never intercept a nested call.
+        if _depth[0] > 0:
+            return jitted(*args, **kwargs)
+        _depth[0] += 1
+        try:
+            jitted.lower(*args, **kwargs).compile()  # write cache, no execute
+            _stats["compiled"] += 1
+            out = jax.eval_shape(jitted, *args, **kwargs)
+        finally:
+            _depth[0] -= 1
+        return jax.tree_util.tree_map(lambda s: fnp.zeros(s.shape, s.dtype), out)
+
+    return wrapper
+
+
+frx.jit = _compile_only_jit
+
+from sp1_zorch.shard_prover import verify_prove_shard as V  # noqa: E402
+from sp1_zorch.logup_gkr import head as _head  # noqa: E402
+
+# Bypass value-dependent HOST checks that zero'd compile-only outputs can't
+# satisfy — they gate correctness, not compilation.
+V.check_match = lambda *a, **k: True
+
+
+def _grind_no_pow(self, carry, transcript):
+    transcript, _ = transcript.check_witness(self._pow_bits, self._witness)
+    return carry, transcript, self._witness
+
+
+_head.GrindRound.__call__ = _grind_no_pow
+
+
+if __name__ == "__main__":
+    # argv[1] = comma-separated shard dirs; argv[2] (optional) = group manifest
+    # so grouped-zerocheck compiles match the real prove's pinned class.
+    shards = sys.argv[1]
+    argv = ["warm_worker", f"--shard_dir={shards}", "--max_stage=4"]
+    if len(sys.argv) > 2 and sys.argv[2]:
+        argv.append(f"--group_manifest_json={sys.argv[2]}")
+    sys.argv = argv
+    try:
+        V.app.run(V.main)
+    except SystemExit:
+        pass
+    st = frx.local_devices()[0].memory_stats() or {}
+    print(f"=== worker done: {_stats['compiled']} zones compiled, "
+          f"peak={st.get('peak_bytes_in_use', 0) / 2**30:.2f}GiB ===", flush=True)
