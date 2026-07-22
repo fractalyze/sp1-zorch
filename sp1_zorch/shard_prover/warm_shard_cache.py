@@ -84,9 +84,13 @@ _JOBS = flags.DEFINE_integer(
     "--mem_budget_gib / (biggest shard's compile-only peak) so concurrent "
     "workers fit the card; small-shard dumps use the full --jobs.")
 _MEM_BUDGET_GIB = flags.DEFINE_float(
-    "mem_budget_gib", 28.0, "Device-memory budget the concurrent workers must "
-    "fit. A big (~400M-area) shard compiles at ~8 GiB even compile-only, so on "
-    "a 32 GB card ~3 big shards warm at once.")
+    "mem_budget_gib", 30.0, "Device-memory budget the concurrent workers must "
+    "fit (sum of their est peaks).")
+_WORKER_MEM_FRACTION = flags.DEFINE_float(
+    "worker_mem_fraction", 0.5, "Per-worker cuda_async pool cap "
+    "(XLA_PYTHON_CLIENT_MEM_FRACTION): releases autotune scratch between zones. "
+    "Must exceed a shard's single-zone autotune need (~13.5 GiB at 400M area, "
+    "so 0.5=16 GiB on a 32 GB card); with N concurrent workers keep N*frac<~1.")
 
 
 def _shard_dirs() -> list[Path]:
@@ -243,7 +247,7 @@ def _est_peak_gib(area_cap: int) -> float:
     Overestimate a little so the peak-aware scheduler never packs into an OOM;
     two 400M shards (~11.5 GiB each measured) then run concurrently on a 32 GB
     card, small ones pack further."""
-    return 2.0 + area_cap / 44e6
+    return 3.0 + area_cap / 30e6  # 400M -> ~16.4 GiB (fits its ~13.5 GiB single-zone autotune)
 
 
 def _warm(dirs: list[Path], classes: dict, manifest_path: str) -> None:
@@ -275,7 +279,7 @@ def _warm(dirs: list[Path], classes: dict, manifest_path: str) -> None:
     env = dict(os.environ,
                FRX_COMPILATION_CACHE_DIR=cache, JAX_COMPILATION_CACHE_DIR=cache,
                XLA_PYTHON_CLIENT_ALLOCATOR="cuda_async",
-               XLA_PYTHON_CLIENT_MEM_FRACTION="0.4")
+               XLA_PYTHON_CLIENT_MEM_FRACTION=str(_WORKER_MEM_FRACTION.value))
     # Analysis (this process) runs CPU-only via JAX_PLATFORMS=cpu so it grabs no
     # device memory; workers need the GPU, so drop the override for them.
     env.pop("JAX_PLATFORMS", None)
