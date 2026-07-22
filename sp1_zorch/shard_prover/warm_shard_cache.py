@@ -53,7 +53,7 @@ from sp1_zorch.shard_prover.verify_prove_shard import (
     shard_regions,
 )
 from sp1_zorch.zerocheck.jagged import TotalCapClass
-from sp1_zorch.logup_gkr.circuit import GkrCapClass
+from sp1_zorch.logup_gkr.circuit import GkrCapClass, build_gkr_chips
 
 _DUMP_DIR = flags.DEFINE_string(
     "dump_dir", None, "Dump directory holding shard* subdirs (or a comma list "
@@ -65,13 +65,6 @@ _GROUP_AREA_RATIO = flags.DEFINE_float(
     "group_area_ratio", 0.4, "Share one zerocheck compile across a chip set "
     "only when its min/max area_cap exceeds this (else each shard keeps its "
     "own area to avoid over-pricing small shards).")
-_GKR_CLUSTER_RATIO = flags.DEFINE_float(
-    "gkr_cluster_ratio", 1.15, "Cluster shards of one chip set to share a GKR "
-    "compile when the cluster's per-chip-max class inflates no member's total "
-    "GKR height beyond this. The merged class rides the shard's LogUp-GKR prove "
-    "too, so the bound is EXECUTE memory (the pyramid scales with total height) "
-    "— keep it tight (~1.1-1.2x) so a cluster still fits the card. 1.0 disables "
-    "(each shard its own GKR class).")
 _WARM = flags.DEFINE_bool(
     "warm", False, "After analysis, compile-only fill the cache (phase 2): fan "
     "out warm_worker subprocesses that lower+compile every zone WITHOUT "
@@ -122,6 +115,8 @@ def _shard_class(sd: Path) -> dict:
                  for i, name in enumerate(order)]
     zc = TotalCapClass.from_heights(num_reals, chip_cols)
     gkr = GkrCapClass.from_heights([int(h) for h in main_region.chip_heights])
+    gkr_chips = build_gkr_chips(main.chips, order)
+    slot_bound = gkr.resolved_slot_cap(gkr_chips, order)
     regions_jc = [r for r in (prep_region, main_region) if r is not None]
     jl = sum(sum(int(c) for c in r.column_counts) for r in regions_jc)
     jks = [int(r.dense.shape[0]) >> int(r.log_stacking_height) for r in regions_jc]
@@ -130,6 +125,7 @@ def _shard_class(sd: Path) -> dict:
         "order": order,
         "area_cap": int(zc.area_cap),
         "gkr_heights": {n: int(h) for n, h in zip(order, gkr.chip_heights)},
+        "gkr_slot_bound": int(slot_bound),
         "jagged": {"L": jl, "n_d": (area - 1).bit_length() + 1, "K": jks,
                    "rlc_bits": max(sum(jks) - 1, 0).bit_length()},
     }
@@ -149,33 +145,6 @@ def _analyze(dirs: list[Path]) -> tuple[dict, dict]:
     return classes, groups
 
 
-def _cluster_gkr(order: tuple, shards: list, classes: dict) -> list[list[str]]:
-    """Bin shards of one chip set into GKR clusters: a cluster's per-chip-max
-    (merged) class must inflate no member's total GKR height beyond
-    --gkr_cluster_ratio, so the shared class still fits each member's execute
-    memory. Greedy, largest-first (a jumbo shard opens its own cluster and only
-    admits ones close to it)."""
-    ratio = _GKR_CLUSTER_RATIO.value
-    tot = {s: sum(classes[s]["gkr_heights"].values()) for s in shards}
-    if ratio <= 1.0:
-        return [[s] for s in shards]
-
-    def merged_total(members: list) -> int:
-        return sum(max(classes[s]["gkr_heights"][n] for s in members)
-                   for n in order)
-
-    clusters: list[list[str]] = []
-    for s in sorted(shards, key=lambda s: -tot[s]):
-        for cl in clusters:
-            m = merged_total(cl + [s])
-            if all(m <= ratio * tot[x] for x in cl + [s]):
-                cl.append(s)
-                break
-        else:
-            clusters.append([s])
-    return clusters
-
-
 def _plan(classes: dict, groups: dict) -> dict:
     """Assign each shard its group + cluster classes; count distinct compiles."""
     ratio = _GROUP_AREA_RATIO.value
@@ -185,22 +154,25 @@ def _plan(classes: dict, groups: dict) -> dict:
         areas = [classes[s]["area_cap"] for s in shards]
         tight = len(shards) > 1 and (min(areas) / max(areas)) > ratio
         area_pin = max(areas) if tight else None
-        # GKR: cluster similar shards to share a compile; each cluster's merged
-        # per-chip-max class rides every member's prove (fits execute memory).
-        gkr_clusters = _cluster_gkr(order, shards, classes)
-        for cl in gkr_clusters:
-            gmax = {n: max(classes[s]["gkr_heights"][n] for s in cl) for n in order}
-            for s in cl:
-                manifest.setdefault(s, {})["gkr"] = gmax
+        # GKR: one class per chip-set group. The pyramid keys on slot_cap (pin
+        # the group-max tight bound — heights don't inflate it), and the
+        # heights-keyed first-layer/open zones tolerate the per-chip-max pin
+        # (their inflation is transient) — so the whole group shares one
+        # compile set (GkrCapClass, sp1-zorch#290).
+        gmax = {n: max(classes[s]["gkr_heights"][n] for s in shards)
+                for n in order}
+        slot_pin = max(classes[s]["gkr_slot_bound"] for s in shards)
         zc_variants = 1 if tight else len({a for a in areas})
         for s in shards:
-            manifest.setdefault(s, {})["area_cap"] = (
+            manifest.setdefault(s, {})["gkr"] = gmax
+            manifest[s]["gkr_slot_cap"] = slot_pin
+            manifest[s]["area_cap"] = (
                 area_pin if tight else classes[s]["area_cap"])
         plan.append({
             "chips": len(order), "shards": sorted(shards, key=_snum),
             "tight_zerocheck_group": tight, "area_pin": area_pin,
             "distinct_zerocheck_compiles": zc_variants,
-            "distinct_gkr_compiles": len(gkr_clusters),
+            "distinct_gkr_compiles": 1,
         })
     return {"manifest": manifest, "plan": plan}
 

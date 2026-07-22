@@ -347,17 +347,22 @@ def _verify_shard(
     # each shard's zerocheck to its chip-set group's max area_cap, so the whole
     # group shares one zerocheck compile (the expensive #284-pole stage; the
     # area spread within a chip set is ~1%, so the buffer inflation is
-    # negligible). GKR is pinned only if the entry carries an explicit "gkr" —
-    # a group-max GKR class inflates the pyramid ~1.5x (per-chip heights vary
-    # widely across shards) and OOMs the big shards, so by default each shard
-    # keeps its own tight GKR class. Overrides the global class flags.
+    # negligible). A "gkr" entry pins the group's per-chip-max height bounds
+    # (first-layer/open inflation is transient) and "gkr_slot_cap" the group's
+    # pyramid capacity — the pyramid keys on slot_cap, not heights
+    # (GkrCapClass), so the whole group shares one GKR compile set without the
+    # height-driven pyramid inflation. Overrides the global class flags.
     if _GROUP_MANIFEST_JSON.value:
         with open(_GROUP_MANIFEST_JSON.value) as f:
             entry = json.load(f).get(shard_dir.name)
         if entry is not None:
             tc_class = TotalCapClass(area_cap=int(entry["area_cap"]))
             if "gkr" in entry:
-                gkr_class = GkrCapClass(tuple(int(entry["gkr"][name]) for name in order))
+                gkr_class = GkrCapClass(
+                    tuple(int(entry["gkr"][name]) for name in order),
+                    (int(entry["gkr_slot_cap"])
+                     if "gkr_slot_cap" in entry else None),
+                )
 
     # The jagged class is fully derived — no pin flag. Same (L, n_d) ⇒
     # eval-zone cache hit; same K ⇒ open prologue/query hit; the fold zone is
