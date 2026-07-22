@@ -24,9 +24,11 @@ from sp1_zorch.logup_gkr.circuit import (
     generate_first_layer,
     generate_first_layer_capped,
     pack_gkr_arrival,
+    interaction_chip_indices,
     sp1_col_h,
     sp1_next_row_counts,
     sp1_schedules,
+    traced_slot_counts,
 )
 from sp1_zorch.shard_prover.chip_loader import make_chip_stub
 from zorch.logup_gkr.circuit import (
@@ -49,7 +51,7 @@ def generate_circuit_layers(
     if num_row_variables < 1:
         raise ValueError(f"num_row_variables must be >= 1, got {num_row_variables}")
     layers = [first_layer]
-    counts = first_layer.row_counts
+    counts = _host_counts(first_layer)
     for _ in range(num_row_variables - 1):
         counts = sp1_next_row_counts(counts)
         layers.append(jagged_layer_transition(layers[-1], counts))
@@ -57,6 +59,19 @@ def generate_circuit_layers(
 
 ALPHA = fnp.array(7, F)
 BETAS = fnp.array([5, 11], F)
+
+
+def _host_counts(layer: JaggedGkrLayer) -> tuple[int, ...]:
+    """Traced counts read back as host ints (eager testkit seam)."""
+    return tuple(int(rc) for rc in layer.row_counts)
+
+
+def _starts(layer: JaggedGkrLayer) -> tuple[int, ...]:
+    counts = _host_counts(layer)
+    out = [0]
+    for rc in counts:
+        out.append(out[-1] + rc)
+    return tuple(out)
 
 
 def _interaction(mult_col: int, val_col: int, *, kind: int = 3, is_send: bool = True):
@@ -114,7 +129,7 @@ class GenerateFirstLayerTest(absltest.TestCase):
         mult, fp = _expected_vals(main, inter)
 
         # col_h(6) = 2 -> 4 slots; (6+1)//2 = 3 real pairs + 1 neutral pad.
-        self.assertEqual(layer.row_counts, (4,))
+        self.assertEqual(_host_counts(layer), (4,))
         self.assertTrue(bool(fnp.all(layer.numerator_0[:3] == mult[0::2])))
         self.assertTrue(bool(fnp.all(layer.numerator_1[:3] == mult[1::2])))
         self.assertTrue(bool(fnp.all(layer.denominator_0[:3] == fp[0::2])))
@@ -144,9 +159,9 @@ class GenerateFirstLayerTest(absltest.TestCase):
         )
         # 3 real interactions pad to 4; the pad slot is 2 * sp1_col_h(0) = 4
         # rows of the neutral fraction.
-        self.assertEqual(layer.row_counts, (4, 4, 4, 4))
+        self.assertEqual(_host_counts(layer), (4, 4, 4, 4))
         self.assertEqual(layer.num_batch_variables, 2)
-        lo = layer.start_indices[3]
+        lo = _starts(layer)[3]
         self.assertTrue(bool(fnp.all(layer.numerator_0[lo:] == fnp.array(0, F))))
         self.assertTrue(bool(fnp.all(layer.denominator_0[lo:] == fnp.array(1, F))))
         self.assertTrue(bool(fnp.all(layer.denominator_1[lo:] == fnp.array(1, F))))
@@ -159,7 +174,7 @@ class GenerateFirstLayerTest(absltest.TestCase):
         )
         mult, _ = _expected_vals(main_b, chips[1].interactions[0])
         # col_h clamps at max(real_h, 8): h=4 still reserves 4 slots.
-        self.assertEqual(layer.row_counts, (4,))
+        self.assertEqual(_host_counts(layer), (4,))
         self.assertTrue(bool(fnp.all(layer.numerator_0[:2] == mult[0::2])))
         self.assertTrue(bool(fnp.all(layer.numerator_0[2:] == fnp.array(0, F))))
 
@@ -223,7 +238,7 @@ class GenerateCircuitLayersTest(absltest.TestCase):
     def test_layer_shapes_follow_schedule(self) -> None:
         layers = generate_circuit_layers(self._first_layer(), 4)
         self.assertEqual(
-            [layer.row_counts for layer in layers],
+            [_host_counts(layer) for layer in layers],
             [(12, 4), (6, 2), (4, 2), (2, 2)],
         )
 
@@ -232,7 +247,7 @@ class GenerateCircuitLayersTest(absltest.TestCase):
         # it to one real fraction and re-pads the 1-child slot with (n=0, d=1).
         layers = generate_circuit_layers(self._first_layer(), 4)
         last = layers[-1]
-        b_pad = last.start_indices[1] + 1
+        b_pad = _starts(last)[1] + 1
         self.assertTrue(bool(last.numerator_0[b_pad] == fnp.array(0, F)))
         self.assertTrue(bool(last.numerator_1[b_pad] == fnp.array(0, F)))
         self.assertTrue(bool(last.denominator_0[b_pad] == fnp.array(1, F)))
@@ -268,7 +283,9 @@ class ScanBuildJaggedPyramidWiringTest(absltest.TestCase):
     def _assert_layers_byte_equal(self, got, want):
         self.assertEqual(len(got), len(want))
         for i, (g, w) in enumerate(zip(got, want)):
-            self.assertEqual(g.row_counts, w.row_counts, msg=f"layer {i} row_counts")
+            self.assertEqual(
+                _host_counts(g), _host_counts(w), msg=f"layer {i} row_counts"
+            )
             for plane in (
                 "numerator_0",
                 "numerator_1",
@@ -284,23 +301,23 @@ class ScanBuildJaggedPyramidWiringTest(absltest.TestCase):
         # sp1_schedules is exactly the per-transition out_row_counts
         # generate_circuit_layers folds through (the [1:] of its layer shapes).
         first = self._first_layer(ALPHA, BETAS)
-        self.assertEqual(sp1_schedules(first.row_counts, 4), [(6, 2), (4, 2), (2, 2)])
+        self.assertEqual(sp1_schedules(_host_counts(first), 4), [(6, 2), (4, 2), (2, 2)])
 
     def test_depth_one_has_no_transitions(self) -> None:
         first = self._first_layer(ALPHA, BETAS)
-        self.assertEqual(sp1_schedules(first.row_counts, 1), [])
+        self.assertEqual(sp1_schedules(_host_counts(first), 1), [])
 
     def test_rejects_nonpositive_depth(self) -> None:
         # A sub-1 depth must fail loud, not silently yield an empty schedule.
         first = self._first_layer(ALPHA, BETAS)
         with self.assertRaises(ValueError):
-            sp1_schedules(first.row_counts, 0)
+            sp1_schedules(_host_counts(first), 0)
 
     def test_scan_build_matches_eager_same_field(self) -> None:
         # Base-field alpha keeps numerator and denominator in one field, so
         # scan_build takes its pure-scan path (no base->EF carve-out).
         first = self._first_layer(ALPHA, BETAS)
-        scanned = build_jagged_pyramid(first, sp1_schedules(first.row_counts, 4))
+        scanned = build_jagged_pyramid(first, sp1_schedules(_host_counts(first), 4))
         self._assert_layers_byte_equal(scanned, generate_circuit_layers(first, 4))
 
     def test_scan_build_matches_eager_mixed_field(self) -> None:
@@ -309,7 +326,7 @@ class ScanBuildJaggedPyramidWiringTest(absltest.TestCase):
         # carves the base->EF promoting first transition out eagerly. Pin that
         # carve-out path byte-identical to the eager loop too.
         first = self._first_layer(ALPHA.astype(EF), BETAS.astype(EF))
-        scanned = build_jagged_pyramid(first, sp1_schedules(first.row_counts, 4))
+        scanned = build_jagged_pyramid(first, sp1_schedules(_host_counts(first), 4))
         self._assert_layers_byte_equal(scanned, generate_circuit_layers(first, 4))
 
 
@@ -419,7 +436,7 @@ class FirstLayerBatchedEquivalenceTest(absltest.TestCase):
         rn0, rn1, rd0, rd1, rrc = _reference_first_layer(
             chips, main_region, prep_region, ALPHA, betas
         )
-        self.assertEqual(got.row_counts, rrc)
+        self.assertEqual(_host_counts(got), rrc)
         for name, ref in (
             ("numerator_0", rn0),
             ("numerator_1", rn1),
@@ -578,10 +595,12 @@ class GkrCapClassTest(absltest.TestCase):
         region = _region(main_a, main_b, names=("A", "B"))
         exact = generate_first_layer(chips, region, None, ALPHA, BETAS)
         cls = GkrCapClass.from_heights([int(h) for h in region.chip_heights])
-        self.assertEqual(cls.slot_counts(chips, region.chip_names), exact.row_counts)
+        self.assertEqual(
+            cls.slot_counts(chips, region.chip_names), _host_counts(exact)
+        )
         self.assertEqual(
             cls.schedules(chips, region.chip_names, 4),
-            sp1_schedules(exact.row_counts, 4),
+            sp1_schedules(_host_counts(exact), 4),
         )
 
     def test_slot_counts_pad_interactions_to_power_of_two(self) -> None:
@@ -641,13 +660,13 @@ class CappedFirstLayerTest(absltest.TestCase):
     def _assert_matches_exact(self, capped, exact) -> None:
         """Per interaction: the capped segment's first ``exact_rc`` slots are
         the exact segment, the rest the fold-neutral (n=0, d=1)."""
-        self.assertEqual(len(capped.row_counts), len(exact.row_counts))
+        self.assertEqual(capped.num_batches, exact.num_batches)
         for k, (cap_rc, exact_rc) in enumerate(
-            zip(capped.row_counts, exact.row_counts)
+            zip(_host_counts(capped), _host_counts(exact))
         ):
             self.assertGreaterEqual(cap_rc, exact_rc)
-            c_lo = capped.start_indices[k]
-            e_lo = exact.start_indices[k]
+            c_lo = _starts(capped)[k]
+            e_lo = _starts(exact)[k]
             for plane, neutral in (
                 ("numerator_0", 0),
                 ("numerator_1", 0),
@@ -672,7 +691,7 @@ class CappedFirstLayerTest(absltest.TestCase):
         exact = generate_first_layer(chips, region, None, ALPHA, BETAS)
         cls = GkrCapClass.from_heights([int(h) for h in region.chip_heights])
         capped = _capped_layer(chips, region, None, cls)
-        self.assertEqual(capped.row_counts, exact.row_counts)
+        self.assertEqual(_host_counts(capped), _host_counts(exact))
         for plane in (
             "numerator_0",
             "numerator_1",
@@ -706,7 +725,7 @@ class CappedFirstLayerTest(absltest.TestCase):
         for shard, exact in zip((shard1, shard2), exacts):
             capped = _capped_layer(chips, shard, None, cls)
             self.assertEqual(
-                capped.row_counts, cls.slot_counts(chips, shard.chip_names)
+                _host_counts(capped), cls.slot_counts(chips, shard.chip_names)
             )
             self._assert_matches_exact(capped, exact)
         # One compile per chip across both shards: the class shapes + traced
@@ -749,6 +768,26 @@ class CappedFirstLayerTest(absltest.TestCase):
         region = _region(_main(10), names=("A",))
         with self.assertRaises(ValueError):
             pack_gkr_arrival(region, None, GkrCapClass((6,)))
+
+
+class TracedSlotCountsTest(absltest.TestCase):
+    def test_matches_class_slot_counts_on_real_heights(self) -> None:
+        # The traced vector is the pyramid's live geometry; it must restate
+        # GkrCapClass.slot_counts evaluated at the shard's REAL heights —
+        # interactions in chip order, then the power-of-two padding segments
+        # (which the sp1_col_h height-0 floor sizes without a special case).
+        chips = (
+            GkrChip("A", (_interaction(0, 1), _interaction(0, 1, kind=5))),
+            GkrChip("B", (_interaction(0, 1),)),
+        )
+        names = ("A", "B")
+        heights = (24, 6)
+        got = traced_slot_counts(
+            fnp.asarray(heights, fnp.int32),
+            interaction_chip_indices(chips, names),
+        )
+        want = GkrCapClass.from_heights(heights).slot_counts(chips, names)
+        self.assertEqual(tuple(int(v) for v in got), want)
 
 
 if __name__ == "__main__":

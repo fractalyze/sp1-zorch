@@ -26,7 +26,7 @@ from frx import Array, lax
 from rw_constraints import Chip, Interaction
 
 from zorch.pcs.jagged.region import JaggedRegion
-from zorch.logup_gkr.circuit import JaggedGkrLayer
+from zorch.logup_gkr.circuit import JaggedGkrLayer, _gather_pad
 from zorch.utils.bits import log2_ceil_usize
 
 
@@ -391,13 +391,18 @@ class GkrCapClass:
 
     ``chip_heights[i]`` bounds main chip ``i``'s real height (main
     ``chip_names`` order), each even so the even/odd slot split never
-    straddles a pair. Every first-layer slot count, transition schedule, and
-    arrival offset derives from these bounds, so shards that differ only in
-    row counts share every stage executable; the real heights ride as one
-    traced int32 vector.
+    straddles a pair. Only the arrival zones (pack, first-layer build,
+    open) key on these bounds: their inflation is transient. The pyramid
+    keys on ``slot_cap`` — a bound on any admitted shard's TIGHT
+    first-layer slot total — so its memory follows the shard total, not
+    the sum of per-chip maxima. ``slot_cap=None`` resolves to the
+    ``chip_heights``-derived total (tight for a single-shard class,
+    per-chip-max-inflated for a union); a cross-shard assembler sets the
+    max member total instead.
     """
 
     chip_heights: tuple[int, ...]
+    slot_cap: int | None = None
 
     @classmethod
     def from_heights(cls, heights: Sequence[int]) -> "GkrCapClass":
@@ -407,18 +412,36 @@ class GkrCapClass:
 
     @classmethod
     def union(cls, *classes: "GkrCapClass") -> "GkrCapClass":
-        """The smallest class admitting every input class — per-chip max.
-        Assembles the cross-shard class from per-shard ``from_heights``."""
+        """The smallest class admitting every input class — per-chip max
+        heights, ``slot_cap`` the max member bound (resolvable members
+        only; a ``None`` member makes the union ``None`` — derived, i.e.
+        per-chip-max-inflated — since its tight total is unknown here)."""
         if not classes:
             raise ValueError("union needs at least one class")
         counts = {len(c.chip_heights) for c in classes}
         if len(counts) != 1:
             raise ValueError(f"classes disagree on the chip count: {counts}")
-        return cls(tuple(max(hs) for hs in zip(*(c.chip_heights for c in classes))))
+        caps = [c.slot_cap for c in classes]
+        return cls(
+            tuple(max(hs) for hs in zip(*(c.chip_heights for c in classes))),
+            None if any(c is None for c in caps) else max(caps),
+        )
+
+    def resolved_slot_cap(
+        self, gkr_chips: Sequence[GkrChip], chip_names: Sequence[str]
+    ) -> int:
+        """The pyramid capacity: ``slot_cap`` when set, else the bound the
+        per-chip heights imply (``sum(slot_counts)``)."""
+        if self.slot_cap is not None:
+            return self.slot_cap
+        return sum(self.slot_counts(gkr_chips, chip_names))
 
     def check_bounds(self, heights: Sequence[int]) -> None:
         """Reject a shard the class does not admit — loudly, at pack time
-        (the traced body cannot gate a compile on a runtime value)."""
+        (the traced body cannot gate a compile on a runtime value).
+        Covers the per-chip arrival bounds; the ``slot_cap`` admission is
+        interaction-weighted, so ``check_slot_cap`` runs it where the chips
+        are in scope."""
         if len(heights) != len(self.chip_heights):
             raise ValueError(
                 f"class covers {len(self.chip_heights)} chips, shard has "
@@ -434,6 +457,27 @@ class GkrCapClass:
                 raise ValueError(
                     f"chip {i} height {h} exceeds its class bound {cap}"
                 )
+
+    def check_slot_cap(
+        self,
+        heights: Sequence[int],
+        gkr_chips: Sequence[GkrChip],
+        chip_names: Sequence[str],
+    ) -> None:
+        """Reject a shard whose tight slot total exceeds the pyramid
+        capacity — the ``slot_cap`` half of admission, host-side like
+        ``check_bounds``."""
+        tight = sum(
+            GkrCapClass.from_heights(heights).slot_counts(
+                gkr_chips, chip_names
+            )
+        )
+        cap = self.resolved_slot_cap(gkr_chips, chip_names)
+        if tight > cap:
+            raise ValueError(
+                f"shard tight slot total {tight} exceeds the class "
+                f"slot_cap {cap}"
+            )
 
     def slot_counts(
         self, gkr_chips: Sequence[GkrChip], chip_names: Sequence[str]
@@ -463,6 +507,155 @@ class GkrCapClass:
         return sp1_schedules(
             self.slot_counts(gkr_chips, chip_names), num_row_variables
         )
+
+
+def interaction_chip_indices(
+    gkr_chips: Sequence[GkrChip], chip_names: Sequence[str]
+) -> tuple[int, ...]:
+    """Per first-layer segment (interactions in chip order, then the
+    power-of-two padding) the main-chip index its heights come from; ``-1``
+    for a padding segment, whose height reads as 0."""
+    name_to_idx = {name: i for i, name in enumerate(chip_names)}
+    idx: list[int] = []
+    for chip in gkr_chips:
+        idx.extend([name_to_idx[chip.name]] * len(chip.interactions))
+    total = len(idx)
+    idx.extend([-1] * ((1 << log2_ceil_usize(total)) - total))
+    return tuple(idx)
+
+
+def traced_slot_counts(heights: Array, seg_chip_idx: tuple[int, ...]) -> Array:
+    """``GkrCapClass.slot_counts`` at the shard's real heights, traced:
+    per segment ``2 * sp1_col_h(height)``; the ``max(h, 8)`` floor makes
+    height-0 padding segments the 4-slot pads without a special case."""
+    i32 = fnp.int32
+    idx = fnp.asarray([max(i, 0) for i in seg_chip_idx], i32)
+    real = fnp.asarray([i >= 0 for i in seg_chip_idx])
+    h = fnp.where(real, heights[idx].astype(i32), i32(0))
+    col_h = (fnp.maximum(h, i32(8)) + i32(3)) // i32(4)
+    return i32(2) * col_h
+
+
+def sp1_schedule_counts(
+    tight_counts: Array, num_transitions: int
+) -> list[Array]:
+    """``sp1_schedules`` on traced counts: ``ceil(rc / 4) * 2`` per segment
+    per transition."""
+    i32 = fnp.int32
+    outs: list[Array] = []
+    counts = tight_counts
+    for _ in range(num_transitions):
+        counts = (counts + i32(3)) // i32(4) * i32(2)
+        outs.append(counts)
+    return outs
+
+
+def capped_pyramid_widths(
+    slot_cap: int, num_segments: int, num_transitions: int
+) -> list[int]:
+    """Static per-transition output widths dominating every admitted
+    shard's schedule: ``sum(ceil(rc/4)*2) <= sum(rc)/2 + 1.5*nseg``, so
+    ``W' = W//2 + 2*nseg`` (evened) never truncates, and the recurrence
+    stays monotone down the pyramid."""
+    widths: list[int] = []
+    width = slot_cap + slot_cap % 2
+    for _ in range(num_transitions):
+        width = width // 2 + 2 * num_segments
+        width += width % 2
+        widths.append(width)
+    return widths
+
+
+@partial(
+    frx.jit,
+    static_argnames=(
+        "class_counts",
+        "seg_chip_idx",
+        "out_width",
+        "num_transitions",
+    ),
+)
+def _repack_first_layer_zone(
+    numerator_0: Array,
+    numerator_1: Array,
+    denominator_0: Array,
+    denominator_1: Array,
+    heights: Array,
+    *,
+    class_counts: tuple[int, ...],
+    seg_chip_idx: tuple[int, ...],
+    out_width: int,
+    num_transitions: int,
+) -> tuple[tuple[Array, Array, Array, Array], Array, list[Array]]:
+    """Compact the class-layout first layer to the shard's tight traced
+    layout inside the pyramid capacity, deriving the tight counts and every
+    transition's out counts in the same program (as separate dispatches the
+    schedule chain is pure launch overhead on a warm serve). Segment ``s``
+    keeps its real slots as a live prefix, so tight slot ``j`` reads the
+    static class offset plus ``j``; the compile keys on (class layout, chip
+    map, capacity, depth) alone. Dead capacity slots land zero — nothing
+    downstream reads them."""
+    i32 = fnp.int32
+    tight_counts = traced_slot_counts(heights, seg_chip_idx)
+    out_counts = sp1_schedule_counts(tight_counts, num_transitions)
+    class_starts = [0]
+    for rc in class_counts:
+        class_starts.append(class_starts[-1] + rc)
+    starts = fnp.asarray(class_starts[:-1], i32)
+    tc = tight_counts.astype(i32)
+    cum = fnp.cumsum(tc)
+    q = fnp.arange(out_width, dtype=i32)
+    # scan_unrolled: the default scan lowers to a while op whose carry is
+    # the full index array, a device copy every trip.
+    s = fnp.searchsorted(cum, q, side="right", method="scan_unrolled")
+    s = fnp.minimum(s.astype(i32), i32(len(class_counts) - 1))
+    j = q - (cum[s] - tc[s])
+    live = q < cum[-1]
+    sentinel = i32(numerator_0.shape[0])
+    gather = fnp.where(live, starts[s] + j, sentinel)
+    planes = (
+        _gather_pad(numerator_0, gather, 0),
+        _gather_pad(numerator_1, gather, 0),
+        _gather_pad(denominator_0, gather, 0),
+        _gather_pad(denominator_1, gather, 0),
+    )
+    return planes, tight_counts, out_counts
+
+
+def repack_first_layer(
+    first: JaggedGkrLayer,
+    class_counts: tuple[int, ...],
+    heights: Array,
+    seg_chip_idx: tuple[int, ...],
+    out_width: int,
+    num_transitions: int,
+) -> tuple[JaggedGkrLayer, list[Array]]:
+    """The class-shaped first layer at the shard's tight traced counts,
+    plus the traced transition schedule, from one dispatch. ``class_counts``
+    is the host copy of the build's layout — the layer's own counts are
+    traced."""
+    planes, tight_counts, out_counts = _repack_first_layer_zone(
+        first.numerator_0,
+        first.numerator_1,
+        first.denominator_0,
+        first.denominator_1,
+        heights,
+        class_counts=class_counts,
+        seg_chip_idx=seg_chip_idx,
+        out_width=out_width,
+        num_transitions=num_transitions,
+    )
+    rn0, rn1, rd0, rd1 = planes
+    return (
+        JaggedGkrLayer(
+            numerator_0=rn0,
+            numerator_1=rn1,
+            denominator_0=rd0,
+            denominator_1=rd1,
+            row_counts=tight_counts,
+        ),
+        out_counts,
+    )
 
 
 def _arrival_offsets(
@@ -645,5 +838,5 @@ def generate_first_layer_capped(
         numerator_1=fnp.concatenate(n1_parts),
         denominator_0=fnp.concatenate(d0_parts),
         denominator_1=fnp.concatenate(d1_parts),
-        row_counts=tuple(row_counts),
+        row_counts=fnp.asarray(row_counts, fnp.int32),
     )

@@ -31,7 +31,7 @@ from pathlib import Path
 import frx.numpy as fnp
 from absl import app, flags
 
-from sp1_zorch.logup_gkr.circuit import GkrCapClass
+from sp1_zorch.logup_gkr.circuit import GkrCapClass, build_gkr_chips
 from sp1_zorch.logup_gkr.head import (
     GrindRound,
     HeadChallengesRound,
@@ -199,21 +199,37 @@ def main(argv) -> None:
     print(f"num_beta_values={num_betas}")
 
     # The shard's own a-priori-tight class, printed for cross-shard class
-    # assembly (per-chip max); --gkr_class_json pins one for the prove.
+    # assembly (per-chip max heights, max slot_cap); --gkr_class_json pins
+    # one for the prove.
     own = GkrCapClass.from_heights([int(h) for h in main_region.chip_heights])
+    gkr_chips = build_gkr_chips(
+        shard.main_trace_data.chips, main_region.chip_names
+    )
     print(
         "GKR_CLASS "
         + json.dumps(
-            {"chip_heights": dict(zip(main_region.chip_names, own.chip_heights))}
+            {
+                "chip_heights": dict(
+                    zip(main_region.chip_names, own.chip_heights)
+                ),
+                "slot_cap": own.resolved_slot_cap(
+                    gkr_chips, main_region.chip_names
+                ),
+            }
         ),
         flush=True,
     )
     cap_class = None
     if _GKR_CLASS_JSON.value:
         with open(_GKR_CLASS_JSON.value) as f:
-            bounds = json.load(f)["chip_heights"]
+            spec = json.load(f)
+        bounds = spec["chip_heights"]
         cap_class = GkrCapClass(
-            tuple(int(bounds[name]) for name in main_region.chip_names)
+            tuple(int(bounds[name]) for name in main_region.chip_names),
+            # A class json without slot_cap falls back to the derived
+            # (per-chip-max-inflated) bound — admits the same shards,
+            # just wider pyramid buffers.
+            spec.get("slot_cap"),
         )
 
     transcript, proof = replay_gkr(

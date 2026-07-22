@@ -175,7 +175,11 @@ def main(argv) -> None:
     # whir-style as trailing neutral segments, so the dump height covers only
     # the real-interaction prefix.
     n_real = sum(len(c.interactions) for c in gkr_chips)
-    starts = layer.start_indices
+    # Counts are traced on the layer; this tool is eager, so read them back.
+    counts = [int(rc) for rc in layer.row_counts]
+    starts = [0]
+    for rc in counts:
+        starts.append(starts[-1] + rc)
     ok &= check_match("height (col_h units)", starts[n_real] // 2, int(ref["height"]))
     ok &= check_match(
         "num_row_variables (SP1 fixed depth)",
@@ -185,7 +189,7 @@ def main(argv) -> None:
     rc_head = _parse_int_list(ref["interaction_row_counts_head"])
     ok &= check_match(
         "row_counts head (col_h units)",
-        [rc // 2 for rc in layer.row_counts[: len(rc_head)]],
+        [rc // 2 for rc in counts[: len(rc_head)]],
         rc_head,
     )
     si_head = _parse_int_list(ref["start_indices_head"])

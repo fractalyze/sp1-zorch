@@ -316,14 +316,22 @@ def _verify_shard(
     )
     print(
         "GKR_CLASS "
-        + json.dumps({"chip_heights": dict(zip(order, own_gkr.chip_heights))}),
+        + json.dumps(
+            {
+                "chip_heights": dict(zip(order, own_gkr.chip_heights)),
+                "slot_cap": own_gkr.resolved_slot_cap(gkr_chips, order),
+            }
+        ),
         flush=True,
     )
     gkr_class = own_gkr
     if _GKR_CLASS_JSON.value:
         with open(_GKR_CLASS_JSON.value) as f:
-            bounds = json.load(f)["chip_heights"]
-        gkr_class = GkrCapClass(tuple(int(bounds[name]) for name in order))
+            gkr_spec = json.load(f)
+        gkr_class = GkrCapClass(
+            tuple(int(gkr_spec["chip_heights"][name]) for name in order),
+            gkr_spec.get("slot_cap"),
+        )
 
     # The jagged class is fully derived — no pin flag. Same (L, n_d) ⇒
     # eval-zone cache hit; same K ⇒ open prologue/query hit; the fold zone is

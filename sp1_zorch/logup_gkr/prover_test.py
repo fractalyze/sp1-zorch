@@ -76,7 +76,7 @@ def _jagged(row_counts, n0, n1, d0, d1):
         numerator_1=fnp.array(n1, F),
         denominator_0=fnp.array(d0, F),
         denominator_1=fnp.array(d1, F),
-        row_counts=row_counts,
+        row_counts=fnp.asarray(row_counts, fnp.int32),
     )
 
 
@@ -122,12 +122,16 @@ class ExtractSp1OutputsTest(absltest.TestCase):
         )
         self.assertEqual(out.numerator.shape, (4,))
 
-    def test_all_ones_floor_passes_through(self) -> None:
+    def test_all_ones_floor_rejected(self) -> None:
+        # Counts are traced, so the contract narrowed to the saturated
+        # all-2s floor; an already-folded floor extracts via zorch's
+        # extract_jagged_outputs directly, and the width gate refuses it
+        # here rather than silently folding its children.
         layer = _jagged((1, 1), [1, 2], [3, 4], [5, 6], [7, 8])
-        out = extract_sp1_outputs(layer)
-        self.assertTrue(bool(fnp.all(out.numerator == fnp.array([1, 3, 2, 4], F))))
+        with self.assertRaises(ValueError):
+            extract_sp1_outputs(layer)
 
-    def test_mixed_floor_rejected(self) -> None:
+    def test_mixed_floor_rejected_by_width(self) -> None:
         layer = _jagged((2, 1), [1, 0, 2], [3, 0, 4], [5, 1, 6], [7, 1, 8])
         with self.assertRaises(ValueError):
             extract_sp1_outputs(layer)
@@ -360,6 +364,60 @@ class CappedProveTest(absltest.TestCase):
             _, c_exact = exact_t.sample(1)
             _, c_capped = capped_t.sample(1)
             self.assertTrue(bool(fnp.all(c_exact == c_capped)))
+
+    def test_slot_cap_class_matches_exact(self) -> None:
+        # The total-cap half of the class: slot_cap pinned to the max MEMBER
+        # tight total — strictly below the per-chip-max-derived bound, so
+        # the pyramid capacity really is narrower than the union layout —
+        # must stay byte-identical (capacity only moves dead-zero tail).
+        shards = self._shards()
+        base = self._class_of(shards)
+        names = ("A", "B")
+        member_totals = [
+            sum(
+                GkrCapClass.from_heights(
+                    [int(h) for h in s.chip_heights]
+                ).slot_counts(self._CHIPS, names)
+            )
+            for s in shards
+        ]
+        derived = sum(base.slot_counts(self._CHIPS, names))
+        self.assertLess(max(member_totals), derived)
+        cap_class = GkrCapClass(base.chip_heights, max(member_totals))
+        for shard in shards:
+            _, exact = prove_logup_gkr(
+                self._CHIPS,
+                shard,
+                None,
+                cheap_transcript(F),
+                num_betas=3,
+                num_row_variables=4,
+            )
+            _, capped = prove_logup_gkr(
+                self._CHIPS,
+                shard,
+                None,
+                cheap_transcript(F),
+                num_betas=3,
+                num_row_variables=4,
+                cap_class=cap_class,
+            )
+            self._assert_proofs_byte_equal(capped, exact)
+
+    def test_slot_cap_rejects_oversized_shard(self) -> None:
+        # Admission is two-sided: per-chip bounds AND the tight-total bound.
+        shards = self._shards()
+        cap_class = GkrCapClass(self._class_of(shards).chip_heights, 4)
+        with self.assertRaisesRegex(ValueError, "slot_cap"):
+            prove_logup_gkr(
+                self._CHIPS,
+                shards[0],
+                None,
+                cheap_transcript(F),
+                num_betas=3,
+                num_row_variables=4,
+                cap_class=cap_class,
+            )
 
     def test_capped_open_shares_one_compile_across_the_class(self) -> None:
         shards = self._shards()
