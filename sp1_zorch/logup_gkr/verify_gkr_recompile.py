@@ -30,6 +30,7 @@ from zorch.logup_gkr.jagged_prover import _jagged_round_zone
 from sp1_zorch.logup_gkr.circuit import (
     GkrCapClass,
     _chip_first_layer_capped,
+    _repack_first_layer_zone,
     build_gkr_chips,
 )
 from sp1_zorch.logup_gkr.prover import _head_zone, open_traces_capped
@@ -40,6 +41,7 @@ from sp1_zorch.shard_prover.replay import replay_gkr, shard_regions
 _ZONES = {
     "head(sp1)": _head_zone,
     "first_layer(sp1)": _chip_first_layer_capped,
+    "repack(sp1)": _repack_first_layer_zone,
     "open(sp1)": open_traces_capped,
     "transition(zorch)": _jagged_transition_core,
     "round_zone(zorch)": _jagged_round_zone,
@@ -78,7 +80,8 @@ def main() -> int:
     if len(shard_dirs) < 2:
         sys.exit("need at least two shard dirs to demonstrate executable sharing")
     with open(args.gkr_class_json) as f:
-        bounds = json.load(f)["chip_heights"]
+        spec = json.load(f)
+    bounds = spec["chip_heights"]
 
     gkr_chips = None
     cap_class = None
@@ -93,7 +96,8 @@ def main() -> int:
             chip_set = tuple(main_region.chip_names)
             gkr_chips = build_gkr_chips(shard.main_trace_data.chips, chip_set)
             cap_class = GkrCapClass(
-                tuple(int(bounds[name]) for name in chip_set)
+                tuple(int(bounds[name]) for name in chip_set),
+                spec.get("slot_cap"),
             )
         elif tuple(main_region.chip_names) != chip_set:
             sys.exit(

@@ -33,10 +33,13 @@ from sp1_zorch.logup_gkr.circuit import (
     GkrCapClass,
     GkrChip,
     _arrival_offsets,
+    capped_pyramid_widths,
     generate_first_layer_capped,
+    interaction_chip_indices,
     pack_gkr_arrival,
     region_statics,
-    sp1_schedules,
+    repack_first_layer,
+    sp1_next_row_counts,
 )
 from sp1_zorch.logup_gkr.head import (
     EF_LIMBS,
@@ -47,9 +50,9 @@ from sp1_zorch.logup_gkr.head import (
 from zorch.logup_gkr.circuit import (
     JaggedGkrLayer,
     LogUpGkrOutput,
+    build_jagged_pyramid,
     extract_jagged_outputs,
     jagged_layer_transition,
-    build_jagged_pyramid,
 )
 from zorch.logup_gkr.jagged_prover import (
     JaggedGkrLayerRound,
@@ -267,11 +270,28 @@ def extract_sp1_outputs(floor: JaggedGkrLayer) -> LogUpGkrOutput:
     """Output MLEs at SP1's fixed-depth floor.
 
     SP1's schedule saturates every interaction at two slots, one fold short
-    of zorch's all-ones floor; its extractOutput kernel folds that last step
-    inline. Run the missing transition, then interleave.
+    of zorch's all-ones floor; its extractOutput kernel folds that last
+    step inline. Slice the capacity to the saturated floor's exact
+    ``2 * num_batches`` live rows, run the missing transition, interleave.
+    All-2s saturation is the caller's obligation (counts are traced); the
+    width gate rejects a capacity too small to hold it — the all-ones or
+    mixed floors this contract does not cover.
     """
-    if all(rc == 2 for rc in floor.row_counts):
-        floor = jagged_layer_transition(floor, (1,) * floor.num_batches)
+    floor_width = 2 * floor.num_batches
+    if floor.width < floor_width:
+        raise ValueError(
+            f"extract_sp1_outputs expects the saturated all-2s floor "
+            f"({floor_width} live rows); capacity width {floor.width} "
+            f"cannot hold it"
+        )
+    floor = JaggedGkrLayer(
+        numerator_0=floor.numerator_0[:floor_width],
+        numerator_1=floor.numerator_1[:floor_width],
+        denominator_0=floor.denominator_0[:floor_width],
+        denominator_1=floor.denominator_1[:floor_width],
+        row_counts=floor.row_counts,
+    )
+    floor = jagged_layer_transition(floor, (1,) * floor.num_batches)
     return extract_jagged_outputs(floor)
 
 
@@ -363,14 +383,24 @@ def _row_cap(floor_padded: int) -> int:
 
 def _prove_from_first_layer(
     first,
+    class_counts: tuple[int, ...],
+    heights: Array,
+    seg_chip_idx: tuple[int, ...],
+    slot_cap: int,
     transcript: Transcript,
     witness: Array,
     *,
     num_row_variables: int,
     open_fn,
 ) -> tuple[Transcript, LogupGkrProof]:
-    """First-layer-onward prove: fold the pyramid, bind the output, prove
-    the layer chain, open via ``open_fn(eval_point, transcript)``.
+    """First-layer-onward prove: repack to the shard's tight traced counts
+    inside the ``slot_cap`` capacity, fold the pyramid, bind the output,
+    prove the layer chain, open via ``open_fn(eval_point, transcript)``.
+    Pyramid buffers and round workspace follow ``slot_cap`` (the class
+    total), not the sum of per-chip class maxima. The traced-geometry
+    guards zorch cannot run host-side — the row-space fit and floor
+    saturation — are discharged below against the class counts, which
+    dominate every admitted shard.
 
     The chain MUST consume layers through the lazy ``layers.pop()``
     generator, not a materialized list — only then does ProveChain release
@@ -381,17 +411,49 @@ def _prove_from_first_layer(
     the round kernels compile once per {row-cap class, 2^niv, dtype}; 2^niv
     is an SP1 protocol value and cannot be padded away.
     """
-    layers = build_jagged_pyramid(
-        first, sp1_schedules(first.row_counts, num_row_variables)
+    num_segments = len(class_counts)
+    if max(class_counts) > 1 << num_row_variables:
+        raise ValueError(
+            f"class slot count {max(class_counts)} exceeds the virtual "
+            f"row space 2^{num_row_variables}"
+        )
+    # The recurrence is monotone and saturates any count >= 1 at 2, so a
+    # class floor of all-2s pins every admitted shard's traced floor there.
+    class_floor = class_counts
+    for _ in range(num_row_variables - 1):
+        class_floor = sp1_next_row_counts(class_floor)
+    if any(rc != 2 for rc in class_floor):
+        raise ValueError(
+            f"class schedule does not saturate the floor in "
+            f"{num_row_variables - 1} transitions: {class_floor}"
+        )
+
+    capacity = slot_cap + slot_cap % 2
+    capped_first, out_counts = repack_first_layer(
+        first,
+        class_counts,
+        heights,
+        seg_chip_idx,
+        capacity,
+        num_row_variables - 1,
     )
+    schedules = list(
+        zip(
+            out_counts,
+            capped_pyramid_widths(
+                slot_cap, num_segments, num_row_variables - 1
+            ),
+            strict=True,
+        )
+    )
+    layers = build_jagged_pyramid(capped_first, schedules)
     output = extract_sp1_outputs(layers[-1])
     carry, transcript, _ = OutputBindRound(output)(None, transcript)
 
-    floor_padded = sum(rc + rc % 2 for rc in first.row_counts)
     caps = RoundWidthCaps(
-        elements=_row_cap(floor_padded),
+        elements=_row_cap(capacity),
         eq_row=1 << num_row_variables,
-        interaction=max(4, len(first.row_counts)),
+        interaction=max(4, num_segments),
     )
     # Each layer proves through the whole-layer jit zone (one executable per
     # layer): the caps pre-lay in zorch's `_jagged_round_via_zone` keys the
@@ -470,6 +532,10 @@ def prove_logup_gkr(
     chip_names, main_widths, _ = region_statics(main_region)
     prep_names, prep_widths, prep_heights = region_statics(prep_region)
 
+    cap_class.check_slot_cap(
+        [int(h) for h in main_region.chip_heights], gkr_chips, chip_names
+    )
+
     transcript, alpha, betas = _head_zone(transcript, num_betas=num_betas)
     first = generate_first_layer_capped(
         tuple(gkr_chips),
@@ -487,6 +553,10 @@ def prove_logup_gkr(
     )
     return _prove_from_first_layer(
         first,
+        cap_class.slot_counts(gkr_chips, chip_names),
+        heights,
+        interaction_chip_indices(tuple(gkr_chips), chip_names),
+        cap_class.resolved_slot_cap(gkr_chips, chip_names),
         transcript,
         witness,
         num_row_variables=num_row_variables,
