@@ -37,12 +37,14 @@ Grouping policy (memory-aware, matches the single-process prove):
 Proving against the cache:
   * The prove must run with the SAME ``XLA_FLAGS`` as the warm — compilation
     flags are part of the persistent-cache key (only dump flags are excluded).
-  * A batched ``--shard_dir=a,b,...`` prove needs an aggressive cuda_async
-    release threshold (XLA_PYTHON_CLIENT_MEM_FRACTION ~0.15): the pool
-    otherwise stays reserved at the first shard's ~29 GiB execute peak and the
-    next shard's fresh multi-GiB alloc finds no driver memory. In-process
-    batching is worth it — the second shard's trace is ~0.1 s vs minutes in a
-    fresh process (shared executables stay loaded and device-resident).
+  * One shard per prove PROCESS at big (~400M) areas. A batched
+    ``--shard_dir=a,b,...`` prove would amortize beautifully (the second
+    shard's trace is ~0.1 s vs minutes — shared executables stay loaded and
+    device-resident) but reliably OOMs on the second shard's first ~11 GiB
+    alloc: bytes_in_use is small after shard one, yet the cuda_async pool
+    stays reserved near the ~29 GiB execute peak, and no
+    XLA_PYTHON_CLIENT_MEM_FRACTION release threshold tried (1.0/0.6/0.15)
+    releases it. Root cause not yet isolated.
   * Host-RAM budget: one ptxas on a big constraint cone peaks at ~28 GiB RSS
     (secp256k1 cones far worse, fractalyze/xla#312), so
     ``--xla_gpu_force_compilation_parallelism`` multiplies into host OOMs on
