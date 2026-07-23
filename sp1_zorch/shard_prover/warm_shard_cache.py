@@ -32,8 +32,21 @@ Grouping policy (memory-aware, matches the single-process prove):
     group's area spread is tight (min/max > ``--group_area_ratio``); a wide
     group would price the small shards' zerocheck buffer at the big shard's
     area. One shared zerocheck compile per tight group (the #284-pole stage).
-  * GKR stays each shard's OWN class — a group-max GKR class inflates the
-    pyramid ~1.5x and OOMs the big shards on execute.
+  * GKR: one pinned GkrCapClass per chip-set group (heights = per-chip max,
+    slot_cap = group max) — the pyramid keys on slot_cap so the pin does not
+    inflate it, and first-layer inflation is transient.
+
+Proving against the cache:
+  * The prove must run with the SAME ``XLA_FLAGS`` as the warm — compilation
+    flags are part of the persistent-cache key (only dump flags are excluded).
+  * One shard per prove PROCESS at big (~400M) areas: a batched
+    ``--shard_dir=a,b,...`` prove OOMs on the second shard (live proof buffers
+    + cuda_async pool fragmentation), even with a release threshold.
+  * Host-RAM budget: one ptxas on a big constraint cone peaks at ~28 GiB RSS
+    (secp256k1 cones far worse, fractalyze/xla#312), so
+    ``--xla_gpu_force_compilation_parallelism`` multiplies into host OOMs on
+    cold fills — leave it unset and let cross-zone (WARM_COMPILE_THREADS) and
+    cross-worker concurrency carry the parallelism.
 """
 
 from __future__ import annotations
@@ -84,6 +97,12 @@ _WORKER_MEM_FRACTION = flags.DEFINE_float(
     "(XLA_PYTHON_CLIENT_MEM_FRACTION): releases autotune scratch between zones. "
     "Must exceed a shard's single-zone autotune need (~13.5 GiB at 400M area, "
     "so 0.5=16 GiB on a 32 GB card); with N concurrent workers keep N*frac<~1.")
+_GPUS = flags.DEFINE_string(
+    "gpus", "", "Comma-separated GPU ids to spread the warm across (e.g. "
+    "'0,1'). Chip-set groups are LPT-partitioned by estimated cold-compile "
+    "cost, and a whole group stays on one GPU — concurrent same-class "
+    "compiles on two GPUs would race the cache and duplicate the work. Empty: "
+    "one pool on the inherited CUDA_VISIBLE_DEVICES.")
 
 
 def _shard_dirs() -> list[Path]:
@@ -209,7 +228,7 @@ def main(argv):
         Path(manifest_path).write_text(json.dumps(out["manifest"]))
         print(f"wrote manifest -> {manifest_path}")
     if _WARM.value:
-        _warm(dirs, classes, manifest_path)
+        _warm(dirs, classes, groups, manifest_path)
 
 
 def _est_peak_gib(area_cap: int) -> float:
@@ -222,7 +241,37 @@ def _est_peak_gib(area_cap: int) -> float:
     return 3.0 + area_cap / 30e6  # 400M -> ~16.4 GiB (fits its ~13.5 GiB single-zone autotune)
 
 
-def _warm(dirs: list[Path], classes: dict, manifest_path: str) -> None:
+def _assign_gpus(classes: dict, groups: dict) -> dict[str, str | None]:
+    """Shard -> GPU id. Whole chip-set groups are LPT-packed onto the GPUs by
+    estimated cold cost (sum of the group's distinct zerocheck areas + one
+    group GKR compile priced at the max area) — wall time is driven by the
+    distinct cold compiles, not the shard count, and a group split across GPUs
+    would compile its shared class twice."""
+    gpus = [g.strip() for g in _GPUS.value.split(",") if g.strip()]
+    if not gpus:
+        return {s: None for s in classes}
+    load = dict.fromkeys(gpus, 0)
+    assign: dict[str, str | None] = {}
+    costed = []
+    for _, shards in groups.items():
+        areas = [classes[s]["area_cap"] for s in shards]
+        tight = len(shards) > 1 and min(areas) / max(areas) > _GROUP_AREA_RATIO.value
+        zc_cost = max(areas) if tight else sum(set(areas))
+        costed.append((zc_cost + max(areas), shards))
+    for cost, shards in sorted(costed, key=lambda t: -t[0]):
+        g = min(gpus, key=lambda x: load[x])
+        load[g] += cost
+        for s in shards:
+            assign[s] = g
+    for g in gpus:
+        mine = sorted((s for s in assign if assign[s] == g), key=_snum)
+        print(f"  GPU {g}: est cost {load[g] / 1e6:.0f}M, "
+              f"{[_snum(s) for s in mine]}", flush=True)
+    return assign
+
+
+def _warm(dirs: list[Path], classes: dict, groups: dict,
+          manifest_path: str) -> None:
     if not _CACHE_DIR.value:
         raise ValueError("--warm requires --cache_dir")
     cache = _CACHE_DIR.value
@@ -256,29 +305,37 @@ def _warm(dirs: list[Path], classes: dict, manifest_path: str) -> None:
     # device memory; workers need the GPU, so drop the override for them.
     env.pop("JAX_PLATFORMS", None)
     print(f"=== warming {len(dirs)} shards, peak-aware pool (<= {budget:.0f} GiB, "
-          f"<= {_JOBS.value} procs); est peaks "
+          f"<= {_JOBS.value} procs/GPU); est peaks "
           f"{peaks[shards[0]]:.0f}..{peaks[shards[-1]]:.0f} GiB ===", flush=True)
-    pending = list(shards)
-    running: dict = {}  # Popen -> (shard, peak)
+    assign = _assign_gpus(classes, groups)
+    pending = {g: [s for s in shards if assign[Path(s).name] == g]
+               for g in set(assign.values())}
+    running: dict = {}  # Popen -> (shard, peak, gpu)
     ok = fail = 0
-    while pending or running:
-        launched = True
-        while launched and pending:
-            launched = False
-            used = sum(pk for _, pk in running.values())
-            s = pending[0]
-            # Always allow one worker even if a lone big shard exceeds budget.
-            if len(running) < _JOBS.value and (
-                    not running or used + peaks[s] <= budget):
-                pending.pop(0)
-                p = subprocess.Popen(
-                    [sys.executable, "-m", "sp1_zorch.shard_prover.warm_worker",
-                     s, manifest_path or ""], env=env)
-                running[p] = (s, peaks[s])
-                launched = True
+    while any(pending.values()) or running:
+        for g, queue in pending.items():
+            launched = True
+            while launched and queue:
+                launched = False
+                mine = [(s, pk) for s, pk, pg in running.values() if pg == g]
+                used = sum(pk for _, pk in mine)
+                s = queue[0]
+                # Always allow one worker even if a lone big shard exceeds
+                # the budget.
+                if len(mine) < _JOBS.value and (
+                        not mine or used + peaks[s] <= budget):
+                    queue.pop(0)
+                    wenv = env if g is None else dict(
+                        env, CUDA_VISIBLE_DEVICES=g)
+                    p = subprocess.Popen(
+                        [sys.executable, "-m",
+                         "sp1_zorch.shard_prover.warm_worker",
+                         s, manifest_path or ""], env=wenv)
+                    running[p] = (s, peaks[s], g)
+                    launched = True
         for p in list(running):
             if p.poll() is not None:
-                s, _ = running.pop(p)
+                s, _, _ = running.pop(p)
                 if p.returncode == 0:
                     ok += 1
                 else:
