@@ -100,6 +100,16 @@ from zorch.transcript import Transcript, sample_challenge
 from sp1_zorch.zerocheck._round_composite import zerocheck_round_poly
 from sp1_zorch.zerocheck.coeffs import gkr_powers
 
+# Cap for the monomial-form ``constraint_eval`` body (fractalyze/xla#304, extended
+# to the ``column_weights`` + fold-inside-``delta`` path by xla#308). Rides as the
+# ``cone_program_max_monomials`` composite attribute; a plugin whose emitter
+# predates it decomposes the hint back to the cone body (byte-identical, no
+# speedup), so this is inert until a post-#308 frx wheel is pinned. Mirrors
+# openvm-zorch's ``_ZC_MAX_MONOMIALS`` (openvm-zorch#143). 512 is the measured
+# monomial-count plateau on openvm; a higher cap only risks a per-cone blow-up
+# that safely falls back to the cone body.
+_ZC_MAX_MONOMIALS = 512
+
 if TYPE_CHECKING:
     from zorch.sumcheck.gruen import GruenSummand
 
@@ -170,6 +180,7 @@ def _constraint_and_column_term(
         live_width=live_width,
         column_weights=gkr_powers,
         aux_operands=(public_values,),
+        max_monomials=_ZC_MAX_MONOMIALS,
     )
 
 
@@ -920,6 +931,7 @@ def _prove_total_cap(
                         aux_operands=(
                             (summand.public_values,) if constrained else ()
                         ),
+                        max_monomials=_ZC_MAX_MONOMIALS,
                     )
                     for k in range(3)
                 )
