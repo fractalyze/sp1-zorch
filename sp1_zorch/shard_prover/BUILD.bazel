@@ -279,7 +279,7 @@ py_binary(
     # Analyze a shard dump for optimal grouped compilation + parallel
     # persistent-cache fill:
     #   bazel run //sp1_zorch/shard_prover:warm_shard_cache -- \
-    #       --shard_dir=/path/to/rsp_dump --out_manifest=/tmp/manifest.json
+    #       --dump_dir=/path/to/rsp_dump --out_manifest=/tmp/manifest.json
     deps = [
         ":prove_shard",
         ":replay",

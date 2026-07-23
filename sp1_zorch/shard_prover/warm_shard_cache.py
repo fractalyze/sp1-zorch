@@ -155,6 +155,9 @@ def _shard_class(sd: Path) -> dict:
 
 def _analyze(dirs: list[Path]) -> tuple[dict, dict]:
     """Return (per-shard classes, chip-set groups)."""
+    names = [sd.name for sd in dirs]
+    if len(set(names)) != len(names):
+        raise ValueError("--dump_dir entries must have unique shard basenames")
     classes = {}
     for sd in dirs:
         classes[sd.name] = _shard_class(sd)
@@ -222,6 +225,8 @@ def main(argv):
     print(f"\ndistinct compiles to fill: {tot_zc} zerocheck + {tot_gkr} GKR "
           f"(+ per-chipset trace/open zones) vs {len(classes)} shards naive")
     manifest_path = _OUT_MANIFEST.value
+    if _WARM.value and not _CACHE_DIR.value:
+        raise ValueError("--warm requires --cache_dir")
     if _WARM.value and manifest_path is None:
         # The warm needs the manifest on disk for the workers; default beside
         # the cache so grouped-zerocheck compiles match the real prove.
@@ -268,8 +273,6 @@ def _group_queue(classes: dict, groups: dict) -> list[list[str]]:
 
 def _warm(dirs: list[Path], classes: dict, groups: dict,
           manifest_path: str) -> None:
-    if not _CACHE_DIR.value:
-        raise ValueError("--warm requires --cache_dir")
     cache = _CACHE_DIR.value
     Path(cache).mkdir(parents=True, exist_ok=True)
     # One shard per worker process; per GPU, workers launch peak-aware —
