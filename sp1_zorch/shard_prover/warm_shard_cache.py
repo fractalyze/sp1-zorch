@@ -252,12 +252,17 @@ def _assign_gpus(classes: dict, groups: dict) -> dict[str, str | None]:
         return {s: None for s in classes}
     load = dict.fromkeys(gpus, 0)
     assign: dict[str, str | None] = {}
+    # Per-shard rider cost: even a full cache-hit shard pays its trace+lower
+    # (~2-3 min ≈ 0.3x a 400M cold compile in these area units) — a group with
+    # many riders is NOT free after its one cold compile, so a pure
+    # cold-compile balance parks 20 riders on one card and idles the other.
+    rider = 120e6
     costed = []
     for _, shards in groups.items():
         areas = [classes[s]["area_cap"] for s in shards]
         tight = len(shards) > 1 and min(areas) / max(areas) > _GROUP_AREA_RATIO.value
         zc_cost = max(areas) if tight else sum(set(areas))
-        costed.append((zc_cost + max(areas), shards))
+        costed.append((zc_cost + max(areas) + rider * len(shards), shards))
     for cost, shards in sorted(costed, key=lambda t: -t[0]):
         g = min(gpus, key=lambda x: load[x])
         load[g] += cost
