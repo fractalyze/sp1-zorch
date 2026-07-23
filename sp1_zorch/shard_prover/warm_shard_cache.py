@@ -241,21 +241,16 @@ def _est_peak_gib(area_cap: int) -> float:
     return 3.0 + area_cap / 30e6  # 400M -> ~16.4 GiB (fits its ~13.5 GiB single-zone autotune)
 
 
-def _assign_gpus(classes: dict, groups: dict) -> dict[str, str | None]:
-    """Shard -> GPU id. Whole chip-set groups are LPT-packed onto the GPUs by
-    estimated cold cost (sum of the group's distinct zerocheck areas + one
-    group GKR compile priced at the max area) — wall time is driven by the
-    distinct cold compiles, not the shard count, and a group split across GPUs
-    would compile its shared class twice."""
-    gpus = [g.strip() for g in _GPUS.value.split(",") if g.strip()]
-    if not gpus:
-        return {s: None for s in classes}
-    load = dict.fromkeys(gpus, 0)
-    assign: dict[str, str | None] = {}
-    # Per-shard rider cost: even a full cache-hit shard pays its trace+lower
-    # (~2-3 min ≈ 0.3x a 400M cold compile in these area units) — a group with
-    # many riders is NOT free after its one cold compile, so a pure
-    # cold-compile balance parks 20 riders on one card and idles the other.
+def _group_queue(classes: dict, groups: dict) -> list[list[str]]:
+    """Chip-set groups as a work queue, costliest first. Cost = the group's
+    distinct cold zerocheck compiles (a tight group prices as its one pinned
+    compile) + one group GKR at the max area + a per-shard rider term (even a
+    full cache-hit shard pays its trace+lower, ~0.3x a 400M cold compile in
+    these area units). The queue is dispatched dynamically — whichever GPU
+    frees up takes the next group — so real per-card speed differences and
+    estimate error self-correct; the cost only sets dispatch ORDER. A group
+    never splits across GPUs: concurrent same-class compiles race the cache
+    and duplicate the work."""
     rider = 120e6
     costed = []
     for _, shards in groups.items():
@@ -263,16 +258,11 @@ def _assign_gpus(classes: dict, groups: dict) -> dict[str, str | None]:
         tight = len(shards) > 1 and min(areas) / max(areas) > _GROUP_AREA_RATIO.value
         zc_cost = max(areas) if tight else sum(set(areas))
         costed.append((zc_cost + max(areas) + rider * len(shards), shards))
+    ordered = [shards for _, shards in sorted(costed, key=lambda t: -t[0])]
     for cost, shards in sorted(costed, key=lambda t: -t[0]):
-        g = min(gpus, key=lambda x: load[x])
-        load[g] += cost
-        for s in shards:
-            assign[s] = g
-    for g in gpus:
-        mine = sorted((s for s in assign if assign[s] == g), key=_snum)
-        print(f"  GPU {g}: est cost {load[g] / 1e6:.0f}M, "
-              f"{[_snum(s) for s in mine]}", flush=True)
-    return assign
+        print(f"  queue: est {cost / 1e6:.0f}M {[_snum(s) for s in shards]}",
+              flush=True)
+    return ordered
 
 
 def _warm(dirs: list[Path], classes: dict, groups: dict,
@@ -312,13 +302,23 @@ def _warm(dirs: list[Path], classes: dict, groups: dict,
     print(f"=== warming {len(dirs)} shards, peak-aware pool (<= {budget:.0f} GiB, "
           f"<= {_JOBS.value} procs/GPU); est peaks "
           f"{peaks[shards[0]]:.0f}..{peaks[shards[-1]]:.0f} GiB ===", flush=True)
-    assign = _assign_gpus(classes, groups)
-    pending = {g: [s for s in shards if assign[Path(s).name] == g]
-               for g in set(assign.values())}
+    gpus = [g.strip() for g in _GPUS.value.split(",") if g.strip()] or [None]
+    by_name = {Path(s).name: s for s in shards}
+    group_q = ([[by_name[n] for n in grp] for grp in
+                _group_queue(classes, groups)]
+               if gpus != [None] else [list(shards)])
+    pending: dict = {g: [] for g in gpus}  # per-GPU shard queue
     running: dict = {}  # Popen -> (shard, peak, gpu)
     ok = fail = 0
-    while any(pending.values()) or running:
-        for g, queue in pending.items():
+    while any(pending.values()) or group_q or running:
+        for g in gpus:
+            queue = pending[g]
+            # Steal the next group when this GPU's queue drains — dispatch
+            # follows actual completion, not a static estimate.
+            if not queue and group_q:
+                queue.extend(sorted(
+                    group_q.pop(0),
+                    key=lambda s: -classes[Path(s).name]["area_cap"]))
             launched = True
             while launched and queue:
                 launched = False
