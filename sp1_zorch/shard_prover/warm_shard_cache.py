@@ -9,11 +9,11 @@ cache can be filled once per *distinct class* rather than once per shard.
 
 Two phases:
 
-  analyze  Scan ``--shard_dir`` (a dump holding ``shard*`` subdirs), derive
+  analyze  Scan ``--dump_dir`` (a dump holding ``shard*`` subdirs), derive
            each shard's zerocheck ``TotalCapClass``, LogUp-GKR ``GkrCapClass``,
            and jagged class, then group by chip set. Emits the group manifest
            (``--out_manifest``) and a compile plan: the distinct executables
-           and a parallel partition.
+           and the dispatch order.
 
   warm     (``--warm``) Compile-only fill: fan out ``warm_worker`` processes
            (one shard each) that drive the real prove chain but lower+compile
@@ -21,11 +21,9 @@ Two phases:
            ``frx.jit``), all writing the shared ``--cache_dir``. A real prove
            later hits every entry with zero recompiles. XLA still autotunes
            on-device during compile, so a worker peaks at ~2 GiB (46M area) to
-           ~8 GiB (400M) — far below the ~20 GiB execute; concurrency is capped
-           by ``--mem_budget_gib``. One shard per PROCESS because the cuda_async
-           pool fragments and is never returned within a process (survives
-           ``clear_caches``), so a long-lived worker OOMs after a couple of big
-           shards.
+           ~18 GiB (400M, two compile threads) — below the ~29 GiB execute;
+           concurrency is capped by ``--mem_budget_gib``, one shard per worker
+           process.
 
 Grouping policy (memory-aware, matches the single-process prove):
   * Zerocheck area_cap is pinned to the chip-set group MAX only when the
@@ -39,9 +37,12 @@ Grouping policy (memory-aware, matches the single-process prove):
 Proving against the cache:
   * The prove must run with the SAME ``XLA_FLAGS`` as the warm — compilation
     flags are part of the persistent-cache key (only dump flags are excluded).
-  * One shard per prove PROCESS at big (~400M) areas: a batched
-    ``--shard_dir=a,b,...`` prove OOMs on the second shard (live proof buffers
-    + cuda_async pool fragmentation), even with a release threshold.
+  * A batched ``--shard_dir=a,b,...`` prove needs an aggressive cuda_async
+    release threshold (XLA_PYTHON_CLIENT_MEM_FRACTION ~0.15): the pool
+    otherwise stays reserved at the first shard's ~29 GiB execute peak and the
+    next shard's fresh multi-GiB alloc finds no driver memory. In-process
+    batching is worth it — the second shard's trace is ~0.1 s vs minutes in a
+    fresh process (shared executables stay loaded and device-resident).
   * Host-RAM budget: one ptxas on a big constraint cone peaks at ~28 GiB RSS
     (secp256k1 cones far worse, fractalyze/xla#312), so
     ``--xla_gpu_force_compilation_parallelism`` multiplies into host OOMs on
@@ -86,7 +87,7 @@ _CACHE_DIR = flags.DEFINE_string(
     "cache_dir", None, "Persistent compile cache dir the warm workers fill "
     "(and a real prove later hits). Required with --warm.")
 _JOBS = flags.DEFINE_integer(
-    "jobs", 8, "Max parallel warm workers. The effective count is capped by "
+    "jobs", 8, "Max parallel warm workers per GPU. The effective count is capped by "
     "--mem_budget_gib / (biggest shard's compile-only peak) so concurrent "
     "workers fit the card; small-shard dumps use the full --jobs.")
 _MEM_BUDGET_GIB = flags.DEFINE_float(
@@ -99,9 +100,9 @@ _WORKER_MEM_FRACTION = flags.DEFINE_float(
     "so 0.5=16 GiB on a 32 GB card); with N concurrent workers keep N*frac<~1.")
 _GPUS = flags.DEFINE_string(
     "gpus", "", "Comma-separated GPU ids to spread the warm across (e.g. "
-    "'0,1'). Chip-set groups are LPT-partitioned by estimated cold-compile "
-    "cost, and a whole group stays on one GPU — concurrent same-class "
-    "compiles on two GPUs would race the cache and duplicate the work. Empty: "
+    "'0,1'). Chip-set groups are dispatched dynamically, costliest first — "
+    "whichever GPU drains its queue takes the next group; a whole group stays "
+    "on one GPU (concurrent same-class compiles would race the cache). Empty: "
     "one pool on the inherited CUDA_VISIBLE_DEVICES.")
 
 
@@ -232,13 +233,11 @@ def main(argv):
 
 
 def _est_peak_gib(area_cap: int) -> float:
-    """Conservative compile-only device peak with the pool-release cap (autotune
-    ON): the cap keeps a big shard's scratch from accumulating, so the peak
-    holds at the single-zone max — ~2 GiB at 46M, ~11.5 GiB at 402M.
-    Overestimate a little so the peak-aware scheduler never packs into an OOM;
-    two 400M shards (~11.5 GiB each measured) then run concurrently on a 32 GB
-    card, small ones pack further."""
-    return 3.0 + area_cap / 30e6  # 400M -> ~16.4 GiB (fits its ~13.5 GiB single-zone autotune)
+    """Conservative compile-only device peak with the pool-release cap and the
+    default two compile threads (autotune ON): measured 18.3 GiB at 402M,
+    2.1 GiB at 46M. Overestimate a little so the peak-aware scheduler never
+    packs into an OOM."""
+    return 4.0 + area_cap / 28e6  # 400M -> ~18.3 GiB (measured at 402M)
 
 
 def _group_queue(classes: dict, groups: dict) -> list[list[str]]:
@@ -271,18 +270,11 @@ def _warm(dirs: list[Path], classes: dict, groups: dict,
         raise ValueError("--warm requires --cache_dir")
     cache = _CACHE_DIR.value
     Path(cache).mkdir(parents=True, exist_ok=True)
-    # Workers run concurrently and each peaks at its LARGEST shard, so cap the
-    # worker count by the memory budget: n * max_peak <= budget. Then LPT-pack
-    # (largest first into the least-loaded worker) to balance compile time;
-    # same-class compiles dedup in the shared cache.
-    # ONE shard per worker PROCESS: the cuda_async pool fragments and is never
-    # returned within a process (survives clear_caches), so a long-lived worker
-    # OOMs after a couple of big shards. A fresh process per shard resets the
-    # pool. Cap concurrency by the memory budget (each peaks at its shard).
-    # Biggest first, so a heavy shard grabs the card early and runs ~solo while
-    # small ones pack around it. Peak-aware: launch a worker only if the sum of
-    # running peaks (+ its own) still fits the budget — so a ~24 GiB 400M shard
-    # never coexists with another big one, but several small shards do.
+    # One shard per worker process; per GPU, workers launch peak-aware —
+    # only while the sum of running est peaks (+ the candidate's) fits the
+    # budget — so a big shard runs ~solo while small ones pack around it.
+    # Biggest shard first within a group, so its cold class compiles while
+    # the riders queue behind it.
     shards = sorted((str(sd) for sd in dirs),
                     key=lambda s: -classes[Path(s).name]["area_cap"])
     peaks = {s: _est_peak_gib(classes[Path(s).name]["area_cap"]) for s in shards}

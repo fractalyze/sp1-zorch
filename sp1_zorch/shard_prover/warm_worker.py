@@ -7,12 +7,13 @@ persistent cache) and returns `eval_shape`'d zeros — the chain flows to the ne
 stage on correct shapes without ever running a kernel. A depth guard keeps
 nested zone calls running the real jit, so each zone lowers with its nested jits
 inlined exactly as the real prove compiles them (verified: a real prove then
-hits every cache entry byte-for-byte). Peak device memory is a couple GiB (no
-20 GiB execute workspace), so many workers pack on one card.
+hits every cache entry byte-for-byte). Peak device memory is the autotune
+scratch, not the ~29 GiB execute workspace — ~2 GiB at 46M area, ~18 GiB at
+400M with the default two compile threads.
 
 `frx.jit` MUST be patched before the chain imports bind their decorators, so
 this module patches at import top, before any sp1/zorch import. Run as a
-subprocess per partition from ``warm_shard_cache --warm``.
+subprocess per shard from ``warm_shard_cache --warm``.
 """
 
 import concurrent.futures
