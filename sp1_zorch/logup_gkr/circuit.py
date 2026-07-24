@@ -17,7 +17,7 @@ in the main trace's BF dtype; denominators are EF.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from functools import partial
+from functools import cache, partial
 from typing import Mapping, Sequence
 
 import frx
@@ -52,10 +52,21 @@ def build_gkr_chips(
     chips stay in the list (multi-block AIRs put their GKR work on a sibling
     control chip); stub chips (no typed interactions because the rw manifest
     width disagrees with the trace) are skipped rather than emitting garbage.
+
+    Memoized so consumers reuse one tuple and keep the prove-chain jit statics
+    identity-stable (sp1-zorch#294). The dict is unhashable but ``Chip`` hashes
+    by identity, so the key is the ``(name, chip)`` pairs, pinned by the cache.
     """
+    return _build_gkr_chips(tuple((name, chips[name]) for name in chip_names))
+
+
+@cache
+def _build_gkr_chips(
+    named_chips: tuple[tuple[str, Chip], ...],
+) -> tuple[GkrChip, ...]:
     gkr_chips: list[GkrChip] = []
-    for name in chip_names:
-        sends, recvs = chips[name].get_sends(), chips[name].get_receives()
+    for name, chip in named_chips:
+        sends, recvs = chip.get_sends(), chip.get_receives()
         if any(i.interaction is None for i in (*sends, *recvs)):
             continue
         sends = sorted(sends, key=_by_sp1_index)

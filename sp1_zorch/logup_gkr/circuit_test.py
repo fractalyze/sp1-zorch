@@ -362,6 +362,13 @@ class BuildGkrChipsTest(absltest.TestCase):
         )
         self.assertEqual(build_gkr_chips({"A": stub}, ("A",)), ())
 
+    def test_same_chip_set_returns_same_tuple(self) -> None:
+        # The memo the prove chain relies on: repeat calls over one chips object
+        # hand the identity-keyed jit statics the SAME tuple (sp1-zorch#294).
+        chip = self._chip_with_infos("A", {})
+        chips = {"A": chip}
+        self.assertIs(build_gkr_chips(chips, ("A",)), build_gkr_chips(chips, ("A",)))
+
 
 def _reference_first_layer(chips, main_region, prep_region, alpha, betas):
     """Pre-vectorization per-interaction build (the SP1-byte-matched path):
