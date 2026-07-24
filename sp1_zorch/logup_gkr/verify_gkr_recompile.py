@@ -29,8 +29,8 @@ from zorch.logup_gkr.circuit import _jagged_transition_core
 from zorch.logup_gkr.jagged_prover import _jagged_round_zone
 from sp1_zorch.logup_gkr.circuit import (
     GkrCapClass,
-    _chip_first_layer_capped,
-    _repack_first_layer_zone,
+    _chip_first_layer,
+    _assemble_first_layer,
     build_gkr_chips,
 )
 from sp1_zorch.logup_gkr.prover import _head_zone, open_traces_capped
@@ -40,8 +40,8 @@ from sp1_zorch.shard_prover.replay import replay_gkr, shard_regions
 # Every class-keyed zone the stage dispatches through, with where it lives.
 _ZONES = {
     "head(sp1)": _head_zone,
-    "first_layer(sp1)": _chip_first_layer_capped,
-    "repack(sp1)": _repack_first_layer_zone,
+    "first_layer(sp1)": _chip_first_layer,
+    "assemble(sp1)": _assemble_first_layer,
     "open(sp1)": open_traces_capped,
     "transition(zorch)": _jagged_transition_core,
     "round_zone(zorch)": _jagged_round_zone,

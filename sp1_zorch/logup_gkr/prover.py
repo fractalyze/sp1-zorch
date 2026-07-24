@@ -35,11 +35,10 @@ from sp1_zorch.logup_gkr.circuit import (
     _arrival_offsets,
     capped_pyramid_widths,
     generate_first_layer_capped,
-    interaction_chip_indices,
     pack_gkr_arrival,
     region_statics,
-    repack_first_layer,
     sp1_next_row_counts,
+    sp1_schedule_counts,
 )
 from sp1_zorch.logup_gkr.head import (
     EF_LIMBS,
@@ -382,10 +381,8 @@ def _row_cap(floor_padded: int) -> int:
 
 
 def _prove_from_first_layer(
-    first,
+    first: JaggedGkrLayer,
     class_counts: tuple[int, ...],
-    heights: Array,
-    seg_chip_idx: tuple[int, ...],
     slot_cap: int,
     transcript: Transcript,
     witness: Array,
@@ -393,9 +390,9 @@ def _prove_from_first_layer(
     num_row_variables: int,
     open_fn,
 ) -> tuple[Transcript, LogupGkrProof]:
-    """First-layer-onward prove: repack to the shard's tight traced counts
-    inside the ``slot_cap`` capacity, fold the pyramid, bind the output,
-    prove the layer chain, open via ``open_fn(eval_point, transcript)``.
+    """First-layer-onward prove over the tight-layout ``first`` layer: fold
+    the pyramid, bind the output, prove the layer chain, open via
+    ``open_fn(eval_point, transcript)``.
     Pyramid buffers and round workspace follow ``slot_cap`` (the class
     total), not the sum of per-chip class maxima. The traced-geometry
     guards zorch cannot run host-side — the row-space fit and floor
@@ -429,24 +426,16 @@ def _prove_from_first_layer(
         )
 
     capacity = slot_cap + slot_cap % 2
-    capped_first, out_counts = repack_first_layer(
-        first,
-        class_counts,
-        heights,
-        seg_chip_idx,
-        capacity,
-        num_row_variables - 1,
-    )
     schedules = list(
         zip(
-            out_counts,
+            sp1_schedule_counts(first.row_counts, num_row_variables - 1),
             capped_pyramid_widths(
                 slot_cap, num_segments, num_row_variables - 1
             ),
             strict=True,
         )
     )
-    layers = build_jagged_pyramid(capped_first, schedules)
+    layers = build_jagged_pyramid(first, schedules)
     output = extract_sp1_outputs(layers[-1])
     carry, transcript, _ = OutputBindRound(output)(None, transcript)
 
@@ -554,8 +543,6 @@ def prove_logup_gkr(
     return _prove_from_first_layer(
         first,
         cap_class.slot_counts(gkr_chips, chip_names),
-        heights,
-        interaction_chip_indices(tuple(gkr_chips), chip_names),
         cap_class.resolved_slot_cap(gkr_chips, chip_names),
         transcript,
         witness,

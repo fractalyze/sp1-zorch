@@ -32,7 +32,7 @@ from zorch.pcs.jagged.commit import commit_region
 from sp1_zorch.logup_gkr.circuit import (
     GkrCapClass,
     GkrChip,
-    _chip_first_layer_capped,
+    _chip_first_layer,
 )
 from sp1_zorch.logup_gkr.prover import (
     ChipEvaluation,
@@ -591,7 +591,7 @@ class LogupGkrStageCapClassTest(absltest.TestCase):
             )
             shards.append((rows, main_region, public_values, want))
 
-        build_before = _chip_first_layer_capped._cache_size()
+        build_before = _chip_first_layer._cache_size()
         open_before = open_traces_capped._cache_size()
         for rows, main_region, public_values, want in shards:
             bridge = ShardBridge(main_region, None, public_values)
@@ -610,7 +610,7 @@ class LogupGkrStageCapClassTest(absltest.TestCase):
         # One first-layer compile per chip and one open compile across both
         # shards: the class shapes + traced heights keep shard 2 a cache hit.
         self.assertEqual(
-            _chip_first_layer_capped._cache_size() - build_before,
+            _chip_first_layer._cache_size() - build_before,
             len(gkr_chips),
         )
         self.assertEqual(open_traces_capped._cache_size() - open_before, 1)

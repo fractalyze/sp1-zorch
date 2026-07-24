@@ -223,7 +223,7 @@ def _chip_mult_fingerprint(
         "prep_width", "prep_height",
     ),
 )
-def _chip_first_layer_capped(
+def _chip_first_layer(
     chip: GkrChip,
     main_flat: Array,
     prep_flat: Array | None,
@@ -283,6 +283,66 @@ def _chip_first_layer_capped(
             fnp.where(live, fingerprint[:, 1::2], one), pad, constant_values=1
         ).reshape(-1),
     )
+
+
+@partial(
+    frx.jit,
+    static_argnames=("class_counts", "seg_chip_idx", "out_width"),
+)
+def _assemble_first_layer(
+    blocks: tuple[tuple[Array, Array, Array, Array], ...],
+    heights: Array,
+    *,
+    class_counts: tuple[int, ...],
+    seg_chip_idx: tuple[int, ...],
+    out_width: int,
+) -> tuple[tuple[Array, Array, Array, Array], Array]:
+    """The class-layout concat and its compaction to the shard's tight
+    traced layout in ONE program, so the class-layout planes are XLA
+    temporaries, never a held array (sp1-zorch#292). Segment ``s`` keeps
+    its real slots as a live prefix, so tight slot ``j`` reads the static
+    class offset plus ``j``; the compile keys on (class layout, chip map,
+    capacity) alone. Dead capacity slots land zero — nothing downstream
+    reads them."""
+    i32 = fnp.int32
+    bf_dtype = blocks[0][0].dtype
+    ef_dtype = blocks[0][2].dtype
+    # Power-of-two interaction padding: full pad slots of the neutral
+    # fraction behind the real chips' blocks.
+    pad_total = sum(class_counts) - sum(b[0].shape[0] for b in blocks)
+    parts = list(zip(*blocks))
+    if pad_total:
+        parts[0] += (fnp.zeros(pad_total, dtype=bf_dtype),)
+        parts[1] += (fnp.zeros(pad_total, dtype=bf_dtype),)
+        parts[2] += (fnp.ones(pad_total, dtype=ef_dtype),)
+        parts[3] += (fnp.ones(pad_total, dtype=ef_dtype),)
+    numerator_0, numerator_1, denominator_0, denominator_1 = (
+        fnp.concatenate(list(p)) for p in parts
+    )
+
+    tight_counts = traced_slot_counts(heights, seg_chip_idx)
+    class_starts = [0]
+    for rc in class_counts:
+        class_starts.append(class_starts[-1] + rc)
+    starts = fnp.asarray(class_starts[:-1], i32)
+    tc = tight_counts.astype(i32)
+    cum = fnp.cumsum(tc)
+    q = fnp.arange(out_width, dtype=i32)
+    # scan_unrolled: the default scan lowers to a while op whose carry is
+    # the full index array, a device copy every trip.
+    s = fnp.searchsorted(cum, q, side="right", method="scan_unrolled")
+    s = fnp.minimum(s.astype(i32), i32(len(class_counts) - 1))
+    j = q - (cum[s] - tc[s])
+    live = q < cum[-1]
+    sentinel = i32(numerator_0.shape[0])
+    gather = fnp.where(live, starts[s] + j, sentinel)
+    planes = (
+        _gather_pad(numerator_0, gather, 0),
+        _gather_pad(numerator_1, gather, 0),
+        _gather_pad(denominator_0, gather, 0),
+        _gather_pad(denominator_1, gather, 0),
+    )
+    return planes, tight_counts
 
 
 def region_statics(
@@ -536,11 +596,13 @@ def traced_slot_counts(heights: Array, seg_chip_idx: tuple[int, ...]) -> Array:
     return i32(2) * col_h
 
 
+@partial(frx.jit, static_argnames=("num_transitions",))
 def sp1_schedule_counts(
     tight_counts: Array, num_transitions: int
 ) -> list[Array]:
     """``sp1_schedules`` on traced counts: ``ceil(rc / 4) * 2`` per segment
-    per transition."""
+    per transition. One compiled dispatch — eagerly the chain is
+    ``num_transitions`` launches of trivial work on a warm serve."""
     i32 = fnp.int32
     outs: list[Array] = []
     counts = tight_counts
@@ -564,98 +626,6 @@ def capped_pyramid_widths(
         width += width % 2
         widths.append(width)
     return widths
-
-
-@partial(
-    frx.jit,
-    static_argnames=(
-        "class_counts",
-        "seg_chip_idx",
-        "out_width",
-        "num_transitions",
-    ),
-)
-def _repack_first_layer_zone(
-    numerator_0: Array,
-    numerator_1: Array,
-    denominator_0: Array,
-    denominator_1: Array,
-    heights: Array,
-    *,
-    class_counts: tuple[int, ...],
-    seg_chip_idx: tuple[int, ...],
-    out_width: int,
-    num_transitions: int,
-) -> tuple[tuple[Array, Array, Array, Array], Array, list[Array]]:
-    """Compact the class-layout first layer to the shard's tight traced
-    layout inside the pyramid capacity, deriving the tight counts and every
-    transition's out counts in the same program (as separate dispatches the
-    schedule chain is pure launch overhead on a warm serve). Segment ``s``
-    keeps its real slots as a live prefix, so tight slot ``j`` reads the
-    static class offset plus ``j``; the compile keys on (class layout, chip
-    map, capacity, depth) alone. Dead capacity slots land zero — nothing
-    downstream reads them."""
-    i32 = fnp.int32
-    tight_counts = traced_slot_counts(heights, seg_chip_idx)
-    out_counts = sp1_schedule_counts(tight_counts, num_transitions)
-    class_starts = [0]
-    for rc in class_counts:
-        class_starts.append(class_starts[-1] + rc)
-    starts = fnp.asarray(class_starts[:-1], i32)
-    tc = tight_counts.astype(i32)
-    cum = fnp.cumsum(tc)
-    q = fnp.arange(out_width, dtype=i32)
-    # scan_unrolled: the default scan lowers to a while op whose carry is
-    # the full index array, a device copy every trip.
-    s = fnp.searchsorted(cum, q, side="right", method="scan_unrolled")
-    s = fnp.minimum(s.astype(i32), i32(len(class_counts) - 1))
-    j = q - (cum[s] - tc[s])
-    live = q < cum[-1]
-    sentinel = i32(numerator_0.shape[0])
-    gather = fnp.where(live, starts[s] + j, sentinel)
-    planes = (
-        _gather_pad(numerator_0, gather, 0),
-        _gather_pad(numerator_1, gather, 0),
-        _gather_pad(denominator_0, gather, 0),
-        _gather_pad(denominator_1, gather, 0),
-    )
-    return planes, tight_counts, out_counts
-
-
-def repack_first_layer(
-    first: JaggedGkrLayer,
-    class_counts: tuple[int, ...],
-    heights: Array,
-    seg_chip_idx: tuple[int, ...],
-    out_width: int,
-    num_transitions: int,
-) -> tuple[JaggedGkrLayer, list[Array]]:
-    """The class-shaped first layer at the shard's tight traced counts,
-    plus the traced transition schedule, from one dispatch. ``class_counts``
-    is the host copy of the build's layout — the layer's own counts are
-    traced."""
-    planes, tight_counts, out_counts = _repack_first_layer_zone(
-        first.numerator_0,
-        first.numerator_1,
-        first.denominator_0,
-        first.denominator_1,
-        heights,
-        class_counts=class_counts,
-        seg_chip_idx=seg_chip_idx,
-        out_width=out_width,
-        num_transitions=num_transitions,
-    )
-    rn0, rn1, rd0, rd1 = planes
-    return (
-        JaggedGkrLayer(
-            numerator_0=rn0,
-            numerator_1=rn1,
-            denominator_0=rd0,
-            denominator_1=rd1,
-            row_counts=tight_counts,
-        ),
-        out_counts,
-    )
 
 
 def _arrival_offsets(
@@ -773,70 +743,55 @@ def generate_first_layer_capped(
     prep_widths: tuple[int, ...],
     prep_heights: tuple[int, ...],
 ) -> JaggedGkrLayer:
-    """``generate_first_layer`` on the class-shaped flat arrival: static
-    slices at the class bounds + the traced ``heights`` vector, so the
-    build — and everything downstream reading ``row_counts`` — compiles
-    once per (chip set, class). Byte-identical on every admitted shard
-    (``_chip_first_layer_capped``)."""
+    """The first layer at the shard's tight traced layout: one class-bound
+    block per chip (``_chip_first_layer``), compacted and assembled by
+    ``_assemble_first_layer`` — the class-layout planes exist only as XLA
+    temporaries inside it. Compiles once per (chip set, class); live prefix
+    byte-identical to ``generate_first_layer``'s exact build."""
     name_to_idx = {name: i for i, name in enumerate(chip_names)}
     prep_name_to_idx = {name: i for i, name in enumerate(prep_names)}
     main_offsets = _arrival_offsets(main_widths, cap_class.chip_heights)
     prep_offsets = _arrival_offsets(prep_widths, prep_heights)
 
-    total_interactions = sum(len(c.interactions) for c in gkr_chips)
-    padded_interactions = 1 << log2_ceil_usize(total_interactions)
+    seg_chip_idx = interaction_chip_indices(gkr_chips, chip_names)
+    slot_cap = cap_class.resolved_slot_cap(gkr_chips, chip_names)
+    capacity = slot_cap + slot_cap % 2
 
-    bf_dtype = main_flat.dtype
-    ef_dtype = alpha.dtype
-
-    n0_parts: list[Array] = []
-    n1_parts: list[Array] = []
-    d0_parts: list[Array] = []
-    d1_parts: list[Array] = []
-    row_counts: list[int] = []
-
+    blocks: list[tuple[Array, Array, Array, Array]] = []
     for chip in gkr_chips:
         if not chip.interactions:
             continue
         idx = name_to_idx[chip.name]
-        cap = cap_class.chip_heights[idx]
-
         has_prep = chip.name in prep_name_to_idx and prep_flat is not None
         p_idx = prep_name_to_idx[chip.name] if has_prep else 0
-        chip_n0, chip_n1, chip_d0, chip_d1 = _chip_first_layer_capped(
-            chip,
-            main_flat,
-            prep_flat if has_prep else None,
-            heights[idx],
-            alpha,
-            betas,
-            main_start=main_offsets[idx],
-            main_width=main_widths[idx],
-            cap=cap,
-            prep_start=prep_offsets[p_idx] if has_prep else 0,
-            prep_width=prep_widths[p_idx] if has_prep else 0,
-            prep_height=prep_heights[p_idx] if has_prep else 0,
+        blocks.append(
+            _chip_first_layer(
+                chip,
+                main_flat,
+                prep_flat if has_prep else None,
+                heights[idx],
+                alpha,
+                betas,
+                main_start=main_offsets[idx],
+                main_width=main_widths[idx],
+                cap=cap_class.chip_heights[idx],
+                prep_start=prep_offsets[p_idx] if has_prep else 0,
+                prep_width=prep_widths[p_idx] if has_prep else 0,
+                prep_height=prep_heights[p_idx] if has_prep else 0,
+            )
         )
-        n0_parts.append(chip_n0)
-        n1_parts.append(chip_n1)
-        d0_parts.append(chip_d0)
-        d1_parts.append(chip_d1)
-        row_counts.extend([2 * sp1_col_h(cap)] * len(chip.interactions))
 
-    pad_slot_count = 2 * sp1_col_h(0)
-    n_pad = padded_interactions - total_interactions
-    if n_pad > 0:
-        pad_total = n_pad * pad_slot_count
-        n0_parts.append(fnp.zeros(pad_total, dtype=bf_dtype))
-        n1_parts.append(fnp.zeros(pad_total, dtype=bf_dtype))
-        d0_parts.append(fnp.ones(pad_total, dtype=ef_dtype))
-        d1_parts.append(fnp.ones(pad_total, dtype=ef_dtype))
-        row_counts.extend([pad_slot_count] * n_pad)
-
+    (n0, n1, d0, d1), tight_counts = _assemble_first_layer(
+        tuple(blocks),
+        heights,
+        class_counts=cap_class.slot_counts(gkr_chips, chip_names),
+        seg_chip_idx=seg_chip_idx,
+        out_width=capacity,
+    )
     return JaggedGkrLayer(
-        numerator_0=fnp.concatenate(n0_parts),
-        numerator_1=fnp.concatenate(n1_parts),
-        denominator_0=fnp.concatenate(d0_parts),
-        denominator_1=fnp.concatenate(d1_parts),
-        row_counts=fnp.asarray(row_counts, fnp.int32),
+        numerator_0=n0,
+        numerator_1=n1,
+        denominator_0=d0,
+        denominator_1=d1,
+        row_counts=tight_counts,
     )
