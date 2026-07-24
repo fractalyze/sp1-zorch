@@ -540,9 +540,9 @@ def pack_flat_arrival(
     the same ``cols*evenpad(h)`` cumsum offsets ``_prove_total_cap`` derives
     from the traced heights (the two layouts MUST agree), zeros to the round-0
     buffer ``area_cap + 2*eq_widths(num_vars, 0)[0]`` (the area-only class plus
-    the machine window tail). Stays in the traces' own (base) field — the body
-    pre-lifts the halved buffer to EF once (a per-row lift blows up the
-    cone-kernel compile, sp1-zorch#284). No chip is padded to the class window,
+    the machine window tail). Stays in the traces' own (base) field — round 0
+    consumes it there and the cones embed to EF at the accumulate. No chip is
+    padded to the class window,
     so the arrival is the live area, not ``2W`` per chip (a wide class made that
     uniform padding overflow int32 element indexing and dwarf the packed buffer
     itself).
@@ -779,14 +779,8 @@ def _prove_total_cap(
                 f"flat_arrival must be the round-0 buffer [{buf_len}] "
                 f"(area_cap + 2*W), got {flat_arrival.shape}"
             )
-        # Lift the whole halved buffer to EF ONCE, not per element in the cone
-        # body: a per-row base->EF lift of a strided slice emits
-        # bitcast-convert(broadcast(scalar)) -> a materialized koalabear_mont
-        # [N,1] splat per cone region per round, which both crashes codegen
-        # (Literal::Reshape [N,1] vs []) and ~3x's the zerocheck cold compile
-        # (sp1-zorch#284). Pre-lifting collapses every splat to one convert.
-        p0h0 = flat_arrival[0::2].astype(ef)
-        diffh0 = (flat_arrival[1::2] - flat_arrival[0::2]).astype(ef)
+        p0h0 = flat_arrival[0::2]
+        diffh0 = flat_arrival[1::2] - flat_arrival[0::2]
     else:
         arr_rows = [int(t.shape[1]) for t in traces]
         arr_off_list: list[int] = []
