@@ -18,7 +18,7 @@ from zorch.pcs.jagged.region import JaggedRegion
 from sp1_zorch.logup_gkr.circuit import (
     GkrCapClass,
     GkrChip,
-    _chip_first_layer_capped,
+    _chip_first_layer,
     _chip_view,
     build_gkr_chips,
     generate_first_layer,
@@ -728,17 +728,15 @@ class CappedFirstLayerTest(absltest.TestCase):
             generate_first_layer(chips, shard, None, ALPHA, BETAS)
             for shard in (shard1, shard2)
         ]
-        before = _chip_first_layer_capped._cache_size()
+        before = _chip_first_layer._cache_size()
         for shard, exact in zip((shard1, shard2), exacts):
             capped = _capped_layer(chips, shard, None, cls)
-            self.assertEqual(
-                _host_counts(capped), cls.slot_counts(chips, shard.chip_names)
-            )
+            self.assertEqual(_host_counts(capped), _host_counts(exact))
             self._assert_matches_exact(capped, exact)
         # One compile per chip across both shards: the class shapes + traced
         # height keep the second shard a cache hit.
         self.assertEqual(
-            _chip_first_layer_capped._cache_size() - before, len(chips)
+            _chip_first_layer._cache_size() - before, len(chips)
         )
 
     def test_prep_chip_matches_exact_under_a_wider_class(self) -> None:
