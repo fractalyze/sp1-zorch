@@ -2,7 +2,7 @@
 """`prove_shard_chain` vs the hand-threaded stage sequence.
 
 The chain is wiring, not math — each stage function is gated by its own
-tests — so this test demands the ``ProveChain`` composition is byte-identical
+tests — so this test demands the ``prove_rounds`` composition is byte-identical
 to calling commit, LogUp-GKR, and zerocheck by hand on the same sponge: same
 messages, same bridge products, same Fiat-Shamir stream afterwards. Any drift
 in stage order, bridge threading, or preamble encoding desynchronizes the two
@@ -40,6 +40,8 @@ from sp1_zorch.logup_gkr.prover import (
     prove_logup_gkr,
 )
 from sp1_zorch.poseidon2.koalabear16 import koalabear16_params
+from zorch.round import prove_rounds
+
 from sp1_zorch.shard_prover.prove_shard import (
     JaggedPcsStage,
     LogupGkrStage,
@@ -231,7 +233,7 @@ class ProveShardChainTest(absltest.TestCase):
         # CPU-runnable); with no class pinned it derives the shard's own
         # a-priori-tight class and stays byte-identical to an eager exact
         # prove.
-        chain = prove_shard_chain(
+        stages = prove_shard_chain(
             smcs=smcs,
             log_blowup=_LOG_BLOWUP,
             vk=vk,
@@ -246,7 +248,7 @@ class ProveShardChainTest(absltest.TestCase):
         )
         # A jit=True twin for the lowering smoke (sp1-zorch#119): same wiring,
         # with the commit/zerocheck/jagged-eval stages jitted (LogUp-GKR stays eager).
-        cls.jit_chain = prove_shard_chain(
+        cls.jit_stages = prove_shard_chain(
             smcs=smcs,
             log_blowup=_LOG_BLOWUP,
             vk=vk,
@@ -267,13 +269,13 @@ class ProveShardChainTest(absltest.TestCase):
         bridge = ShardBridge(main_region, prep_region, public_values)
         transcript = cheap_transcript(BF)
         msgs = []
-        for i, stage in enumerate(chain.rounds):
+        for i, stage in enumerate(stages):
             bridge, transcript, msg = stage(bridge, transcript)
             msgs.append(msg)
             if i == 2:  # after zerocheck, where the hand replay stops
                 cls.got_transcript = transcript
         cls.bridge, cls.msgs, cls.jagged = bridge, msgs, msgs[-1]
-        cls.chain = chain
+        cls.stages = stages
         cls.main_region = main_region
         cls.prep_region = prep_region
         cls.public_values = public_values
@@ -343,7 +345,7 @@ class ProveShardChainTest(absltest.TestCase):
         _assert_bytes_equal(got.msgs.round_poly, want.msgs.round_poly, "round_poly")
         _assert_bytes_equal(got.msgs.challenge, want.msgs.challenge, "challenge")
 
-    def _assert_chain_lowers(self, chain) -> None:
+    def _assert_chain_lowers(self, stages) -> None:
         # The bridge is built inside the traced function (so this needs no pytree
         # registration of ``ShardBridge``); backend compile stays GPU's job --
         # poseidon2 has no CPU fusion emitter and CPU jit miscompiles field dots
@@ -352,7 +354,7 @@ class ProveShardChainTest(absltest.TestCase):
             bridge = ShardBridge(
                 replace(self.main_region, dense=dense), self.prep_region, public_values
             )
-            _, out_transcript, _ = chain(bridge, transcript)
+            _, out_transcript, _ = prove_rounds(stages, bridge, transcript)
             return out_transcript
 
         lowered = frx.jit(run).lower(
@@ -363,13 +365,13 @@ class ProveShardChainTest(absltest.TestCase):
     def test_chain_lowers_under_single_jit(self) -> None:
         """The whole chain traces as one ``@jit`` region: no stage forces a host
         sync that would split it."""
-        self._assert_chain_lowers(self.chain)
+        self._assert_chain_lowers(self.stages)
 
     def test_jit_chain_lowers_with_logup_gkr_eager(self) -> None:
         """``prove_shard_chain(jit=True)`` jits the commit/zerocheck/jagged-eval
         stages while LogUp-GKR stays eager (sp1-zorch#264): the chain still lowers
         cleanly, with no stray host-side ``bool(ok)`` leaking from the eager grind."""
-        self._assert_chain_lowers(self.jit_chain)
+        self._assert_chain_lowers(self.jit_stages)
 
     def test_jaggedregion_is_a_pytree_with_only_dense_as_leaf(self) -> None:
         """JaggedRegion registers ``dense`` as its sole array leaf; the layout
@@ -407,7 +409,7 @@ class ProveShardChainTest(absltest.TestCase):
         (fractalyze/frx#168), GPU owns backend compile."""
 
         def run(bridge, transcript):
-            _, out_transcript, _ = self.chain(bridge, transcript)
+            _, out_transcript, _ = prove_rounds(self.stages, bridge, transcript)
             return out_transcript
 
         bridge = ShardBridge(self.main_region, self.prep_region, self.public_values)

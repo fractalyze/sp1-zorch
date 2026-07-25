@@ -3,7 +3,7 @@
 
 The dual chain's guarantee is structural before it is cryptographic: one
 verifier Stage per prover stage, so a proof whose message list misaligns with
-the schedule is rejected loudly by ``VerifyChain`` itself rather than
+the schedule is rejected loudly by ``verify_rounds`` itself rather than
 accepted on a desynced stream. These tests pin that alignment plus all four
 stage duals against a full prover run (the shared ``chain_testkit``
 fixture): same Fiat-Shamir stream, bridge seams written for the downstream
@@ -29,6 +29,8 @@ from sp1_zorch.shard_prover.verify_shard import (
     ShardVerifierBridge,
     ZerocheckVerifierStage,
 )
+
+from zorch.round import verify_rounds
 
 from sp1_zorch.shard_prover.chain_testkit import (
     CHIP_HEIGHT,
@@ -57,20 +59,22 @@ class VerifyShardChainTest(absltest.TestCase):
         fx = small_shard_chain_fixture()
         cls.fx = fx
         cls.commitment, cls.gkr_proof, cls.zc_proof, cls.je_proof = fx.messages
-        cls.dual_bridge, cls.dual_transcript, cls.dual_ok = fx.dual(
+        cls.dual_bridge, cls.dual_transcript, cls.dual_ok = verify_rounds(
+            fx.dual_stages,
             ShardVerifierBridge(fx.public_values),
             fx.messages,
             cheap_transcript(BF),
         )
 
     def test_one_verifier_stage_per_prover_stage(self) -> None:
-        self.assertLen(self.fx.dual.rounds, len(self.fx.prove_chain.rounds))
+        self.assertLen(self.fx.dual_stages, len(self.fx.prove_stages))
 
     def test_round_count_mismatch_fails_loud(self) -> None:
         """A message list one short of the schedule is a structural reject —
-        ``VerifyChain``'s own check, before any stage dual runs."""
+        ``verify_rounds``'s own check, before any stage dual runs."""
         with self.assertRaisesRegex(ValueError, "one message per round"):
-            self.fx.dual(
+            verify_rounds(
+                self.fx.dual_stages,
                 ShardVerifierBridge(self.fx.public_values),
                 self.fx.messages[:3],
                 cheap_transcript(BF),
@@ -107,7 +111,8 @@ class VerifyShardChainTest(absltest.TestCase):
             self.gkr_proof.round_proofs[1:]
         )
         bad_proof = replace(self.gkr_proof, round_proofs=bad_rounds)
-        _, _, ok = self.fx.dual(
+        _, _, ok = verify_rounds(
+            self.fx.dual_stages,
             ShardVerifierBridge(self.fx.public_values),
             [self.commitment, bad_proof, self.zc_proof, self.je_proof],
             cheap_transcript(BF),
@@ -134,7 +139,8 @@ class VerifyShardChainTest(absltest.TestCase):
         bad_sum = self.zc_proof.claimed_sum + fnp.ones(
             (), self.zc_proof.claimed_sum.dtype
         )
-        _, _, ok = self.fx.dual(
+        _, _, ok = verify_rounds(
+            self.fx.dual_stages,
             ShardVerifierBridge(self.fx.public_values),
             [
                 self.commitment,
@@ -154,7 +160,8 @@ class VerifyShardChainTest(absltest.TestCase):
             dense_eval=self.je_proof.eval.dense_eval
             + fnp.ones((), self.je_proof.eval.dense_eval.dtype),
         )
-        _, _, ok = self.fx.dual(
+        _, _, ok = verify_rounds(
+            self.fx.dual_stages,
             ShardVerifierBridge(self.fx.public_values),
             [
                 self.commitment,
@@ -178,7 +185,7 @@ class VerifyShardChainTest(absltest.TestCase):
             opened_values={"alpha": replace(ev, main=ev.main[:-1])},
         )
         with self.assertRaisesRegex(ValueError, "main claim per statement"):
-            self.fx.dual.rounds[2](self.dual_bridge, bad, self.dual_transcript)
+            self.fx.dual_stages[2](self.dual_bridge, self.dual_transcript, bad)
 
     def test_unexpected_preprocessed_opening_rejected(self) -> None:
         """A statement with no preprocessed trace rejects a proof that opens
@@ -189,7 +196,7 @@ class VerifyShardChainTest(absltest.TestCase):
             opened_values={"alpha": replace(ev, preprocessed=ev.main[:1])},
         )
         with self.assertRaisesRegex(ValueError, "no preprocessed trace"):
-            self.fx.dual.rounds[2](self.dual_bridge, bad, self.dual_transcript)
+            self.fx.dual_stages[2](self.dual_bridge, self.dual_transcript, bad)
 
     def test_missing_preprocessed_opening_rejected(self) -> None:
         """A statement whose chip carries a preprocessed trace rejects a
@@ -209,7 +216,7 @@ class VerifyShardChainTest(absltest.TestCase):
             max_log_row_count=MAX_LOG_ROW_COUNT,
         )
         with self.assertRaisesRegex(ValueError, "preprocessed claim per statement"):
-            stage(self.dual_bridge, self.zc_proof, self.dual_transcript)
+            stage(self.dual_bridge, self.dual_transcript, self.zc_proof)
 
     def test_trace_commit_dual_writes_commitment_roots(self) -> None:
         """[prep (from the vk), main (from the message)] — the order of SP1's

@@ -1,8 +1,8 @@
-# Architecture: the shard ProveChain and SP1 dump vocabulary
+# Architecture: the shard stage sequence and SP1 dump vocabulary
 
-`prove_shard_chain` is a `ProveChain` of four **Stages** — trace commit,
+`prove_shard_chain` is a sequence of four **Stages** — trace commit,
 LogUp-GKR, zerocheck, jagged evaluation — threading one duplex transcript and a
-single **Bridge** (`ShardBridge`). `verify_shard_chain` is the `VerifyChain`
+single **Bridge** (`ShardBridge`). `verify_shard_chain` is the dual sequence
 dual: one verifier Stage per prover Stage. This page names how the shard proof
 maps onto Stage / Round / Bridge, then maps SP1's reference-dump terms onto the
 Stages.

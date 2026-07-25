@@ -1,9 +1,9 @@
 # Copyright 2026 The sp1-zorch Authors. SPDX-License-Identifier: Apache-2.0
-"""The shard proof's verifier as one zorch ``VerifyChain`` of stage duals.
+"""The shard proof's verifier as one zorch ``verify_rounds`` sequence of stage duals.
 
 ``verify_shard_chain`` mirrors ``prove_shard_chain`` stage for stage — one
 verifier Stage per prover stage, glue included, consuming the prover chain's
-message list as the proof object. ``VerifyChain``'s one-message-per-round
+message list as the proof object. ``verify_rounds``'s one-message-per-round
 check makes the mirror fail loud: a stage or glue step present on one side
 and not the other is a structural reject, not a silent Fiat-Shamir desync
 (zorch ``docs/stage-composition.md``, "Pipelines as nested chains").
@@ -19,6 +19,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from functools import partial
+from typing import TYPE_CHECKING
 
 import frx
 import frx.numpy as fnp
@@ -42,7 +43,7 @@ from sp1_zorch.shard_prover.types import ChipShape, MachineVerifyingKey
 from sp1_zorch.zerocheck.prover import ZerocheckProof
 from sp1_zorch.zerocheck.verifier import verify_shard_zerocheck
 from zorch.coding.reed_solomon import BitReversedReedSolomon
-from zorch.round import Round, VerifyChain
+from zorch.round import VerifierRound
 from zorch.transcript import GrindingTranscript, Transcript
 from zorch.utils.bits import log2_ceil_usize
 
@@ -88,7 +89,7 @@ class ShardVerifierBridge:
     zc_opened_values: Mapping[str, ChipEvaluation] | None = None
 
 
-class TraceCommitVerifierStage(Round):
+class TraceCommitVerifierStage:
     """Stage-1 dual of ``TraceCommitStage``: replays the preamble absorb
     stream via ``PreambleStage`` — the same one Stage the prover drives —
     with the proof's commitment message, and writes the commitment roots
@@ -100,7 +101,7 @@ class TraceCommitVerifierStage(Round):
         self._chip_metadata = chip_metadata
 
     def __call__(
-        self, bridge: ShardVerifierBridge, msg: Array, transcript: Transcript
+        self, bridge: ShardVerifierBridge, transcript: Transcript, msg: Array
     ) -> tuple[ShardVerifierBridge, Transcript, Array]:
         _, transcript, _ = PreambleStage(
             vk=self._vk,
@@ -118,7 +119,7 @@ class TraceCommitVerifierStage(Round):
         return bridge, transcript, fnp.bool_(True)
 
 
-class LogupGkrVerifierStage(Round):
+class LogupGkrVerifierStage:
     """Stage-2 dual of ``LogupGkrStage``: verifies the LogUp-GKR proof via
     ``verify_logup_gkr`` and writes the derived evaluation point plus the
     proof's leaf-checked chip openings onto the bridge — the same seams the
@@ -146,8 +147,8 @@ class LogupGkrVerifierStage(Round):
     def __call__(
         self,
         bridge: ShardVerifierBridge,
-        msg: LogupGkrProof,
         transcript: GrindingTranscript,
+        msg: LogupGkrProof,
     ) -> tuple[ShardVerifierBridge, GrindingTranscript, Array]:
         transcript, eval_point, ok = verify_logup_gkr(
             self._gkr_chips,
@@ -166,7 +167,7 @@ class LogupGkrVerifierStage(Round):
         return bridge, transcript, ok
 
 
-class ZerocheckVerifierStage(Round):
+class ZerocheckVerifierStage:
     """Stage-3 dual of ``ZerocheckStage``: verifies the zerocheck proof
     via ``verify_shard_zerocheck``, consuming the GKR point and openings off
     the bridge, and writes the dual's own sumcheck point plus the proof's
@@ -197,8 +198,8 @@ class ZerocheckVerifierStage(Round):
     def __call__(
         self,
         bridge: ShardVerifierBridge,
-        msg: ZerocheckProof,
         transcript: Transcript,
+        msg: ZerocheckProof,
     ) -> tuple[ShardVerifierBridge, Transcript, Array]:
         if bridge.gkr_eval_point is None or bridge.gkr_chip_openings is None:
             raise ValueError(
@@ -244,7 +245,7 @@ class ZerocheckVerifierStage(Round):
         return bridge, transcript, ok
 
 
-class JaggedPcsVerifierStage(Round):
+class JaggedPcsVerifierStage:
     """Stage-4 dual of ``JaggedPcsStage``: rebuilds the column manifest
     and per-column claims from the statement plus the bridge's oracle-checked
     opened values, samples ``z_col`` itself, verifies the outer/inner
@@ -282,8 +283,8 @@ class JaggedPcsVerifierStage(Round):
     def __call__(
         self,
         bridge: ShardVerifierBridge,
-        msg: JaggedPcsProof,
         transcript: GrindingTranscript,
+        msg: JaggedPcsProof,
     ) -> tuple[ShardVerifierBridge, GrindingTranscript, Array]:
         if (
             bridge.zc_sumcheck_point is None
@@ -430,8 +431,8 @@ def verify_shard_chain(
     open_pow_bits: int = 0,
     pow_bits: int = 0,
     verify_public_values: bool = True,
-) -> VerifyChain:
-    """The ``VerifyChain`` dual of ``prove_shard_chain``: one verifier Stage
+) -> tuple[VerifierRound, ...]:
+    """The verifier dual of ``prove_shard_chain``: one verifier Stage
     per prover stage, in the prover's order, so the proof's message list
     aligns slot for slot or fails the chain's one-message-per-round check.
 
@@ -446,33 +447,39 @@ def verify_shard_chain(
     (the public-values digest vs the circuit cumulative sum); a structural
     test over a synthetic shard with no real public-values bus sets it False."""
     chip_heights = {n: s.main.height for n, s in chip_shapes.items()}
-    return VerifyChain(
-        [
-            TraceCommitVerifierStage(vk=vk, chip_metadata=chip_metadata),
-            LogupGkrVerifierStage(
-                gkr_chips,
-                chip_names=chip_names,
-                chip_heights=chip_heights,
-                num_betas=num_betas,
-                num_row_variables=num_row_variables,
-                pow_bits=pow_bits,
-                verify_public_values=verify_public_values,
-            ),
-            ZerocheckVerifierStage(
-                chips,
-                chip_names=chip_names,
-                chip_shapes=chip_shapes,
-                max_log_row_count=max_log_row_count,
-            ),
-            JaggedPcsVerifierStage(
-                smcs,
-                log_blowup=log_blowup,
-                num_queries=open_num_queries,
-                pow_bits=open_pow_bits,
-                chip_names=chip_names,
-                chip_shapes=chip_shapes,
-                log_stacking_height=log_stacking_height,
-                max_log_row_count=max_log_row_count,
-            ),
-        ]
+    return (
+        TraceCommitVerifierStage(vk=vk, chip_metadata=chip_metadata),
+        LogupGkrVerifierStage(
+            gkr_chips,
+            chip_names=chip_names,
+            chip_heights=chip_heights,
+            num_betas=num_betas,
+            num_row_variables=num_row_variables,
+            pow_bits=pow_bits,
+            verify_public_values=verify_public_values,
+        ),
+        ZerocheckVerifierStage(
+            chips,
+            chip_names=chip_names,
+            chip_shapes=chip_shapes,
+            max_log_row_count=max_log_row_count,
+        ),
+        JaggedPcsVerifierStage(
+            smcs,
+            log_blowup=log_blowup,
+            num_queries=open_num_queries,
+            pow_bits=open_pow_bits,
+            chip_names=chip_names,
+            chip_shapes=chip_shapes,
+            log_stacking_height=log_stacking_height,
+            max_log_row_count=max_log_row_count,
+        ),
     )
+
+
+if TYPE_CHECKING:
+    # mypy-enforced seam conformance -- driven by `verify_rounds`.
+    _commit: type[VerifierRound] = TraceCommitVerifierStage
+    _gkr: type[VerifierRound] = LogupGkrVerifierStage
+    _zerocheck: type[VerifierRound] = ZerocheckVerifierStage
+    _jagged: type[VerifierRound] = JaggedPcsVerifierStage

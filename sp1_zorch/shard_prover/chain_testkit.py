@@ -23,7 +23,7 @@ from zk_dtypes import koalabear_mont as BF
 from zorch.hash.compression import Compression, CompressionParams
 from zorch.hash.poseidon2.poseidon2 import Poseidon2
 from zorch.hash.sponge import Sponge, SpongeParams
-from zorch.round import ProveChain, VerifyChain
+from zorch.round import ProverRound, VerifierRound
 from zorch.testkit.transcript import cheap_transcript
 
 from zorch.pcs.jagged.region import JaggedRegion
@@ -78,8 +78,8 @@ class ShardChainFixture:
     vk: MachineVerifyingKey
     public_values: fnp.ndarray
     chips: dict[str, Any]
-    prove_chain: ProveChain
-    dual: VerifyChain
+    prove_stages: tuple[ProverRound, ...]
+    dual_stages: tuple[VerifierRound, ...]
     messages: list[Any]
     prover_transcript: Any
 
@@ -139,7 +139,7 @@ def small_shard_chain_fixture() -> ShardChainFixture:
         num_row_variables=MAX_LOG_ROW_COUNT - 1,
         max_log_row_count=MAX_LOG_ROW_COUNT,
     )
-    prove_chain = prove_shard_chain(
+    prove_stages = prove_shard_chain(
         open_num_queries=2,
         **shared,
     )
@@ -147,7 +147,7 @@ def small_shard_chain_fixture() -> ShardChainFixture:
     # bus: the structural / stage-dual mirror these suites pin is orthogonal
     # to the output-layer balance leg, which is covered on a real shard in
     # logup_gkr/public_values_test.
-    dual = verify_shard_chain(
+    dual_stages = verify_shard_chain(
         chip_names=("alpha",),
         chip_shapes={"alpha": ChipShape(TraceShape(CHIP_HEIGHT, CHIP_WIDTH))},
         log_stacking_height=LOG_STACKING_HEIGHT,
@@ -159,7 +159,7 @@ def small_shard_chain_fixture() -> ShardChainFixture:
     bridge = ShardBridge(main_region, None, public_values)
     transcript = cheap_transcript(BF)
     messages = []
-    for stage in prove_chain.rounds:
+    for stage in prove_stages:
         bridge, transcript, msg = stage(bridge, transcript)
         messages.append(msg)
 
@@ -168,8 +168,8 @@ def small_shard_chain_fixture() -> ShardChainFixture:
         vk=vk,
         public_values=public_values,
         chips=chips,
-        prove_chain=prove_chain,
-        dual=dual,
+        prove_stages=prove_stages,
+        dual_stages=dual_stages,
         messages=messages,
         prover_transcript=transcript,
     )

@@ -32,7 +32,11 @@ import frx.numpy as fnp
 from frx import Array
 
 from sp1_zorch.logup_gkr.circuit import GkrChip, generate_interaction_vals_batch
-from sp1_zorch.logup_gkr.head import EF_LIMBS, HeadChallengesRound, OutputBindRound
+from sp1_zorch.logup_gkr.head import (
+    EF_CHALLENGES,
+    HeadChallengesRound,
+    OutputBindRound,
+)
 from sp1_zorch.logup_gkr.prover import (
     ChipEvaluation,
     ChipOpeningsRound,
@@ -42,7 +46,7 @@ from sp1_zorch.logup_gkr.public_values import eval_public_values
 from zorch.logup_gkr.jagged_verifier import JaggedGkrLayerRound
 from zorch.poly.geq import VirtualGeq
 from zorch.poly.multilinear import eval_mle
-from zorch.round import VerifyChain
+from zorch.round import verify_rounds
 from zorch.transcript import GrindingTranscript
 from zorch.utils.bits import log2_ceil_usize
 
@@ -199,9 +203,11 @@ def verify_logup_gkr(
     denominator = proof.circuit_output.denominator
     ok_denominator = fnp.all(denominator != fnp.zeros((), denominator.dtype))
 
-    chain = VerifyChain([JaggedGkrLayerRound(EF_LIMBS) for _ in proof.round_proofs])
-    (num_eval, den_eval, eval_point), transcript, ok_layers = chain(
-        carry, proof.round_proofs, transcript
+    (num_eval, den_eval, eval_point), transcript, ok_layers = verify_rounds(
+        [JaggedGkrLayerRound(EF_CHALLENGES) for _ in proof.round_proofs],
+        carry,
+        proof.round_proofs,
+        transcript,
     )
     # The wire carries the point for non-verifier consumers; pin the copy so
     # a stale serialization cannot drift past the dual. Shape-strict: a

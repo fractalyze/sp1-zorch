@@ -38,7 +38,6 @@ from typing import Mapping, Sequence
 import frx.numpy as fnp
 from frx import Array
 from rw_constraints import Chip
-from zk_dtypes import efinfo
 
 from sp1_zorch.logup_gkr.prover import ChipEvaluation, select_openings
 from sp1_zorch.logup_gkr.verifier import padding_geqs
@@ -53,6 +52,7 @@ from sp1_zorch.zerocheck.prover import (
     sample_stage_challenges,
 )
 from zorch.poly.eq import eval_eq
+from zorch.challenge import ChallengePolicy
 from zorch.sumcheck.verifier import CoeffsSumcheckRound
 from zorch.transcript import Transcript
 from zorch.verify import verify
@@ -120,7 +120,7 @@ def verify_shard_zerocheck(
     )
 
     point, final_claim, transcript, ok_rounds = verify(
-        CoeffsSumcheckRound(DEGREE, efinfo(ef).degree),
+        CoeffsSumcheckRound(DEGREE, ChallengePolicy(ef)),
         claimed_sum,
         proof.msgs.round_poly,
         transcript,

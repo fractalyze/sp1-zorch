@@ -2,7 +2,7 @@
 
 Everything needed to build, test, and benchmark sp1-zorch: the environment
 setup, the test conventions, and the reproducible per-stage baseline against
-SP1. For architecture (ProveChain / Stage / Round / Bridge) see
+SP1. For architecture (Stage / Round / Bridge) see
 [architecture.md](architecture.md); for coding style see
 [conventions.md](conventions.md).
 
@@ -146,7 +146,7 @@ LogUp-GKR zone is already captured as one big graph.
 runs the GPU plugin bundled in the pinned `frx-cuda12-pjrt` wheel; to measure a
 *locally built* Fractalyze XLA plugin instead, see [Measure shipped code](#measure-shipped-code).
 
-- Runs `prove_shard_chain` (the `ProveChain` of `TraceCommitStage` → `LogupGkrStage`
+- Runs `prove_shard_chain` (`TraceCommitStage` → `LogupGkrStage`
   → `ZerocheckStage` → `JaggedPcsStage`) on the real shard.
 - A `_TimedRound` wrapper prints **per-Stage wall-clock** in ms:
   `[stage TraceCommitStage] X.Yms`, and likewise for the other three. `--runs=5`

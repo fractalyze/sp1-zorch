@@ -22,7 +22,7 @@ from zk_dtypes import koalabearx4_mont as EF
 from zorch.pcs.jagged.region import JaggedRegion
 from sp1_zorch.logup_gkr.circuit import GkrCapClass, GkrChip
 from sp1_zorch.logup_gkr.head import (
-    EF_LIMBS,
+    EF_CHALLENGES,
     GrindRound,
     HeadChallengesRound,
     OutputBindRound,
@@ -40,7 +40,7 @@ from sp1_zorch.shard_prover.chip_loader import make_chip_stub
 from zorch.logup_gkr.circuit import JaggedGkrLayer, jagged_layer_transition
 from zorch.logup_gkr.jagged_prover import JaggedLayerProof
 from zorch.logup_gkr.jagged_verifier import JaggedGkrLayerRound as VerifierRound
-from zorch.round import VerifyChain
+from zorch.round import verify_rounds
 from zorch.testkit.transcript import cheap_transcript
 
 
@@ -208,9 +208,11 @@ class ProveLogupGkrTest(absltest.TestCase):
             None, transcript
         )
 
-        chain = VerifyChain([VerifierRound(EF_LIMBS) for _ in proof.round_proofs])
-        (num_eval, den_eval, point), _, ok = chain(
-            carry, proof.round_proofs, transcript
+        (num_eval, den_eval, point), _, ok = verify_rounds(
+            [VerifierRound(EF_CHALLENGES) for _ in proof.round_proofs],
+            carry,
+            proof.round_proofs,
+            transcript,
         )
         self.assertTrue(bool(ok))
         self.assertTrue(bool(fnp.all(point == proof.eval_point)))

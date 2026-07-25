@@ -12,7 +12,7 @@ frx  ──▶  zorch (scheme-/zkVM-agnostic blocks)  ──▶  sp1-zorch (SP1 
 
 ## Status
 
-The full SP1 shard proving scheme runs on `zorch` blocks: a `ProveChain` of
+The full SP1 shard proving scheme runs on `zorch` blocks: a sequence of
 trace commit → LogUp-GKR → zerocheck → jagged PCS, byte-matching SP1's reference
 prover end to end (its `sp1_verify_shard` accepts the assembled proof). See
 [`docs/architecture.md`](docs/architecture.md).
@@ -91,7 +91,7 @@ bazel test //...
 ## Documentation
 
 See [`docs/`](docs/README.md) — the [architecture](docs/architecture.md)
-(the shard proof as a ProveChain of Stages, each running inner Rounds, threaded
+(the shard proof as a sequence of Stages, each running inner Rounds, threaded
 by a Bridge, plus the SP1 dump vocabulary), the
 [development guide](docs/development.md) (environment, testing, and the
 per-stage SP1 baseline), and the [conventions](docs/conventions.md).

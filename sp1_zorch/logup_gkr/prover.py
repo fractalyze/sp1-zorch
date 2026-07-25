@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import partial
-from typing import Any, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 import frx
 import frx.numpy as fnp
@@ -41,7 +41,7 @@ from sp1_zorch.logup_gkr.circuit import (
     sp1_schedule_counts,
 )
 from sp1_zorch.logup_gkr.head import (
-    EF_LIMBS,
+    EF_CHALLENGES,
     GrindRound,
     HeadChallengesRound,
     OutputBindRound,
@@ -58,7 +58,7 @@ from zorch.logup_gkr.jagged_prover import (
     JaggedLayerProof,
     RoundWidthCaps,
 )
-from zorch.round import ProveChain, Round
+from zorch.round import ProverRound, prove_rounds
 from zorch.transcript import GrindingTranscript, Transcript
 
 
@@ -188,7 +188,7 @@ def flat_openings_absorb(
     return fnp.concatenate(flat_parts)
 
 
-class ChipOpeningsRound(Round):
+class ChipOpeningsRound:
     """SP1's GKR chip-openings absorb schedule, single-sourced the same way
     as the preamble and the GKR head glue: the prover (``open_traces_capped``)
     drives it with the openings it just computed, the verifier dual with the
@@ -400,7 +400,7 @@ def _prove_from_first_layer(
     dominate every admitted shard.
 
     The chain MUST consume layers through the lazy ``layers.pop()``
-    generator, not a materialized list — only then does ProveChain release
+    generator, not a materialized list — only then does `prove_rounds` release
     each proved layer before building the next, keeping at most one
     big-witness layer live (the host-RAM half of zorch#362).
 
@@ -448,11 +448,14 @@ def _prove_from_first_layer(
     # layer): the caps pre-lay in zorch's `_jagged_round_via_zone` keys the
     # compile per nrv class, so shards share every layer program and XLA fuses
     # the inter-round glue instead of the host dispatching per round.
-    chain = ProveChain(
-        JaggedGkrLayerRound(layers.pop(), EF_LIMBS, caps=caps)
-        for _ in range(len(layers))
+    (_, _, eval_point), transcript, round_proofs = prove_rounds(
+        (
+            JaggedGkrLayerRound(layers.pop(), EF_CHALLENGES, caps=caps)
+            for _ in range(len(layers))
+        ),
+        carry,
+        transcript,
     )
-    (_, _, eval_point), transcript, round_proofs = chain(carry, transcript)
 
     transcript, chip_openings = open_fn(eval_point, transcript)
     proof = LogupGkrProof(
@@ -561,3 +564,8 @@ def prove_logup_gkr(
             prep_heights=prep_heights,
         ),
     )
+
+
+if TYPE_CHECKING:
+    # mypy-enforced seam conformance -- driven by `prove_rounds`.
+    _: type[ProverRound] = ChipOpeningsRound

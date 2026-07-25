@@ -1,7 +1,7 @@
 # Copyright 2026 The sp1-zorch Authors. SPDX-License-Identifier: Apache-2.0
 """rsp byte-match harness for the assembled prove_shard chain -- a runnable.
 
-Runs ``prove_shard_chain`` (the ``ProveChain`` of trace commit -> LogUp-GKR
+Runs ``prove_shard_chain`` (trace commit -> LogUp-GKR
 -> zerocheck -> jagged evaluation proof) over a real rsp dump and seals the
 composition against the reference:
 
@@ -98,7 +98,7 @@ from zorch.hash.compression import Compression, CompressionParams
 from zorch.hash.poseidon2.poseidon2 import Poseidon2
 from zorch.hash.sponge import Sponge, SpongeParams
 from zorch.poly.univariate import eval_coeffs
-from zorch.round import Round
+from zorch.round import ProverRound, prove_rounds
 
 # SP1 core machine parameters (whir-zorch prove_shard_benchmark): 4x blowup.
 _LOG_BLOWUP = 2
@@ -178,7 +178,7 @@ _JAXPROF_DIR = flags.DEFINE_string(
     None,
     "Write an frx profiler trace of the last (warm) prove pass here.",
 )
-class _TimedRound(Round):
+class _TimedRound:
     """Print each stage's wall-clock so the compile-vs-runtime split is
     visible on every run (async dispatch makes unblocked timings lie, so
     block on the stage's output first). Proof messages that are plain
@@ -193,7 +193,7 @@ class _TimedRound(Round):
     ``check`` takes the stage's output message and returns ``True`` on match
     (it prints its own OK / MISMATCH line)."""
 
-    def __init__(self, inner: Round, check=None) -> None:
+    def __init__(self, inner: ProverRound, check=None) -> None:
         self._inner = inner
         self._check = check
 
@@ -398,7 +398,7 @@ def _verify_shard(
     # The zerocheck and GKR jits key statically on the chips / gkr_chips
     # tuples, so a multi-shard run must present the SAME objects to every
     # same-chip-set shard — a fresh fixture load's chips would miss the
-    chain = prove_shard_chain(
+    stages = prove_shard_chain(
         smcs=smcs,
         log_blowup=_LOG_BLOWUP,
         vk=vk,
@@ -417,9 +417,9 @@ def _verify_shard(
         gkr_cap_class=gkr_class,
     )
     # Slice to the first N stages (--max_stage) so the downstream stages' compile
-    # is skipped for a cheaper loop. ProveChain collects one message per round,
-    # so msgs[:n] are exactly the stages that ran.
-    rounds = chain.rounds[:n]
+    # is skipped for a cheaper loop. `prove_rounds` collects one message per
+    # stage, so msgs[:n] are exactly the stages that ran.
+    rounds = stages[:n]
 
     # Parse the golden references up front: a missing/malformed fixture then
     # fails at startup rather than after stage 1's ~2-3 min cold compile, and
@@ -488,7 +488,7 @@ def _verify_shard(
     # wall is host-dispatch-bound, not GPU compute -- for an honest per-stage GPU
     # number use nsys kernel-active time on the warm pass (#124).
     runs = _RUNS.value
-    chain.rounds = [_TimedRound(rnd, check) for rnd, check in zip(rounds, stage_checks)]
+    rounds = [_TimedRound(rnd, check) for rnd, check in zip(rounds, stage_checks)]
     _prof_dir = _JAXPROF_DIR.value
     for i in range(runs):
         kind = "cold" if i == 0 else "warm"
@@ -505,7 +505,8 @@ def _verify_shard(
         # spent pass resident while the next re-allocates the pyramid intermediate
         # is what tips a wide shard over the card on --runs>=2.
         bridge = msgs = None
-        bridge, _, msgs = chain(
+        bridge, _, msgs = prove_rounds(
+            rounds,
             ShardBridge(main_region, prep_region, public_values),
             fresh_transcript(),
         )

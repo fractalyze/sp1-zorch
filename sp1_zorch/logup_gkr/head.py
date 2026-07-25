@@ -19,25 +19,30 @@ prover threads.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import frx.numpy as fnp
 from frx import Array
 from zk_dtypes import efinfo
 from zk_dtypes import koalabearx4_mont as EF
 
+from zorch.challenge import ChallengePolicy
 from zorch.logup_gkr.circuit import LogUpGkrOutput
 from zorch.poly.eq import expand_eq_to_hypercube
 from zorch.poly.multilinear import eval_mle
-from zorch.round import Round
+from zorch.round import ProverRound
 from zorch.transcript import GrindingTranscript, Transcript, sample_challenge
 from zorch.utils.bits import log2_ceil_usize, log2_strict_usize
 
 # An SP1 extension-field challenge is one base-field squeeze per coefficient.
 EF_LIMBS = efinfo(EF).degree
 
+# Every SP1 GKR and jagged-sumcheck challenge is drawn in the extension
+# field; one policy so no round can be constructed against a narrower one.
+EF_CHALLENGES = ChallengePolicy(EF)
 
-class GrindRound(Round):
+
+class GrindRound:
     """Observe the grind witness and judge the proof-of-work gate.
 
     Delegates to the transcript's ``check_witness`` so the gate predicate is
@@ -79,7 +84,7 @@ class HeadChallenges:
     pv_challenge: Array  # () EF
 
 
-class HeadChallengesRound(Round):
+class HeadChallengesRound:
     """Sample alpha, the beta seeds, and SP1's public-values challenge.
 
     The public-values challenge advances the stream on every consumer (it is
@@ -109,7 +114,7 @@ class HeadChallengesRound(Round):
         return carry, transcript, HeadChallenges(alpha, beta_seeds, betas, pv_challenge)
 
 
-class OutputBindRound(Round):
+class OutputBindRound:
     """Bind the circuit output: SP1's length-prefixed MLE observes, then z1
     and the output evaluations.
 
@@ -139,3 +144,10 @@ class OutputBindRound(Round):
             coords.append(c)
         z1 = fnp.stack(coords)
         return (eval_mle(num, z1), eval_mle(den, z1), z1), transcript, z1
+
+
+if TYPE_CHECKING:
+    # mypy-enforced seam conformance -- the head rounds feed `prove_rounds`.
+    _grind: type[ProverRound] = GrindRound
+    _head: type[ProverRound] = HeadChallengesRound
+    _bind: type[ProverRound] = OutputBindRound

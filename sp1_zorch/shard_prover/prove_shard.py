@@ -1,5 +1,5 @@
 # Copyright 2026 The sp1-zorch Authors. SPDX-License-Identifier: Apache-2.0
-"""The shard proof as one zorch ``ProveChain`` of Stages.
+"""The shard proof as one zorch ``prove_rounds`` sequence of Stages.
 
 ``prove_shard_chain`` sequences the stages of ``docs/architecture.md`` —
 trace commit, LogUp-GKR, zerocheck, jagged evaluation proof — as Stages
@@ -53,7 +53,7 @@ from sp1_zorch.zerocheck.prover import (
 )
 from zorch.coding.reed_solomon import BitReversedReedSolomon
 from zorch.poly.eq import expand_eq_to_hypercube
-from zorch.round import ProveChain, Round
+from zorch.round import ProverRound
 from zorch.transcript import GrindingTranscript, Transcript
 from zorch.utils.bits import log2_ceil_usize
 
@@ -124,7 +124,7 @@ def preamble_chip_metadata(
     return fnp.array(metadata, dtype)
 
 
-class PreambleStage(Round):
+class PreambleStage:
     """SP1's shard preamble absorb stream: vk, public values, the main
     commitment, chip metadata. The schedule lives here once — the prover's
     ``TraceCommitStage`` and the byte-match replay's ``preamble_transcript``
@@ -156,7 +156,7 @@ class PreambleStage(Round):
         return bridge, transcript, self._commitment
 
 
-class TraceCommitStage(Round):
+class TraceCommitStage:
     """Trace commit plus the shard preamble: commit the main region, then
     absorb SP1's preamble stream via ``PreambleStage``. The message is the
     structure-bound main commitment; the prover-side commit data joins the
@@ -223,7 +223,7 @@ class TraceCommitStage(Round):
         return bridge, transcript, bound
 
 
-class LogupGkrStage(Round):
+class LogupGkrStage:
     """LogUp-GKR stage over ``prove_logup_gkr``; writes the final
     evaluation point and per-chip openings onto the bridge for zerocheck.
 
@@ -273,7 +273,7 @@ class LogupGkrStage(Round):
         return bridge, transcript, proof
 
 
-class ZerocheckStage(Round):
+class ZerocheckStage:
     """Zerocheck stage over ``prove_shard_zerocheck``, consuming the GKR
     point and openings off the bridge. The stage absorbs the per-chip opened
     values itself (``OpenedValuesRound`` in ``zerocheck.prover``); this Stage
@@ -513,7 +513,7 @@ def _jagged_eval_jit(
     return transcript, eval_msg
 
 
-class JaggedPcsStage(Round):
+class JaggedPcsStage:
     """Jagged evaluation proof (SP1 Phase 4): reduce the committed trace to
     ``D(z_final)`` via the outer/inner sumcheck, then open ``D`` at ``z_final``
     with the stacked BaseFold FRI. Reads the zerocheck point, the per-chip
@@ -683,8 +683,9 @@ def prove_shard_chain(
     jit: bool = True,
     zerocheck_total_cap_class: TotalCapClass | None = None,
     gkr_cap_class: GkrCapClass | None = None,
-) -> ProveChain:
-    """The SP1 shard chain. One definition for the stage wiring so the
+) -> tuple[ProverRound, ...]:
+    """The SP1 shard stages, in order. One definition for the stage wiring
+    so the
     benchmark, the byte-match runnables, and proof assembly cannot drift
     on it.
 
@@ -696,36 +697,34 @@ def prove_shard_chain(
     sumcheck bodies rebuild their closure-keyed ``scan``/``while`` bodies each
     prove, so JAX's compile cache misses and every warm prove re-pays the
     stage compile. Byte-identical either way."""
-    return ProveChain(
-        [
-            TraceCommitStage(
-                smcs,
-                log_blowup=log_blowup,
-                vk=vk,
-                chip_metadata=chip_metadata,
-                jit=jit,
-            ),
-            # GKR is always eager orchestration over class-keyed inner zones
-            # (see LogupGkrStage); only the other stages take the `jit` knob.
-            LogupGkrStage(
-                gkr_chips,
-                num_betas=num_betas,
-                num_row_variables=num_row_variables,
-                pow_bits=pow_bits,
-                witness=witness,
-                gkr_cap_class=gkr_cap_class,
-            ),
-            ZerocheckStage(
-                chips,
-                max_log_row_count=max_log_row_count,
-                total_cap_class=zerocheck_total_cap_class,
-            ),
-            JaggedPcsStage(
-                smcs,
-                log_blowup=log_blowup,
-                num_queries=open_num_queries,
-                pow_bits=open_pow_bits,
-                jit=jit,
-            ),
-        ]
+    return (
+        TraceCommitStage(
+            smcs,
+            log_blowup=log_blowup,
+            vk=vk,
+            chip_metadata=chip_metadata,
+            jit=jit,
+        ),
+        # GKR is always eager orchestration over class-keyed inner zones
+        # (see LogupGkrStage); only the other stages take the `jit` knob.
+        LogupGkrStage(
+            gkr_chips,
+            num_betas=num_betas,
+            num_row_variables=num_row_variables,
+            pow_bits=pow_bits,
+            witness=witness,
+            gkr_cap_class=gkr_cap_class,
+        ),
+        ZerocheckStage(
+            chips,
+            max_log_row_count=max_log_row_count,
+            total_cap_class=zerocheck_total_cap_class,
+        ),
+        JaggedPcsStage(
+            smcs,
+            log_blowup=log_blowup,
+            num_queries=open_num_queries,
+            pow_bits=open_pow_bits,
+            jit=jit,
+        ),
     )

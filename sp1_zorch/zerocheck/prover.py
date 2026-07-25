@@ -20,7 +20,7 @@ Stage / dump vocabulary: ``docs/architecture.md``.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
 
 import frx.numpy as fnp
 from frx import Array
@@ -40,7 +40,7 @@ from sp1_zorch.zerocheck.jagged import (
     prove_jagged_zerocheck,
 )
 from sp1_zorch.zerocheck.coeffs import gkr_powers, rlc_coeffs
-from zorch.round import Round
+from zorch.round import ProverRound
 from zorch.sumcheck.prover import RoundMsg
 from zorch.transcript import Transcript, sample_challenge
 
@@ -233,7 +233,7 @@ def split_opened_values(
     return opened
 
 
-class OpenedValuesRound(Round):
+class OpenedValuesRound:
     """SP1's post-zerocheck opened-values absorb stream: the chip count, then
     per chip the length-prefixed ``[preprocessed | main]`` evaluations at the
     sumcheck point. Every evaluation-stage challenge is sampled after these
@@ -468,3 +468,8 @@ def prove_shard_zerocheck(
         opened_values=opened_values,
         msgs=msgs,
     )
+
+
+if TYPE_CHECKING:
+    # mypy-enforced seam conformance -- driven by `prove_rounds`.
+    _: type[ProverRound] = OpenedValuesRound

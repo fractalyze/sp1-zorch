@@ -2,7 +2,7 @@
 
 - **Overview & quick start:** [`README.md`](README.md)
 - **Conventions:** [`docs/conventions.md`](docs/conventions.md) — comments (why-not-what), external SP1 references (pinned permalinks).
-- **Architecture & terminology:** [`docs/architecture.md`](docs/architecture.md) — the shard proof as a ProveChain of Stages, each running inner Rounds, threaded by a Bridge; SP1 dump "phase" vocabulary mapping.
+- **Architecture & terminology:** [`docs/architecture.md`](docs/architecture.md) — the shard proof as a sequence of Stages, each running inner Rounds, threaded by a Bridge; SP1 dump "phase" vocabulary mapping.
 - **Development:** [`docs/development.md`](docs/development.md) — environment setup, running tests (`size` vs `timeout`, fixtures), and the reproducible per-stage SP1 baseline (`shard_prover:verify_prove_shard` + SP1 `sp1_shard_prover`).
 
 ## One non-negotiable
