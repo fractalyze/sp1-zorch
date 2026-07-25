@@ -16,13 +16,18 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
 ]
 # pyzorch is the PyPI distribution of `zorch` (the `zorch` name is taken); the
-# import package stays `zorch`. The frx stack (frx / frxlib / frx-cuda12-* /
-# zk-dtypes) is deliberately not declared — it is the GPU-correctness-sensitive
-# build the consuming workspace pins exactly in requirements.in.
+# import package stays `zorch`. frx (imported directly as frx.numpy / frx.lax)
+# pulls the CPU stack (frxlib, zk-dtypes) transitively, so `pip install sp1-zorch`
+# is importable on its own; the `.dev0` floor stays compatible with the exact dev
+# frx the consuming workspace pins in requirements.in (a plain `>=0.10.0` would
+# conflict — dev builds sort below the release). GPU (the byte-match FFI path)
+# still needs the frx-cuda12-* plugins, which are too large for PyPI; install
+# them from the Fractalyze index (see requirements.in).
 dependencies = [
     "absl-py",
     "numpy",
     "pyzorch>=0.1.0",
+    "frx>=0.10.0.dev0",
 ]
 
 # rw-constraints (SP1 chip definitions the shard prover loads — needed to
