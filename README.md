@@ -17,6 +17,25 @@ trace commit → LogUp-GKR → zerocheck → jagged PCS, byte-matching SP1's ref
 prover end to end (its `sp1_verify_shard` accepts the assembled proof). See
 [`docs/architecture.md`](docs/architecture.md).
 
+## Installation
+
+```sh
+pip install sp1-zorch          # CPU, PyPI only (Python 3.11)
+```
+
+GPU (the byte-match FFI path) additionally needs the frx CUDA plugins.
+`frx-cuda12-pjrt` is 129 MB, over PyPI's 100 MiB per-file limit; a limit
+increase is pending, until then:
+
+```sh
+pip install sp1-zorch "frx[cuda12]" \
+    --extra-index-url https://fractalyze.github.io/pypi/simple/
+```
+
+> **Note** `zorch` on PyPI is an unrelated third-party package. The
+> distribution is `pyzorch` (the import name stays `zorch`);
+> `pip install sp1-zorch` pulls it for you.
+
 ## Development
 
 `sp1-zorch` is pure Python on frx (Field, Ring Accelerated), run

@@ -23,18 +23,19 @@ classifiers = [
 # conflict — dev builds sort below the release). GPU (the byte-match FFI path)
 # still needs the frx-cuda12-* plugins, which are too large for PyPI; install
 # them from the Fractalyze index (see requirements.in).
+# rw-constraints carries the SP1 chip definitions, imported at module top level
+# across zerocheck / logup_gkr / shard_prover — a hard requirement, not an
+# extra. `.dev0` floor for the same reason as frx: a plain `>=0.1.0` would
+# reject the dev wheel requirements.in pins (0.1.0.devN sorts below 0.1.0).
+# Only release versions are published to PyPI, so a pure-PyPI resolve still
+# lands on 0.1.0 or newer.
 dependencies = [
     "absl-py",
     "numpy",
     "pyzorch>=0.1.0",
     "frx>=0.10.0.dev0",
+    "rw-constraints>=0.1.0.dev0",
 ]
-
-# rw-constraints (SP1 chip definitions the shard prover loads — needed to
-# actually prove) is served by the Fractalyze index, not PyPI. Install with:
-#   pip install "sp1-zorch[full]" --extra-index-url https://fractalyze.github.io/pypi/simple/
-[project.optional-dependencies]
-full = ["rw-constraints>=0.1.0.dev0"]
 
 [project.urls]
 Repository = "https://github.com/fractalyze/sp1-zorch"
