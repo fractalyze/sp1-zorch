@@ -15,21 +15,21 @@ classifiers = [
     "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.11",
 ]
-# `pip install sp1-zorch` pulls its two Fractalyze-index siblings automatically:
-#   - zorch: the scheme-agnostic blocks sp1-zorch is a thin layer over.
-#   - rw-constraints: the SP1 chip definitions the shard prover loads.
-# Both are dev-only (>=…dev0 opts the resolver into the prerelease line); the
-# consuming workspace may still override them to an exact pin.
-# The jax fork stack (jax / jaxlib / jax-cuda12-* / zk-dtypes) is deliberately
-# NOT pinned here — it is the GPU-correctness-sensitive build the consuming
-# workspace controls, and pinning it would only force resolver conflicts there
-# (same convention as zorch and riscv-witness).
+# pyzorch is the PyPI distribution of `zorch` (the `zorch` name is taken); the
+# import package stays `zorch`. The frx stack (frx / frxlib / frx-cuda12-* /
+# zk-dtypes) is deliberately not declared — it is the GPU-correctness-sensitive
+# build the consuming workspace pins exactly in requirements.in.
 dependencies = [
     "absl-py",
     "numpy",
-    "zorch>=0.1.0.dev0",
-    "rw-constraints>=0.1.0.dev0",
+    "pyzorch>=0.1.0",
 ]
+
+# rw-constraints (SP1 chip definitions the shard prover loads — needed to
+# actually prove) is served by the Fractalyze index, not PyPI. Install with:
+#   pip install "sp1-zorch[full]" --extra-index-url https://fractalyze.github.io/pypi/simple/
+[project.optional-dependencies]
+full = ["rw-constraints>=0.1.0.dev0"]
 
 [project.urls]
 Repository = "https://github.com/fractalyze/sp1-zorch"
