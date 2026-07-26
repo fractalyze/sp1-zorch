@@ -19,22 +19,31 @@ prover end to end (its `sp1_verify_shard` accepts the assembled proof). See
 
 ## Installation
 
+**Python 3.11 on Linux x86_64 only.**
+
+### CPU
+
 ```sh
-pip install sp1-zorch          # CPU, PyPI only (Python 3.11)
+pip install sp1-zorch
 ```
 
-GPU (the byte-match FFI path) additionally needs the frx CUDA plugins.
-`frx-cuda12-pjrt` is 129 MB, over PyPI's 100 MiB per-file limit; a limit
-increase is pending, until then:
+### GPU (CUDA 12)
 
 ```sh
-pip install sp1-zorch "frx[cuda12]" \
+pip install sp1-zorch 'frx[cuda12]' \
     --extra-index-url https://fractalyze.github.io/pypi/simple/
 ```
 
-> **Note** `zorch` on PyPI is an unrelated third-party package. The
-> distribution is `pyzorch` (the import name stays `zorch`);
-> `pip install sp1-zorch` pulls it for you.
+The extra index carries the CUDA plugin wheels, which are too large for PyPI's
+per-file limit. It is not needed for the CPU tier.
+
+### Verify
+
+```sh
+python -c "import frx, sp1_zorch; print(frx.devices()); print(sp1_zorch.__version__)"
+```
+
+`[CpuDevice(id=0)]` means the CPU tier; a CUDA install prints the GPU devices.
 
 ## Development
 
