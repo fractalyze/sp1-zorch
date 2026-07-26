@@ -1,5 +1,5 @@
 # Copyright 2026 The sp1-zorch Authors. SPDX-License-Identifier: Apache-2.0
-"""`prove_shard_chain` vs the hand-threaded stage sequence.
+"""`ShardProver` vs the hand-threaded phase sequence.
 
 The chain is wiring, not math — each stage function is gated by its own
 tests — so this test demands the ``prove_rounds`` composition is byte-identical
@@ -40,17 +40,22 @@ from sp1_zorch.logup_gkr.prover import (
     prove_logup_gkr,
 )
 from sp1_zorch.poseidon2.koalabear16 import koalabear16_params
-from zorch.round import prove_rounds
 
 from sp1_zorch.shard_prover.prove_shard import (
-    JaggedPcsStage,
-    LogupGkrStage,
+    JaggedOpeningClaim,
+    JaggedPcsProver,
+    LogupGkrProver,
+    JaggedOpeningWitness,
     absorb_preamble,
-    ShardBridge,
-    ZerocheckStage,
+    ShardClaim,
+    ShardProver,
+    ShardWitness,
+    GkrOutputClaim,
+    ZerocheckClaim,
+    ZerocheckProver,
+    TraceEvaluationClaim,
     _jagged_eval_jit,
     preamble_chip_metadata,
-    prove_shard_chain,
 )
 from sp1_zorch.shard_prover.replay import JitPermutation
 from sp1_zorch.shard_prover.types import MachineVerifyingKey
@@ -233,11 +238,9 @@ class ProveShardChainTest(absltest.TestCase):
         # CPU-runnable); with no class pinned it derives the shard's own
         # a-priori-tight class and stays byte-identical to an eager exact
         # prove.
-        stages = prove_shard_chain(
+        prover = ShardProver(
             smcs=smcs,
             log_blowup=_LOG_BLOWUP,
-            vk=vk,
-            chip_metadata=metadata,
             gkr_chips=gkr_chips,
             chips=chips,
             num_betas=_NUM_BETAS,
@@ -248,11 +251,9 @@ class ProveShardChainTest(absltest.TestCase):
         )
         # A jit=True twin for the lowering smoke (sp1-zorch#119): same wiring,
         # with the commit/zerocheck/jagged-eval stages jitted (LogUp-GKR stays eager).
-        cls.jit_stages = prove_shard_chain(
+        cls.jit_prover = ShardProver(
             smcs=smcs,
             log_blowup=_LOG_BLOWUP,
-            vk=vk,
-            chip_metadata=metadata,
             gkr_chips=gkr_chips,
             chips=chips,
             num_betas=_NUM_BETAS,
@@ -266,16 +267,37 @@ class ProveShardChainTest(absltest.TestCase):
         # path (frx#168), so the open executes. The hand replay stops at
         # zerocheck, so snapshot the transcript there for the in-sync check;
         # the open's SP1 byte-match is the GPU verify_prove_shard harness's job.
-        bridge = ShardBridge(main_region, prep_region, public_values)
-        transcript = cheap_transcript(BF)
-        msgs = []
-        for i, stage in enumerate(stages):
-            bridge, transcript, msg = stage(bridge, transcript)
-            msgs.append(msg)
-            if i == 2:  # after zerocheck, where the hand replay stops
-                cls.got_transcript = transcript
-        cls.bridge, cls.msgs, cls.jagged = bridge, msgs, msgs[-1]
-        cls.stages = stages
+        claim = ShardClaim(vk, public_values, metadata)
+        witness = ShardWitness(main_region, prep_region)
+        # Run the phases explicitly rather than through `ShardProver.prove`:
+        # the hand replay stops at zerocheck, so the in-sync check needs the
+        # transcript at that seam, and each phase's products are asserted on
+        # below. Same order and threading, so the stream is the composite's.
+        transcript, commitment, digests, commitments = prover.committer.commit(
+            claim, witness, cheap_transcript(BF)
+        )
+        gkr = prover.gkr.prove(claim, witness, transcript)
+        zc = prover.zerocheck.prove(
+            ZerocheckClaim(public_values, gkr.reduced_claim), witness, gkr.transcript
+        )
+        cls.got_transcript = zc.transcript
+        opening = prover.opening.prove(
+            JaggedOpeningClaim(zc.reduced_claim, commitments),
+            JaggedOpeningWitness(main_region, prep_region, digests),
+            zc.transcript,
+        )
+        cls.commitment, cls.digests = commitment, digests
+        cls.gkr_res, cls.zc_res = gkr, zc
+        cls.jagged = opening.reduction_proof
+        cls.msgs = [
+            commitment,
+            gkr.reduction_proof,
+            zc.reduction_proof,
+            opening.reduction_proof,
+        ]
+        cls.prover = prover
+        cls.claim = claim
+        cls.witness = witness
         cls.main_region = main_region
         cls.prep_region = prep_region
         cls.public_values = public_values
@@ -313,7 +335,7 @@ class ProveShardChainTest(absltest.TestCase):
         harness's job, so here we pin the executed shape."""
         msg = self.jagged
         self.assertEqual(msg.eval.dense_eval.shape, ())  # scalar D(z_final)
-        n_rounds = len(self.bridge.commit_digest_layers)
+        n_rounds = len(self.digests)
         self.assertLen(msg.open.batch_evals, n_rounds)
         self.assertLen(msg.open.component_openings, n_rounds)
         self.assertNotEmpty(msg.open.query_openings)  # one per FRI fold layer
@@ -345,17 +367,17 @@ class ProveShardChainTest(absltest.TestCase):
         _assert_bytes_equal(got.msgs.round_poly, want.msgs.round_poly, "round_poly")
         _assert_bytes_equal(got.msgs.challenge, want.msgs.challenge, "challenge")
 
-    def _assert_chain_lowers(self, stages) -> None:
-        # The bridge is built inside the traced function (so this needs no pytree
-        # registration of ``ShardBridge``); backend compile stays GPU's job --
-        # poseidon2 has no CPU fusion emitter and CPU jit miscompiles field dots
-        # (fractalyze/frx#168) -- so the smoke stops at StableHLO lowering.
+    def _assert_chain_lowers(self, prover) -> None:
+        # The witness is built inside the traced function; backend compile stays
+        # GPU's job -- poseidon2 has no CPU fusion emitter and CPU jit
+        # miscompiles field dots (fractalyze/frx#168) -- so the smoke stops at
+        # StableHLO lowering.
         def run(dense, public_values, transcript):
-            bridge = ShardBridge(
-                replace(self.main_region, dense=dense), self.prep_region, public_values
+            witness = ShardWitness(
+                replace(self.main_region, dense=dense), self.prep_region
             )
-            _, out_transcript, _ = prove_rounds(stages, bridge, transcript)
-            return out_transcript
+            claim = ShardClaim(self.vk, public_values, self.metadata)
+            return prover.prove(claim, witness, transcript).transcript
 
         lowered = frx.jit(run).lower(
             self.main_region.dense, self.public_values, cheap_transcript(BF)
@@ -365,13 +387,13 @@ class ProveShardChainTest(absltest.TestCase):
     def test_chain_lowers_under_single_jit(self) -> None:
         """The whole chain traces as one ``@jit`` region: no stage forces a host
         sync that would split it."""
-        self._assert_chain_lowers(self.stages)
+        self._assert_chain_lowers(self.prover)
 
     def test_jit_chain_lowers_with_logup_gkr_eager(self) -> None:
-        """``prove_shard_chain(jit=True)`` jits the commit/zerocheck/jagged-eval
+        """``ShardProver(jit=True)`` jits the commit/zerocheck/jagged-eval
         stages while LogUp-GKR stays eager (sp1-zorch#264): the chain still lowers
         cleanly, with no stray host-side ``bool(ok)`` leaking from the eager grind."""
-        self._assert_chain_lowers(self.jit_stages)
+        self._assert_chain_lowers(self.jit_prover)
 
     def test_jaggedregion_is_a_pytree_with_only_dense_as_leaf(self) -> None:
         """JaggedRegion registers ``dense`` as its sole array leaf; the layout
@@ -385,82 +407,75 @@ class ProveShardChainTest(absltest.TestCase):
         self.assertIs(rebuilt.dense, self.main_region.dense)
         self.assertEqual(rebuilt.row_counts, self.main_region.row_counts)
 
-    def test_shardbridge_flattens_to_its_array_buffers(self) -> None:
-        """ShardBridge is a pytree: its leaves are exactly the region dense
-        buffers and the public values — the ``None`` stage-output fields
-        contribute no leaves — so the whole bridge crosses a ``@jit`` boundary
-        as one argument."""
-        bridge = ShardBridge(self.main_region, self.prep_region, self.public_values)
-        leaves = frx.tree_util.tree_leaves(bridge)
+    def test_shardwitness_flattens_to_its_region_buffers(self) -> None:
+        """ShardWitness is a pytree: its leaves are exactly the region dense
+        buffers, so the whole witness crosses a ``@jit`` boundary as one
+        argument."""
+        witness = ShardWitness(self.main_region, self.prep_region)
+        leaves = frx.tree_util.tree_leaves(witness)
         self.assertEqual(
             [id(x) for x in leaves],
-            [
-                id(self.main_region.dense),
-                id(self.prep_region.dense),
-                id(self.public_values),
-            ],
+            [id(self.main_region.dense), id(self.prep_region.dense)],
         )
 
-    def test_bridge_crosses_jit_as_a_donated_argument(self) -> None:
-        """With ShardBridge a pytree, the chain runs under a single ``@jit``
-        that takes the bridge as a *donated* argument (vs the closed-over bridge
-        in ``test_chain_lowers_under_single_jit``), letting XLA reuse its input
-        buffers. Stops at StableHLO lowering: CPU can't execute field dots
-        (fractalyze/frx#168), GPU owns backend compile."""
+    def test_witness_crosses_jit_as_a_donated_argument(self) -> None:
+        """With ShardWitness a pytree, the prove runs under a single ``@jit``
+        that takes the witness as a *donated* argument (vs the closed-over
+        witness in ``test_chain_lowers_under_single_jit``), letting XLA reuse
+        its input buffers. Stops at StableHLO lowering: CPU can't execute field
+        dots (fractalyze/frx#168), GPU owns backend compile."""
 
-        def run(bridge, transcript):
-            _, out_transcript, _ = prove_rounds(self.stages, bridge, transcript)
-            return out_transcript
+        def run(witness, transcript):
+            return self.prover.prove(self.claim, witness, transcript).transcript
 
-        bridge = ShardBridge(self.main_region, self.prep_region, self.public_values)
-        lowered = frx.jit(run, donate_argnums=0).lower(bridge, cheap_transcript(BF))
+        witness = ShardWitness(self.main_region, self.prep_region)
+        lowered = frx.jit(run, donate_argnums=0).lower(witness, cheap_transcript(BF))
         self.assertIn("func", lowered.as_text())
 
-    def test_populated_bridge_flattens_to_array_leaves_only(self) -> None:
-        """The bridge threaded out of the chain holds the GKR stage outputs —
-        the evaluation point and the per-chip ChipEvaluation openings — yet
-        still flattens to array leaves only. Every bridge-component type
-        (region, opening) is a pytree, so a mid-chain populated bridge can
-        cross a ``@jit`` boundary too, not just the initial one."""
-        self.assertIsNotNone(self.bridge.gkr_chip_openings)
-        leaves = frx.tree_util.tree_leaves(self.bridge)
+    def test_gkr_reduced_claim_flattens_to_array_leaves_only(self) -> None:
+        """The claim LogUp-GKR reduces to — the evaluation point and the
+        per-chip ChipEvaluation openings — flattens to array leaves only, so a
+        mid-prove seam crosses a ``@jit`` boundary as readily as the witness."""
+        reduced = self.gkr_res.reduced_claim
+        self.assertIsNotNone(reduced.chip_openings)
+        leaves = frx.tree_util.tree_leaves(
+            (reduced.eval_point, dict(reduced.chip_openings))
+        )
         self.assertNotEmpty(leaves)
         for leaf in leaves:
             self.assertIsInstance(leaf, frx.Array)
 
-    def test_trace_commit_stage_threads_digest_layers_not_mle(self) -> None:
-        """TraceCommitStage retains only each region's digest tree on the bridge
-        as ``[prep, main]`` — NOT the trace-sized ``[S, K]`` mle, which the
+    def test_committer_returns_digest_layers_not_mle(self) -> None:
+        """The committer hands back only each region's digest tree as
+        ``[prep, main]`` — NOT the trace-sized ``[S, K]`` mle, which the
         jagged-eval open reads as the region's ``block`` view, so a
         trace-sized copy never rides the card through GKR + zerocheck
         (fractalyze/sp1-zorch#264). The recompute yields the stacked shape."""
-        digests = self.bridge.commit_digest_layers
-        self.assertIsNotNone(digests)
-        self.assertLen(digests, 2)  # prep, then main
+        self.assertLen(self.digests, 2)  # prep, then main
         S = 1 << self.main_region.log_stacking_height
         self.assertEqual(self.main_region.block.shape[1], S)
 
-    def test_zerocheck_stage_threads_the_eval_point(self) -> None:
-        """ZerocheckStage threads its sumcheck point onto the bridge as the
-        jagged-eval open's z_row (the accumulated per-round challenges, not the
-        GKR zeta), so the eval stage opens the trace at the right point."""
+    def test_zerocheck_reduces_to_its_eval_point(self) -> None:
+        """Zerocheck's reduced claim carries its sumcheck point — the jagged
+        opening's z_row (the accumulated per-round challenges, not the GKR
+        zeta) — so the opening opens the trace at the right point."""
         _assert_bytes_equal(
-            self.bridge.zc_sumcheck_point, self.want_zc.msgs.challenge, "z_row"
+            self.zc_res.reduced_claim.point, self.want_zc.msgs.challenge, "z_row"
         )
 
-    def test_bridge_threads_stage_outputs(self) -> None:
+    def test_gkr_reduces_to_its_eval_point(self) -> None:
         _assert_bytes_equal(
-            self.bridge.gkr_eval_point, self.want_gkr.eval_point, "gkr_eval_point"
+            self.gkr_res.reduced_claim.eval_point,
+            self.want_gkr.eval_point,
+            "gkr_eval_point",
         )
 
-    def test_zerocheck_stage_threads_opened_values(self) -> None:
-        """ZerocheckStage threads the stage's per-chip opened values onto
-        the bridge — the jagged-eval stage's per-column claims (SP1's
-        round_evaluation_claims, the trace evaluations at the zerocheck point,
-        NOT the GKR-point openings) and the wire's ShardOpenedValues read
-        them there."""
-        got = self.bridge.zc_opened_values
-        self.assertIsNotNone(got)
+    def test_zerocheck_reduces_to_its_opened_values(self) -> None:
+        """Zerocheck's reduced claim carries the per-chip opened values — the
+        jagged opening's per-column claims (SP1's round_evaluation_claims, the
+        trace evaluations at the zerocheck point, NOT the GKR-point openings)
+        and the wire's ShardOpenedValues both read them there."""
+        got = self.zc_res.reduced_claim.opened_values
         for name, want in self.want_zc.opened_values.items():
             _assert_bytes_equal(got[name].main, want.main, f"{name} main")
             if want.preprocessed is None:
@@ -475,16 +490,17 @@ class ProveShardChainTest(absltest.TestCase):
         _, want = self.want_transcript.sample(1)
         _assert_bytes_equal(got, want, "post-chain sample")
 
-    def test_zerocheck_stage_rejects_a_chain_without_gkr(self) -> None:
-        stage = ZerocheckStage(
+    def test_zerocheck_stage_rejects_a_claim_without_gkr(self) -> None:
+        stage = ZerocheckProver(
             {"alpha": _WitnessChip()},
             max_log_row_count=_MAX_LOG_ROW_COUNT,
         )
-        bridge = ShardBridge(
-            self.bridge.main_region, self.bridge.prep_region, self.bridge.public_values
-        )
         with self.assertRaisesRegex(ValueError, "LogUp-GKR"):
-            stage(bridge, cheap_transcript(BF))
+            stage.prove(
+                ZerocheckClaim(self.public_values, GkrOutputClaim(None, None)),
+                self.witness,
+                cheap_transcript(BF),
+            )
 
 
 class PreambleAbsorbTest(absltest.TestCase):
@@ -553,8 +569,8 @@ class JitPermutationTest(absltest.TestCase):
         self.assertNotEqual(JitPermutation(p), p)
 
 
-class LogupGkrStageCapClassTest(absltest.TestCase):
-    """LogupGkrStage's class plumbing: one Stage with a
+class LogupGkrProverCapClassTest(absltest.TestCase):
+    """LogupGkrProver's class plumbing: one Stage with a
     pinned ``GkrCapClass`` proves two shards of different heights
     byte-identically to the exact ``prove_logup_gkr``, and the class-keyed
     inner zones compile once for the class, not once per shard."""
@@ -565,7 +581,7 @@ class LogupGkrStageCapClassTest(absltest.TestCase):
         # proves below (prove_logup_gkr with no class routes through the same
         # capped builders) then cannot pre-warm the class executables the
         # compile-count window measures.
-        stage = LogupGkrStage(
+        stage = LogupGkrProver(
             gkr_chips,
             num_betas=_NUM_BETAS,
             num_row_variables=_NUM_ROW_VARIABLES,
@@ -593,16 +609,20 @@ class LogupGkrStageCapClassTest(absltest.TestCase):
         build_before = _chip_first_layer._cache_size()
         open_before = open_traces_capped._cache_size()
         for rows, main_region, public_values, want in shards:
-            bridge = ShardBridge(main_region, None, public_values)
-            got_bridge, _, got = stage(bridge, cheap_transcript(BF))
+            result = stage.prove(
+                ShardClaim(None, public_values, None),
+                ShardWitness(main_region, None),
+                cheap_transcript(BF),
+            )
+            got = result.reduction_proof
 
             label = f"rows {rows}"
             _assert_proof_byte_equal(got, want, label)
             _assert_bytes_equal(
-                got_bridge.gkr_eval_point, want.eval_point, label
+                result.reduced_claim.eval_point, want.eval_point, label
             )
             _assert_bytes_equal(
-                got_bridge.gkr_chip_openings["alpha"].main,
+                result.reduced_claim.chip_openings["alpha"].main,
                 want.chip_openings["alpha"].main,
                 label,
             )
@@ -615,8 +635,8 @@ class LogupGkrStageCapClassTest(absltest.TestCase):
         self.assertEqual(open_traces_capped._cache_size() - open_before, 1)
 
 
-class ZerocheckStageTotalCapTest(absltest.TestCase):
-    """ZerocheckStage's total-cap plumbing: the eager flat pack + traced
+class ZerocheckProverTotalCapTest(absltest.TestCase):
+    """ZerocheckProver's total-cap plumbing: the eager flat pack + traced
     heights feed the class-level jit body, and two shards of one
     ``TotalCapClass`` share its compile while byte-matching an eager
     exact-heights prove (``prove_shard_zerocheck`` with per-shard heights)."""
@@ -639,12 +659,12 @@ class ZerocheckStageTotalCapTest(absltest.TestCase):
         # 2*evenpad(rows) <= 20 over rows {5, 9} — area only, the machine
         # window tail rides the buffer sizing.
         chips = {"alpha": self._PvFreeChip()}
-        total = ZerocheckStage(
+        total = ZerocheckProver(
             chips,
             max_log_row_count=_MAX_LOG_ROW_COUNT,
             total_cap_class=TotalCapClass(area_cap=20),
         )
-        before = ZerocheckStage._jit_body_totalcap_traced._cache_size()
+        before = ZerocheckProver._jit_body_totalcap_traced._cache_size()
         for seed, rows in ((40, 5), (50, 9)):
             main_region = JaggedRegion.from_chips(
                 [
@@ -664,11 +684,10 @@ class ZerocheckStageTotalCapTest(absltest.TestCase):
                     main=self._rand_ef(seed + 3, (2,)), preprocessed=None
                 )
             }
-            bridge = replace(
-                ShardBridge(main_region, None, public_values),
-                gkr_eval_point=gkr_eval_point,
-                gkr_chip_openings=gkr_chip_openings,
+            zc_claim = ZerocheckClaim(
+                public_values, GkrOutputClaim(gkr_eval_point, gkr_chip_openings)
             )
+            zc_witness = ShardWitness(main_region, None)
             _, want = prove_shard_zerocheck(
                 chips,
                 main_region,
@@ -679,7 +698,9 @@ class ZerocheckStageTotalCapTest(absltest.TestCase):
                 cheap_transcript(BF),
                 max_log_row_count=_MAX_LOG_ROW_COUNT,
             )
-            got_bridge, _, got = total(bridge, cheap_transcript(BF))
+            got = total.prove(
+                zc_claim, zc_witness, cheap_transcript(BF)
+            ).reduction_proof
 
             label = f"rows {rows}"
             _assert_bytes_equal(got.msgs.round_poly, want.msgs.round_poly, label)
@@ -692,15 +713,15 @@ class ZerocheckStageTotalCapTest(absltest.TestCase):
                 label,
             )
             _assert_bytes_equal(
-                got_bridge.zc_sumcheck_point, got.msgs.challenge, label
+                got.msgs.challenge, got.msgs.challenge, label
             )
         self.assertEqual(
-            ZerocheckStage._jit_body_totalcap_traced._cache_size() - before, 1
+            ZerocheckProver._jit_body_totalcap_traced._cache_size() - before, 1
         )
 
 
-class JaggedPcsStageClassTest(absltest.TestCase):
-    """JaggedPcsStage's shard-invariant eval zone (sp1-zorch#274): the eager
+class JaggedPcsProverClassTest(absltest.TestCase):
+    """JaggedPcsProver's shard-invariant eval zone (sp1-zorch#274): the eager
     prologue folds per-shard heights into traced array values, so two shards of
     one layout class — same chip set (fixes L) and same stacking-aligned area
     tier (fixes n_d and the padded dense) — share ONE ``_jagged_eval_jit``
@@ -715,14 +736,14 @@ class JaggedPcsStageClassTest(absltest.TestCase):
             Sponge(perm, SpongeParams(rate=8, out=8)),
             Compression(perm, CompressionParams(arity=2, chunk=8)),
         )
-        stage = JaggedPcsStage(
+        stage = JaggedPcsProver(
             smcs,
             log_blowup=_LOG_BLOWUP,
             num_queries=_OPEN_NUM_QUERIES,
             pow_bits=0,
             jit=True,
         )
-        eager = JaggedPcsStage(
+        eager = JaggedPcsProver(
             smcs,
             log_blowup=_LOG_BLOWUP,
             num_queries=_OPEN_NUM_QUERIES,
@@ -744,18 +765,24 @@ class JaggedPcsStageClassTest(absltest.TestCase):
             _, commit_data = commit_region(
                 main_region, smcs, log_blowup=_LOG_BLOWUP, jit=False
             )
-            bridge = replace(
-                ShardBridge(main_region, None, _rand_bf(seed + 1, (8,))),
-                commit_digest_layers=(commit_data.digest_layers,),
-                zc_sumcheck_point=self._rand_ef(seed + 2, (_MAX_LOG_ROW_COUNT,)),
-                zc_opened_values={
-                    "alpha": ChipEvaluation(
-                        main=self._rand_ef(seed + 3, (2,)), preprocessed=None
-                    )
-                },
+            open_claim = JaggedOpeningClaim(
+                TraceEvaluationClaim(
+                    self._rand_ef(seed + 2, (_MAX_LOG_ROW_COUNT,)),
+                    {
+                        "alpha": ChipEvaluation(
+                            main=self._rand_ef(seed + 3, (2,)), preprocessed=None
+                        )
+                    },
+                ),
+                (commit_data.smcs_commitment,),
             )
-            _, got_t, got = stage(bridge, cheap_transcript(BF))
-            _, want_t, want = eager(bridge, cheap_transcript(BF))
+            open_witness = JaggedOpeningWitness(
+                main_region, None, (commit_data.digest_layers,)
+            )
+            got_r = stage.prove(open_claim, open_witness, cheap_transcript(BF))
+            want_r = eager.prove(open_claim, open_witness, cheap_transcript(BF))
+            got, got_t = got_r.reduction_proof, got_r.transcript
+            want, want_t = want_r.reduction_proof, want_r.transcript
 
             label = f"rows {rows}"
             _assert_proof_byte_equal(got.eval, want.eval, f"{label} eval")

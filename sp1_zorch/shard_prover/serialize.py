@@ -30,7 +30,13 @@ if TYPE_CHECKING:
 
     from zorch.pcs.jagged.open import Opening, StackedOpenProof
     from sp1_zorch.logup_gkr.prover import LogupGkrProof
-    from sp1_zorch.shard_prover.prove_shard import ShardBridge, JaggedPcsProof
+    from sp1_zorch.shard_prover.prove_shard import (
+        JaggedPcsProof,
+        ShardClaim,
+        ShardProof,
+        ShardWitness,
+        TraceEvaluationClaim,
+    )
     from sp1_zorch.zerocheck.prover import ZerocheckProof
 
 
@@ -343,22 +349,18 @@ def encode_vk(vk: MachineVerifyingKey) -> bytes:
     )
 
 
-def chip_opened_values(bridge: ShardBridge) -> list[ChipOpenedValues]:
-    """Convert the bridge's zerocheck opened values to the wire's per-chip
-    shape. The split off the final folded traces is the zerocheck stage's
-    (``zerocheck.prover.split_opened_values`` — one view shared with the
-    transcript absorbs and the jagged-eval claims); ``degree`` is the chip's
-    live row count — the height whose bits the wire spells out.
+def chip_opened_values(
+    evaluation: TraceEvaluationClaim, main: JaggedRegion
+) -> list[ChipOpenedValues]:
+    """Convert the zerocheck reduced claim's opened values to the wire's
+    per-chip shape. The split off the final folded traces is the zerocheck
+    stage's (``zerocheck.prover.split_opened_values`` — one view shared with
+    the transcript absorbs and the jagged-eval claims); ``degree`` is the
+    chip's live row count — the height whose bits the wire spells out.
     """
-    if bridge.zc_opened_values is None:
-        raise ValueError(
-            "the bridge holds no zerocheck opened values; run the chain "
-            "through ZerocheckStage before assembling the wire"
-        )
-    main = bridge.main_region
     values = []
     for i, name in enumerate(main.chip_names):
-        ev = bridge.zc_opened_values[name]
+        ev = evaluation.opened_values[name]
         values.append(
             ChipOpenedValues(
                 preprocessed_evals=ev.preprocessed,
@@ -370,25 +372,29 @@ def chip_opened_values(bridge: ShardBridge) -> list[ChipOpenedValues]:
 
 
 def encode_shard_proof(
-    bridge: ShardBridge,
-    commitment: Array,
-    gkr_proof: LogupGkrProof,
-    zerocheck_proof: ZerocheckProof,
-    jagged_proof: JaggedPcsProof,
+    claim: ShardClaim,
+    witness: ShardWitness,
+    proof: ShardProof,
+    evaluation: TraceEvaluationClaim,
+    commit_digest_layers: tuple[list[Array], ...],
+    commit_commitments: tuple[Array, ...],
     *,
     max_log_row_count: int,
 ) -> bytes:
     """Encode ``ShardProof<SP1GlobalContext, SP1PcsProofInner>`` to bincode.
 
-    ``bridge`` is the prove_shard chain's final bridge (committed regions +
-    stacked witnesses); the remaining arguments are the chain's messages in
-    stage order. Serde field order: public values, main commitment,
-    LogUp-GKR proof, zerocheck partial sumcheck, shard opened values,
-    evaluation proof.
+    Takes the shard statement and its proof, plus the two prover-only products
+    the wire needs but no claim carries: the zerocheck reduced claim's opened
+    values and the commit-time digest trees. Serde field order: public values,
+    main commitment, LogUp-GKR proof, zerocheck partial sumcheck, shard opened
+    values, evaluation proof.
     """
-    parts = [_encode_point(bridge.public_values)]
+    gkr_proof = proof.gkr
+    zerocheck_proof = proof.zerocheck
+    jagged_proof = proof.jagged
+    parts = [_encode_point(claim.public_values)]
 
-    parts.append(_field_bytes(commitment))
+    parts.append(_field_bytes(proof.commitment))
 
     parts.append(_encode_logup_gkr_proof(gkr_proof, max_log_row_count))
 
@@ -405,25 +411,25 @@ def encode_shard_proof(
 
     parts.append(
         _encode_shard_opened_values(
-            chip_opened_values(bridge),
-            list(bridge.main_region.chip_names),
+            chip_opened_values(evaluation, witness.main_region),
+            list(witness.main_region.chip_names),
             max_log_row_count,
         )
     )
 
     # Committed-round order is [prep, main] — the order TraceCommitStage
-    # wrote the bridge's StackedRounds in.
+    # wrote its StackedRounds in.
     regions = [
         region
-        for region in (bridge.prep_region, bridge.main_region)
+        for region in (witness.prep_region, witness.main_region)
         if region is not None
     ]
     component_raw_roots = [
-        digest_layers[-1][0] for digest_layers in bridge.commit_digest_layers
+        digest_layers[-1][0] for digest_layers in commit_digest_layers
     ]
     # original_commitments = the SMCS commitment (pre-structure-binding), retained
     # off the commit stage in the same [prep, main] order as commit_digest_layers.
-    component_commitments = list(bridge.commit_commitments)
+    component_commitments = list(commit_commitments)
     row_column_counts = [
         list(zip(region.row_counts, region.column_counts, strict=True))
         for region in regions

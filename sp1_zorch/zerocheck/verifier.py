@@ -75,7 +75,7 @@ def verify_shard_zerocheck(
 
     ``eval_point`` and ``chip_openings`` are the LogUp-GKR dual's outputs —
     already leaf-checked, so the claims derived from them are trusted
-    inputs, mirroring the prover's reads of ``ShardBridge``.
+    inputs, mirroring the prover's reads of its source claim.
     ``zc_sumcheck_point`` is the dual's own sampled challenge list (the
     prover's ``msgs.challenge`` order); the caller threads it to the
     jagged-eval dual. ``ok`` is a traced scalar AND of every acceptance leg;

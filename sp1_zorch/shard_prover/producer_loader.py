@@ -54,9 +54,9 @@ def regions_from_producer(
     Returns ``(main_region, prep_region, shard)``, so the prove call is the
     fixture path's, unchanged::
 
-        chain(
-            ShardBridge(main_region, prep_region,
-                       shard.main_trace_data.public_values),
+        prover.prove(
+            ShardClaim(shard.vk, shard.main_trace_data.public_values, metadata),
+            ShardWitness(main_region, prep_region),
             fresh_transcript(),
         )
 

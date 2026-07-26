@@ -23,7 +23,13 @@ from zorch.pcs.jagged.prover import JaggedEvalMsg
 
 from zorch.pcs.jagged.open import StackedOpenProof
 from sp1_zorch.logup_gkr.prover import ChipEvaluation, LogupGkrProof
-from sp1_zorch.shard_prover.prove_shard import ShardBridge, JaggedPcsProof
+from sp1_zorch.shard_prover.prove_shard import (
+    JaggedPcsProof,
+    ShardClaim,
+    ShardProof,
+    ShardWitness,
+    TraceEvaluationClaim,
+)
 from sp1_zorch.shard_prover.serialize import (
     _encode_basefold_proof,
     _encode_chip_opened_values,
@@ -454,7 +460,7 @@ def _digest_layers(root_base: int) -> list:
     ]
 
 
-def _bridge() -> ShardBridge:
+def _regions() -> tuple[JaggedRegion, JaggedRegion]:
     # "alpha": 2 main cols x 3 rows + 1 prep col; "lookup": 1 main col x 2
     # rows, no prep. Trailing two counts per region are the stacking dummies.
     main_region = JaggedRegion(
@@ -473,18 +479,17 @@ def _bridge() -> ShardBridge:
         log_stacking_height=2,
         chip_names=("alpha",),
     )
-    return ShardBridge(
-        main_region=main_region,
-        prep_region=prep_region,
-        public_values=fnp.arange(1, 6, dtype=F),
-        commit_digest_layers=(_digest_layers(100), _digest_layers(400)),
-        # SMCS commitments (original_commitments), distinct from the raw roots.
-        commit_commitments=(
-            fnp.arange(200, 208, dtype=F),
-            fnp.arange(500, 508, dtype=F),
-        ),
-        zc_opened_values=_opened_values(),
+    return main_region, prep_region
+
+
+def _evaluation() -> TraceEvaluationClaim:
+    return TraceEvaluationClaim(
+        point=fnp.array([7, 8], dtype=F), opened_values=_opened_values()
     )
+
+
+# SMCS commitments (original_commitments), distinct from the raw roots.
+_COMMITMENTS = (fnp.arange(200, 208, dtype=F), fnp.arange(500, 508, dtype=F))
 
 
 def _opened_values() -> dict[str, ChipEvaluation]:
@@ -520,11 +525,11 @@ def _zerocheck_proof() -> ZerocheckProof:
 
 
 class ChipOpenedValuesTest(absltest.TestCase):
-    def test_bridges_carry_openings_with_live_row_degree(self) -> None:
+    def test_openings_carry_the_live_row_degree(self) -> None:
         # The split itself is the zerocheck stage's
         # (zerocheck.prover.split_opened_values, pinned in prover_test); this
-        # bridge adds the wire's degree off the chip heights.
-        values = chip_opened_values(_bridge())
+        # adds the wire's degree off the chip heights.
+        values = chip_opened_values(_evaluation(), _regions()[0])
         self.assertLen(values, 2)
 
         alpha, lookup = values
@@ -536,25 +541,17 @@ class ChipOpenedValuesTest(absltest.TestCase):
         self.assertIsNone(lookup.preprocessed_evals)
         self.assertEqual(lookup.degree, 2)
 
-    def test_rejects_a_bridge_without_opened_values(self) -> None:
-        bridge = ShardBridge(
-            main_region=_bridge().main_region,
-            prep_region=None,
-            public_values=fnp.arange(1, 6, dtype=F),
-        )
-        with self.assertRaisesRegex(ValueError, "opened values"):
-            chip_opened_values(bridge)
-
 
 class EncodeShardProofTest(absltest.TestCase):
     """Wiring golden for the full-proof assembly: the component encoders
     carry their own byte goldens above, so this pins the bridging decisions —
     wire field order, the zerocheck point reversal, the finals split, the
-    raw-root extraction off the bridge's stacked witnesses, and the per-round
+    raw-root extraction off the commit digest trees, and the per-round
     layout with the stacking dummies included."""
 
-    def test_wire_order_and_bridged_values(self) -> None:
-        bridge = _bridge()
+    def test_wire_order_and_threaded_values(self) -> None:
+        main_region, prep_region = _regions()
+        public_values = fnp.arange(1, 6, dtype=F)
         zerocheck = _zerocheck_proof()
         gkr = _gkr_proof()
         jagged = JaggedPcsProof(eval=_eval_msg(), open=_open_proof(num_rounds=2))
@@ -574,7 +571,7 @@ class EncodeShardProofTest(absltest.TestCase):
         ]
         expected = (
             _u64(5)
-            + _field_bytes(bridge.public_values)
+            + _field_bytes(public_values)
             + _field_bytes(commitment)
             + _encode_logup_gkr_proof(gkr, 3)
             # The zerocheck point is the challenge list reversed: [7, 8] -> [8, 7].
@@ -587,9 +584,9 @@ class EncodeShardProofTest(absltest.TestCase):
             + _encode_evaluation_proof(
                 jagged.eval,
                 jagged.open,
-                # Raw roots off the bridge's stacked witnesses, [prep, main].
+                # Raw roots off the commit digest trees, [prep, main].
                 [fnp.arange(100, 108, dtype=F), fnp.arange(400, 408, dtype=F)],
-                # original_commitments = the bridge's SMCS commitments, [prep, main].
+                # original_commitments = the SMCS commitments, [prep, main].
                 [fnp.arange(200, 208, dtype=F), fnp.arange(500, 508, dtype=F)],
                 # Region layouts with the stacking dummies included.
                 [[(3, 1), (4, 1), (1, 1)], [(3, 2), (2, 1), (4, 1), (1, 1)]],
@@ -598,11 +595,14 @@ class EncodeShardProofTest(absltest.TestCase):
         )
         self.assertEqual(
             encode_shard_proof(
-                bridge,
-                commitment,
-                gkr,
-                zerocheck,
-                jagged,
+                # Only `public_values` is read here; the vk and chip metadata
+                # reach the wire through their own encoders.
+                ShardClaim(None, public_values, fnp.zeros(0, dtype=F)),
+                ShardWitness(main_region, prep_region),
+                ShardProof(commitment, gkr, zerocheck, jagged),
+                _evaluation(),
+                (_digest_layers(100), _digest_layers(400)),
+                _COMMITMENTS,
                 max_log_row_count=3,
             ),
             expected,
