@@ -62,6 +62,9 @@ from __future__ import annotations
 import gc
 import json
 import sys
+from collections.abc import Mapping
+
+import dataclasses
 import time
 from pathlib import Path
 
@@ -182,6 +185,35 @@ _JAXPROF_DIR = flags.DEFINE_string(
     None,
     "Write an frx profiler trace of the last (warm) prove pass here.",
 )
+def _device_arrays(value, _seen=None):
+    """Every `frx.Array` reachable from `value`, for blocking on a phase.
+
+    A phase returns plain frozen dataclasses — `ProveResult`, and proof
+    sections like `LogupGkrProof` — none of which are registered pytrees, so
+    `block_until_ready` cannot see inside them and returns before the device
+    work lands. Timing what it returns measures host dispatch, not the phase.
+    Walking the fields instead makes the wait real regardless of registration.
+    """
+    # Keyed by id, so keep each visited object alive: a freed intermediate can
+    # have its id reused by a later one, which would silently skip it.
+    _seen = _seen if _seen is not None else {}
+    if id(value) in _seen:
+        return []
+    _seen[id(value)] = value
+    if isinstance(value, frx.Array):
+        return [value]
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        value = [getattr(value, f.name) for f in dataclasses.fields(value)]
+    if isinstance(value, Mapping):
+        value = list(value.values())
+    if isinstance(value, (list, tuple)):
+        out = []
+        for v in value:
+            out.extend(_device_arrays(v, _seen))
+        return out
+    return []
+
+
 def _timed(label, checks, index, run):
     """Run one phase, print its wall-clock, and byte-check it immediately.
 
@@ -196,7 +228,7 @@ def _timed(label, checks, index, run):
     """
     t0 = time.monotonic()
     out = run()
-    frx.block_until_ready(out)
+    frx.block_until_ready(_device_arrays(out))
     elapsed_ms = (time.monotonic() - t0) * 1e3
     # Device-pool telemetry per phase boundary: `mem` is resident after the
     # phase, `peak` the pool high-water so far. On a mid-phase OOM the
