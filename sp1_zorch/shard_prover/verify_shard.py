@@ -36,7 +36,7 @@ from sp1_zorch.logup_gkr.circuit import GkrChip
 from sp1_zorch.logup_gkr.prover import ChipEvaluation, LogupGkrProof
 from sp1_zorch.logup_gkr.verifier import verify_logup_gkr
 from sp1_zorch.shard_prover.prove_shard import (
-    PreambleStage,
+    absorb_preamble,
     JaggedPcsProof,
 )
 from sp1_zorch.shard_prover.types import ChipShape, MachineVerifyingKey
@@ -91,7 +91,7 @@ class ShardVerifierBridge:
 
 class TraceCommitVerifierStage:
     """Stage-1 dual of ``TraceCommitStage``: replays the preamble absorb
-    stream via ``PreambleStage`` — the same one Stage the prover drives —
+    stream via ``absorb_preamble`` — the same one function the prover calls —
     with the proof's commitment message, and writes the commitment roots
     onto the bridge. No local check: the commitment is validated downstream,
     by the stacked-open dual's Merkle openings against these roots."""
@@ -103,12 +103,13 @@ class TraceCommitVerifierStage:
     def __call__(
         self, bridge: ShardVerifierBridge, transcript: Transcript, msg: Array
     ) -> tuple[ShardVerifierBridge, Transcript, Array]:
-        _, transcript, _ = PreambleStage(
+        transcript = absorb_preamble(
+            transcript,
             vk=self._vk,
             public_values=bridge.public_values,
             commitment=msg,
             chip_metadata=self._chip_metadata,
-        )(None, transcript)
+        )
         # The prep root is unconditional: SP1's verifier always carries the
         # vk's preprocessed commitment, even though the prover keeps
         # ``prep_region`` optional. The stacked-open dual checking openings

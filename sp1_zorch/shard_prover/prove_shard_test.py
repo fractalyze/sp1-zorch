@@ -45,7 +45,7 @@ from zorch.round import prove_rounds
 from sp1_zorch.shard_prover.prove_shard import (
     JaggedPcsStage,
     LogupGkrStage,
-    PreambleStage,
+    absorb_preamble,
     ShardBridge,
     ZerocheckStage,
     _jagged_eval_jit,
@@ -487,8 +487,8 @@ class ProveShardChainTest(absltest.TestCase):
             stage(bridge, cheap_transcript(BF))
 
 
-class PreambleStageTest(absltest.TestCase):
-    """Pins ``PreambleStage`` against a raw transcript walk — the one
+class PreambleAbsorbTest(absltest.TestCase):
+    """Pins ``absorb_preamble`` against a raw transcript walk — the one
     deliberate second writing of the preamble schedule, so an accidental
     reorder in the Stage fails here instead of two tools later in a
     byte-match hunt."""
@@ -505,16 +505,13 @@ class PreambleStageTest(absltest.TestCase):
         commitment = _rand_bf(25, (8,))
         metadata = preamble_chip_metadata(("ab", "c"), (6, 4), dtype=BF)
 
-        sentinel = object()
-        bridge, got_t, msg = PreambleStage(
+        got_t = absorb_preamble(
+            cheap_transcript(BF),
             vk=vk,
             public_values=public_values,
             commitment=commitment,
             chip_metadata=metadata,
-        )(sentinel, cheap_transcript(BF))
-
-        self.assertIs(bridge, sentinel)  # bridge-agnostic pass-through
-        _assert_bytes_equal(msg, commitment, "message")
+        )
 
         want_t = vk.observe_into(cheap_transcript(BF))
         want_t = want_t.observe(public_values)

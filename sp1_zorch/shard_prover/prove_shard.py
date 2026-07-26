@@ -124,41 +124,32 @@ def preamble_chip_metadata(
     return fnp.array(metadata, dtype)
 
 
-class PreambleStage:
+def absorb_preamble(
+    transcript: Transcript,
+    *,
+    vk: MachineVerifyingKey,
+    public_values: Array,
+    commitment: Array,
+    chip_metadata: Array,
+) -> Transcript:
     """SP1's shard preamble absorb stream: vk, public values, the main
-    commitment, chip metadata. The schedule lives here once — the prover's
-    ``TraceCommitStage`` and the byte-match replay's ``preamble_transcript``
-    drive this one Stage, so an ordering edit cannot land in one Fiat-Shamir
-    stream and not the other (the GKR head schedule got the same treatment in
-    ``logup_gkr.head``). Bridge-agnostic; the message is the observed
-    commitment, the stream's one structure-bound value."""
+    commitment, chip metadata.
 
-    def __init__(
-        self,
-        *,
-        vk: MachineVerifyingKey,
-        public_values: Array,
-        commitment: Array,
-        chip_metadata: Array,
-    ) -> None:
-        self._vk = vk
-        self._public_values = public_values
-        self._commitment = commitment
-        self._chip_metadata = chip_metadata
-
-    def __call__(
-        self, bridge: Any, transcript: Transcript
-    ) -> tuple[Any, Transcript, Array]:
-        transcript = self._vk.observe_into(transcript)
-        transcript = transcript.observe(self._public_values)
-        transcript = transcript.observe(self._commitment)
-        transcript = transcript.observe(self._chip_metadata)
-        return bridge, transcript, self._commitment
+    A transcript-only schedule operation, so it is one shared function both
+    roles call rather than a stage: the prover, the verifier dual, and the
+    byte-match replay's ``preamble_transcript`` run this single definition, and
+    an ordering edit cannot land in one Fiat-Shamir stream and not the other
+    (the GKR head schedule has the same treatment in ``logup_gkr.head``).
+    """
+    transcript = vk.observe_into(transcript)
+    transcript = transcript.observe(public_values)
+    transcript = transcript.observe(commitment)
+    return transcript.observe(chip_metadata)
 
 
 class TraceCommitStage:
     """Trace commit plus the shard preamble: commit the main region, then
-    absorb SP1's preamble stream via ``PreambleStage``. The message is the
+    absorb SP1's preamble stream via ``absorb_preamble``. The message is the
     structure-bound main commitment; the prover-side commit data joins the
     bridge once the opening stage that reads it lands
     (fractalyze/sp1-zorch#20)."""
@@ -187,12 +178,13 @@ class TraceCommitStage:
             log_blowup=self._log_blowup,
             jit=self._jit,
         )
-        _, transcript, _ = PreambleStage(
+        transcript = absorb_preamble(
+            transcript,
             vk=self._vk,
             public_values=bridge.public_values,
             commitment=bound,
             chip_metadata=self._chip_metadata,
-        )(bridge, transcript)
+        )
         # Keep each region's commit witness for the jagged-eval open, in
         # [prep, main] order (SP1's round_evaluation_claims). prep is bound into
         # the vk at setup, not re-observed here, but the open still reproves it.
