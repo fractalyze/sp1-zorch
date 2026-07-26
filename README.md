@@ -91,8 +91,8 @@ bazel test //...
 ## Documentation
 
 See [`docs/`](docs/README.md) — the [architecture](docs/architecture.md)
-(the shard proof as a sequence of Stages, each running inner Rounds, threaded
-by a Bridge, plus the SP1 dump vocabulary), the
+(the shard proof as a composite Stage over per-phase Stages, each running
+inner Rounds, plus the SP1 dump vocabulary), the
 [development guide](docs/development.md) (environment, testing, and the
 per-stage SP1 baseline), and the [conventions](docs/conventions.md).
 

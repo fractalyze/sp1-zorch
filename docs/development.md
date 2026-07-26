@@ -2,7 +2,7 @@
 
 Everything needed to build, test, and benchmark sp1-zorch: the environment
 setup, the test conventions, and the reproducible per-stage baseline against
-SP1. For architecture (Stage / Round / Bridge) see
+SP1. For architecture (Stage / Round) see
 [architecture.md](architecture.md); for coding style see
 [conventions.md](conventions.md).
 

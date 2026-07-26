@@ -1,13 +1,13 @@
 # Copyright 2026 The sp1-zorch Authors. SPDX-License-Identifier: Apache-2.0
 """``ShardVerifier`` vs ``ShardProver`` — the structural mirror.
 
-The dual chain's guarantee is structural before it is cryptographic: one
+The verifier's guarantee is structural before it is cryptographic: one
 verifier Stage per prover stage, so a proof whose message list misaligns with
 the schedule is rejected loudly by ``verify_rounds`` itself rather than
 accepted on a desynced stream. These tests pin that alignment plus all four
-stage duals against a full prover run (the shared ``chain_testkit``
-fixture): same Fiat-Shamir stream, bridge seams written for the downstream
-duals, a tampered stage message rejected through the chain (the per-leg
+stage duals against a full prover run (the shared ``shard_testkit``
+fixture): same Fiat-Shamir stream, seams derived for the downstream
+duals, a tampered proof section rejected end to end (the per-leg
 tamper coverage is each stage's own verifier test), and the zerocheck
 dual's opening-shape statement checks.
 """
@@ -32,11 +32,11 @@ from sp1_zorch.shard_prover.verify_shard import (
 
 from sp1_zorch.shard_prover.prove_shard import ZerocheckClaim
 
-from sp1_zorch.shard_prover.chain_testkit import (
+from sp1_zorch.shard_prover.shard_testkit import (
     CHIP_HEIGHT,
     CHIP_WIDTH,
     MAX_LOG_ROW_COUNT,
-    small_shard_chain_fixture,
+    small_shard_fixture,
 )
 
 BF = koalabear_mont
@@ -51,12 +51,12 @@ def _assert_bytes_equal(got, want, label: str = "") -> None:
 
 
 class VerifyShardChainTest(absltest.TestCase):
-    """A full four-stage prover run vs one full dual-chain run, every stage
-    dual checked cryptographically through the chain."""
+    """A full four-phase prove vs one full verify, every phase dual checked
+    cryptographically end to end."""
 
     @classmethod
     def setUpClass(cls):
-        fx = small_shard_chain_fixture()
+        fx = small_shard_fixture()
         cls.fx = fx
         proof = fx.proof
         cls.commitment = proof.commitment
@@ -115,7 +115,7 @@ class VerifyShardChainTest(absltest.TestCase):
             )
 
     def test_live_duals_match_the_prover_stream(self) -> None:
-        """The chain accepts and its output transcript byte-matches the
+        """The verifier accepts and its output transcript byte-matches the
         prover's post-stage-4 one, so the two Fiat-Shamir streams agree
         through every stage, glue included."""
         self.assertTrue(bool(self.dual_ok))
@@ -126,7 +126,7 @@ class VerifyShardChainTest(absltest.TestCase):
     def test_gkr_dual_writes_the_zerocheck_seams(self) -> None:
         """The point is the dual's own derivation (pinned against the wire
         copy inside the stage), the openings the proof's leaf-checked values
-        — what the zerocheck dual reads, surviving to the chain output."""
+        — what the zerocheck dual reads, surviving to the verifier's output."""
         _assert_bytes_equal(
             self.gkr_reduced.eval_point, self.gkr_proof.eval_point, "point"
         )
@@ -137,7 +137,7 @@ class VerifyShardChainTest(absltest.TestCase):
         )
 
     def test_tampered_gkr_message_rejected_through_the_chain(self) -> None:
-        """One representative stage-2 tamper rejecting at the chain level;
+        """One representative stage-2 tamper rejecting end to end;
         the per-leg coverage is the stage's own test file."""
         rp = self.gkr_proof.round_proofs[0]
         bad_polys = rp.round_polys.at[0, 0].add(fnp.ones((), rp.round_polys.dtype))
@@ -156,7 +156,7 @@ class VerifyShardChainTest(absltest.TestCase):
         """The point is the dual's own sampled challenges (the prover's
         ``msgs.challenge`` order), the opened values the proof's
         oracle-checked ones — what the jagged-eval dual reads, surviving to
-        the chain output."""
+        the verifier's output."""
         _assert_bytes_equal(
             self.zc_reduced.point, self.zc_proof.msgs.challenge, "point"
         )
@@ -167,7 +167,7 @@ class VerifyShardChainTest(absltest.TestCase):
         )
 
     def test_tampered_zerocheck_message_rejected_through_the_chain(self) -> None:
-        """One representative stage-3 tamper rejecting at the chain level;
+        """One representative stage-3 tamper rejecting end to end;
         the per-leg coverage is the stage's own test file."""
         bad_sum = self.zc_proof.claimed_sum + fnp.ones(
             (), self.zc_proof.claimed_sum.dtype
@@ -182,7 +182,7 @@ class VerifyShardChainTest(absltest.TestCase):
         self.assertFalse(bool(ok))
 
     def test_tampered_jagged_eval_message_rejected_through_the_chain(self) -> None:
-        """One representative stage-4 tamper rejecting at the chain level;
+        """One representative stage-4 tamper rejecting end to end;
         the per-leg coverage is the stage's own verifier test."""
         bad_eval = replace(
             self.je_proof.eval,
@@ -228,7 +228,7 @@ class VerifyShardChainTest(absltest.TestCase):
     def test_missing_preprocessed_opening_rejected(self) -> None:
         """A statement whose chip carries a preprocessed trace rejects a
         proof that opens none (SP1's preprocessed-chips-appear-in-the-proof
-        check). The bridge is the post-chain one (every seam written), so the
+        check). The seams are the post-prove ones, so the
         call exercises only the shape check, which raises before any
         cryptographic work."""
         stage = ZerocheckVerifier(

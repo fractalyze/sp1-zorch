@@ -57,7 +57,7 @@ from zorch.utils.bits import log2_ceil_usize
 
 
 # Written phase outputs are array leaves; unwritten
-# Optional fields are None (an empty subtree), so the bridge crosses a @jit
+# Optional fields are None (an empty subtree), so it crosses a @jit
 # boundary as one argument.
 class TraceCommitAbsorber:
     """Dual of the prover's committer: replays the preamble absorb stream via
@@ -96,7 +96,7 @@ class LogupGkrVerifier(
 ):
     """Stage-2 dual of ``LogupGkrStage``: verifies the LogUp-GKR proof via
     ``verify_logup_gkr`` and writes the derived evaluation point plus the
-    proof's leaf-checked chip openings onto the bridge — the same seams the
+    proof's leaf-checked chip openings as its reduced claim — the same seams the
     prover role reduces to for the zerocheck stage."""
 
     def __init__(
@@ -146,8 +146,8 @@ class ZerocheckVerifier(
 ):
     """Stage-3 dual of ``ZerocheckStage``: verifies the zerocheck proof
     via ``verify_shard_zerocheck``, consuming the GKR point and openings off
-    the bridge, and writes the dual's own sumcheck point plus the proof's
-    oracle-checked opened values onto the bridge — the same seams the prover
+    its source claim, and reduces to the dual's own sumcheck point plus the
+    proof's oracle-checked opened values — the same seams the prover
     role reduces to for the jagged-eval stage.
 
     The proof's opened values are checked against the statement shapes
@@ -155,7 +155,7 @@ class ZerocheckVerifier(
     ``verify_zerocheck``, ``crates/hypercube/src/verifier/shard.rs``) — the
     verifier absorbs the proof's opened values, so a shape lie never
     desyncs Fiat-Shamir and only a statement check rejects it. Downstream
-    duals reading the bridge's opened values may trust their shapes."""
+    later duals reading those opened values may trust their shapes."""
 
     def __init__(
         self,
@@ -220,14 +220,14 @@ class JaggedPcsVerifier(
     VerifierStage[JaggedOpeningClaim, TrivialClaim, JaggedPcsProof]
 ):
     """Stage-4 dual of ``JaggedPcsStage``: rebuilds the column manifest
-    and per-column claims from the statement plus the bridge's oracle-checked
+    and per-column claims from the statement plus the oracle-checked
     opened values, samples ``z_col`` itself, verifies the outer/inner
     sumchecks via ``verify_jagged_eval_msg``, and closes the chain with
-    ``stacked_basefold_verify`` against the bridge's skip-level commitment
+    ``stacked_basefold_verify`` against the skip-level commitment
     roots.
 
     The column manifest is built entirely from the statement shapes; the
-    bridge's opened values only supply the claims, their shapes already
+    opened values only supply the claims, their shapes already
     checked against the same statement by the zerocheck dual. A statement
     with no preprocessed chip states that no preprocessed round exists, so
     a proof carrying one is a structural reject."""
@@ -340,7 +340,7 @@ class JaggedPcsVerifier(
 
         # The soundness anchor: each round's shape-bound proof commitment,
         # rebound with the statement-derived structure counts, must be the
-        # preamble-observed commitment off the bridge (SP1's table-sizes
+        # preamble-observed commitment (SP1's table-sizes
         # check) — only then do the open's Merkle checks against the proof
         # commitments bind the openings to the statement.
         statement_roots = (

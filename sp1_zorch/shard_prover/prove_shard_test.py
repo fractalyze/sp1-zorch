@@ -4,8 +4,8 @@
 The chain is wiring, not math — each stage function is gated by its own
 tests — so this test demands the ``prove_rounds`` composition is byte-identical
 to calling commit, LogUp-GKR, and zerocheck by hand on the same sponge: same
-messages, same bridge products, same Fiat-Shamir stream afterwards. Any drift
-in stage order, bridge threading, or preamble encoding desynchronizes the two
+sections, same reduced claims, same Fiat-Shamir stream afterwards. Any drift
+in phase order, claim threading, or preamble encoding desynchronizes the two
 streams and fails loudly.
 """
 

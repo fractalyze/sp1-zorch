@@ -54,7 +54,7 @@ and several dump files carry that prefix. The numbering:
 
 **Convention: "phase N" appears in this repo only when citing SP1 dump
 artifacts (file names, capture spans). Our own code, docs, and PRs name the
-levels Stage / Round / Bridge as above.**
+levels Stage / Round as above.**
 
 Per-file map (one rsp shard directory):
 

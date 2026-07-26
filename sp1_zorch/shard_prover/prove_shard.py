@@ -69,7 +69,7 @@ from zorch.utils.bits import log2_ceil_usize
 
 # Pytree: the two regions (themselves pytrees), public values, and written
 # stage outputs are array leaves; unwritten Optional fields are None (an empty
-# subtree). Lets the bridge cross the chain's @jit boundary as one donatable
+# subtree). Lets the witness cross a @jit boundary as one donatable
 # argument.
 @dataclass(frozen=True)
 class ShardClaim:
@@ -265,7 +265,7 @@ class LogupGkrProver(
     ProverStage[ShardClaim, ShardWitness, GkrOutputClaim, LogupGkrProof]
 ):
     """LogUp-GKR stage over ``prove_logup_gkr``; writes the final
-    evaluation point and per-chip openings onto the bridge for zerocheck.
+    evaluation point and per-chip openings as the claim zerocheck consumes.
 
     Eager orchestration, not one ``@jit`` body: a whole-body jit keeps
     every pyramid layer live at once (OOM on wide shards) and the grind's
@@ -322,7 +322,7 @@ class ZerocheckProver(
     """Zerocheck stage over ``prove_shard_zerocheck``, consuming the GKR
     point and openings off its source claim. The stage absorbs the per-chip opened
     values itself (``OpenedValuesRound`` in ``zerocheck.prover``); this Stage
-    threads them onto the bridge for the jagged-eval stage's claims and the
+    surfaces them in its reduced claim for the jagged opening and the
     wire's ShardOpenedValues.
 
     The stage body runs under one cached outer ``@jit`` on the total-cap

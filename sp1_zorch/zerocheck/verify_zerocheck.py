@@ -243,7 +243,7 @@ def main(argv) -> None:
 
     if _ZC_CLASS_JSON.value:
         # Traced total-cap class route (the shard-invariance form the prove
-        # chain runs): flat jagged arrival packed eagerly with host heights,
+        # prove runs): flat jagged arrival packed eagerly with host heights,
         # per-chip statics threaded through — mirrors
         # ZerocheckProver.prove's flat prologue.
         with open(_ZC_CLASS_JSON.value) as f:
@@ -262,7 +262,7 @@ def main(argv) -> None:
             else {}
         )
         # Run the Round's OWN jitted body — the same executable the prove
-        # chain compiles (and the one the persistent compile cache shares
+        # prove compiles (and the one the persistent compile cache shares
         # across shards). Eagerly the stage materializes every round's
         # intermediates and tips big classes over the card.
         transcript, fields = ZerocheckProver._jit_body_totalcap_traced(

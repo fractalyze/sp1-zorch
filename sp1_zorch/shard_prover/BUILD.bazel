@@ -126,9 +126,9 @@ py_library(
 # Shared four-stage chain fixture for the dual-chain test suites
 # (verify_shard_test here, jagged:verifier_test).
 py_library(
-    name = "chain_testkit",
+    name = "shard_testkit",
     testonly = True,
-    srcs = ["chain_testkit.py"],
+    srcs = ["shard_testkit.py"],
     visibility = ["//visibility:public"],
     deps = [
         ":prove_shard",
@@ -190,7 +190,7 @@ py_test(
     timeout = "eternal",
     srcs = ["verify_shard_test.py"],
     deps = [
-        ":chain_testkit",
+        ":shard_testkit",
         ":shard_prover",
         ":verify_shard",
         "@zorch//zorch/testkit:transcript",

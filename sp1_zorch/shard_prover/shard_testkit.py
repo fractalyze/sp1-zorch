@@ -1,5 +1,5 @@
 # Copyright 2026 The sp1-zorch Authors. SPDX-License-Identifier: Apache-2.0
-"""Shared four-stage chain fixture for the dual-chain test suites.
+"""Shared four-phase shard fixture for the prover/verifier test suites.
 
 One tiny single-chip shard — witness-shaped (column ``a == 1`` on real rows
 with ``C(0_row) != 0``) so the zerocheck statement holds and the padded-row
@@ -67,7 +67,7 @@ class _WitnessChip:
 
 
 @dataclass(frozen=True)
-class ShardChainFixture:
+class ShardFixture:
     """An honest prover run plus the matching dual chain.
 
     ``proof`` is the assembled ``ShardProof`` — one named section per phase,
@@ -86,7 +86,7 @@ class ShardChainFixture:
     prover_transcript: Any
 
 
-def small_shard_chain_fixture() -> ShardChainFixture:
+def small_shard_fixture() -> ShardFixture:
     """Build the fixture and run the four-stage prover once."""
     main_region = JaggedRegion.from_chips(
         [
@@ -160,7 +160,7 @@ def small_shard_chain_fixture() -> ShardChainFixture:
     witness = ShardWitness(main_region, None)
     proved = prover.prove(claim, witness, cheap_transcript(BF))
 
-    return ShardChainFixture(
+    return ShardFixture(
         smcs=smcs,
         vk=vk,
         public_values=public_values,

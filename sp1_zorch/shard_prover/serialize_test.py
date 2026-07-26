@@ -452,7 +452,7 @@ class EncodeEvaluationProofTest(absltest.TestCase):
 
 def _digest_layers(root_base: int) -> list:
     # The assembly reads only the raw root (the root layer's single row); the
-    # bridge holds the digest tree, not the mle -- the open recomputes the mle
+    # the prover holds the digest tree, not the mle -- the open recomputes it
     # from the region dense (fractalyze/sp1-zorch#264).
     return [
         fnp.zeros((2, 8), dtype=F),
