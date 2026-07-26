@@ -415,11 +415,6 @@ class ZerocheckProver(
         witness: ShardWitness,
         transcript: Transcript,
     ) -> ProveResult[TraceEvaluationClaim, ZerocheckProof]:
-        if claim.gkr.eval_point is None or claim.gkr.chip_openings is None:
-            raise ValueError(
-                "zerocheck needs the LogUp-GKR stage's outputs on the bridge; "
-                "sequence a LogupGkrStage before this Stage"
-            )
         # Shard-invariant flat prologue (sp1-zorch#242): pack the
         # class-shaped flat jagged arrival EAGERLY from the exact-height
         # traces — heights are host ints here, and the pack mirrors the

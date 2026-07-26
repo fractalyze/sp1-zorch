@@ -273,13 +273,13 @@ def _prove_phases(prover, claim, witness, transcript, n, checks):
                 transcript,
             ),
         )
-    proof = ShardProof(
-        commitment=commitment,
-        gkr=gkr.reduction_proof if gkr is not None else None,
-        zerocheck=zerocheck.reduction_proof if zerocheck is not None else None,
-        jagged=opening.reduction_proof if opening is not None else None,
-    )
-    return proof, evaluation, digest_layers, commitments
+    # Only a full run has a shard proof. A --max_stage prefix ran some phases
+    # and has their sections; it does not have a ShardProof, so it does not
+    # claim one -- the wire assembly below is gated on the full run anyway.
+    sections = [commitment]
+    sections += [r.reduction_proof for r in (gkr, zerocheck, opening) if r is not None]
+    proof = ShardProof(*sections) if len(sections) == 4 else None
+    return proof, sections, evaluation, digest_layers, commitments
 
 
 def main(argv) -> None:
@@ -556,16 +556,17 @@ def _verify_shard(
         # Release the prior pass's device buffers before this pass allocates:
         # holding a spent pass resident while the next re-allocates the pyramid
         # intermediate is what tips a wide shard over the card on --runs>=2.
-        proof = digest_layers = commitments = evaluation = None
+        proof = sections = digest_layers = commitments = evaluation = None
         (
             proof,
+            sections,
             evaluation,
             digest_layers,
             commitments,
         ) = _prove_phases(
             prover, shard_claim, shard_witness, fresh_transcript(), n, stage_checks
         )
-        frx.block_until_ready(proof)
+        frx.block_until_ready(sections)
         print(f"chain run: {(time.monotonic() - t0) * 1e3:.1f}ms", flush=True)
         if _prof:
             frx.profiler.stop_trace()
@@ -575,8 +576,8 @@ def _verify_shard(
     print(f"prove_shard chain (stages 1..{n}) byte-match: ALL OK")
 
     if n >= 4 and _FFI_VERIFY.value:
-        # n is capped at 4, so n >= 4 means the full chain ran: msgs is exactly
-        # the four stage messages the bincode wire needs, in order.
+        # n is capped at 4, so n >= 4 means every phase ran and `proof` is a
+        # real ShardProof -- a shorter prefix leaves it None and never gets here.
         t0 = time.monotonic()
         vk_bytes = encode_vk(vk)
         proof_bytes = encode_shard_proof(

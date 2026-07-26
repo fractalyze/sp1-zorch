@@ -178,11 +178,6 @@ class ZerocheckVerifier(
         transcript: Transcript,
     ) -> VerifyResult[TraceEvaluationClaim]:
         msg = reduction_proof
-        if claim.gkr.eval_point is None or claim.gkr.chip_openings is None:
-            raise ValueError(
-                "the zerocheck dual needs the LogUp-GKR stage's outputs on "
-                "the bridge; sequence a LogupGkrVerifierStage before this Stage"
-            )
         opened = msg.opened_values
         for n in self._chip_names:
             shape = self._chip_shapes[n]

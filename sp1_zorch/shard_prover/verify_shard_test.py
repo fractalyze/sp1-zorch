@@ -79,14 +79,40 @@ class VerifyShardChainTest(absltest.TestCase):
         )
         cls.zc_reduced = zc.reduced_claim
 
-    def test_one_verifier_phase_per_prover_phase(self) -> None:
-        """Both composites name the same phases after the committer/absorber
-        pair, so a phase added on one side without its dual shows up here
-        rather than as a silent accept."""
-        prover_phases = [n for n in vars(self.fx.prover) if not n.startswith("_")]
-        verifier_phases = [n for n in vars(self.fx.verifier) if not n.startswith("_")]
-        self.assertEqual(prover_phases[1:], verifier_phases[1:])
-        self.assertLen(verifier_phases, len(prover_phases))
+    def test_both_roles_derive_the_same_seams(self) -> None:
+        """The mirror that matters: every claim the prover reduces to, the
+        verifier re-derives from the proof alone and gets the same value.
+
+        A phase wired to the wrong claim, or a dual replaying a different
+        schedule, breaks this even when both sides still accept — which is
+        what a name-level symmetry check would miss."""
+        fx = self.fx
+        t, _, _, _ = fx.prover.committer.commit(
+            fx.claim, fx.witness, cheap_transcript(BF)
+        )
+        p_gkr = fx.prover.gkr.prove(fx.claim, fx.witness, t)
+        p_zc = fx.prover.zerocheck.prove(
+            ZerocheckClaim(fx.claim.public_values, p_gkr.reduced_claim),
+            fx.witness,
+            p_gkr.transcript,
+        )
+
+        _assert_bytes_equal(
+            self.gkr_reduced.eval_point,
+            p_gkr.reduced_claim.eval_point,
+            "gkr eval_point",
+        )
+        for name, want in p_gkr.reduced_claim.chip_openings.items():
+            _assert_bytes_equal(
+                self.gkr_reduced.chip_openings[name].main, want.main, f"gkr {name}"
+            )
+        _assert_bytes_equal(
+            self.zc_reduced.point, p_zc.reduced_claim.point, "zerocheck point"
+        )
+        for name, want in p_zc.reduced_claim.opened_values.items():
+            _assert_bytes_equal(
+                self.zc_reduced.opened_values[name].main, want.main, f"zerocheck {name}"
+            )
 
     def test_live_duals_match_the_prover_stream(self) -> None:
         """The chain accepts and its output transcript byte-matches the

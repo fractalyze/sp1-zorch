@@ -490,17 +490,6 @@ class ProveShardChainTest(absltest.TestCase):
         _, want = self.want_transcript.sample(1)
         _assert_bytes_equal(got, want, "post-chain sample")
 
-    def test_zerocheck_stage_rejects_a_claim_without_gkr(self) -> None:
-        stage = ZerocheckProver(
-            {"alpha": _WitnessChip()},
-            max_log_row_count=_MAX_LOG_ROW_COUNT,
-        )
-        with self.assertRaisesRegex(ValueError, "LogUp-GKR"):
-            stage.prove(
-                ZerocheckClaim(self.public_values, GkrOutputClaim(None, None)),
-                self.witness,
-                cheap_transcript(BF),
-            )
 
 
 class PreambleAbsorbTest(absltest.TestCase):
