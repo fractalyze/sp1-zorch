@@ -5,10 +5,22 @@
 sp1-zorch follows the team playbook and inherits zorch's conventions
 (`fractalyze/zorch:docs/conventions.md` — `@jit`, naming, type annotations).
 This file records the rules that bite hardest in an SP1 *consumer* repo:
-how comments are scoped, how we cite the SP1 reference we mirror, and how
-protocol verifiers are named apart from the byte-match harnesses. The
+how commits are worded, how comments are scoped, how we cite the SP1 reference
+we mirror, and how protocol verifiers are named apart from the byte-match
+harnesses. The
 repo-level "SP1-specific only" rule lives in [`../CLAUDE.md`](../CLAUDE.md);
 test `size`/`timeout` and fixture conventions live in [`development.md`](development.md).
+
+## Commit messages
+
+[Conventional Commits](https://www.conventionalcommits.org): a valid type, a
+lowercase summary with no trailing period, a header of at most 80 characters,
+and a body on everything but `docs`. The scope is the package the change lives
+in — `logup_gkr`, `poseidon2`, `shard_prover`, `zerocheck` — plus `release` for
+the version in `sp1_zorch/__init__.py`; it must be the deepest directory
+containing every touched file, so a change spanning several packages takes
+none. `.fractal-commit-lint.toml` is the source of truth, and the same linter
+runs in CI over every commit in a pull request and over the PR title.
 
 ## Comments & documentation
 

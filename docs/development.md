@@ -34,9 +34,13 @@ export PYTHONPATH="$PWD:/abs/path/to/zorch"
 common --override_module=zorch=/abs/path/to/your/zorch/checkout
 ```
 
-Bumping the `zorch` pin and its matching frx family is a coupled change — see the
-"Dependency on zorch" section of [`../CLAUDE.md`](../CLAUDE.md) (a lagging frx pin
-segfaults the GPU tests rather than raising a clean `ImportError`).
+**Bumping the `zorch` pin is a coupled change.** Keep the pin on `main`
+commits so CI is reproducible, and move the frx family (`frx` = Fractalyze
+Field, Ring Accelerated) in `requirements.in` + `requirements_lock_3_11.txt` to
+match zorch's pin **in the same commit** — the two build against a shared
+frxlib, so a lagging frx pin ABI-mismatches and **segfaults** the GPU tests
+(`verify_shard_test`) rather than raising a clean `ImportError`. `sp1-zorch
+main` is the reference for the matching `(zorch pin, frx)` pair.
 
 **GPU-plugin gotcha.** A `py_binary` GPU runnable must dep
 `requirement("frx_cuda12_plugin")` + `requirement("frx_cuda12_pjrt")` or frx
@@ -45,6 +49,21 @@ errors instead of silently degrading (`gpu` is wrong: it also initializes rocm
 and dies). The Fractalyze XLA plugin loader takes no plugin-path env var; to
 measure a locally built plugin you overwrite the wheel's bundled
 `xla_cuda_plugin.so` — see [Measure shipped code](#measure-shipped-code) below.
+
+### Bazel gotchas
+
+- **Never run a second bazel command in a worktree that has a long one in
+  flight.** The output base is a hash of the workspace path, so *different*
+  worktrees are safely concurrent — but the same one shares a server and the
+  second command interrupts the first. A `bazel run … --help` will kill a
+  running benchmark. If you need same-worktree concurrency, pass an explicit
+  `--output_base=…`.
+- **`bazel test //sp1_zorch/...` does not exercise `py_binary` targets**, and
+  `jagged_byte_match_test` is `gpu_only` — on CPU its wide `constraint_eval`
+  compiles monolithically and never finishes. Use
+  `bazel test //sp1_zorch/... --test_tag_filters=-gpu_only`, as CI does, and
+  remember the suite can go green while `verify_prove_shard` (a `py_binary`)
+  is broken. After changing anything it constructs, run it.
 
 ## Testing
 
@@ -90,29 +109,22 @@ bytes, no tolerances):
   `sp1_zorch/zerocheck/testdata/gpu_fibonacci`) and back the unit tests.
 - **External** full-shard dumps are too large to vendor; they stay out of the
   repo and are checked with the `verify_*` `py_binary` tools via `--shard_dir`
-  (GPU). See the SP1 byte-match notes in [`../CLAUDE.md`](../CLAUDE.md).
+  (GPU). The CUDA FFI they call (`libsp1_gpu_jax_ffi`) lives in `whir-zorch`
+  under `third_party/sp1/`.
 
 ## Per-phase baseline against SP1
 
-How to compare sp1-zorch's GPU prover against SP1's native reference on a real
-rsp shard, **per phase**, on the premise that **both prove the same shard, at the
-same scope, and produce the same output** (golden byte-match). Only under that
-premise is a wall-clock comparison meaningful.
+A wall-clock comparison against SP1's native reference means something only
+when both sides run the **full shard prove** (trace commit → LogUp-GKR →
+zerocheck → jagged eval) on the **same** rsp shard and produce byte-identical
+output. Both tools below satisfy that, so their per-phase numbers measure the
+same computation.
 
-> **Why the premise matters (a correction).** An earlier baseline compared SP1's
-> *synthetic* `logup_gkr_bench` (random values, real heights) to a sp1-zorch
-> real-shard bench. That is **invalid**: different data, different scope
-> (sp1-zorch includes the per-chip openings + grind/head; the SP1 synthetic
-> bench does not), and **no golden equivalence** between the two — they never
-> prove the same instance. Numbers from that approach (a "14×" logup-gkr ratio)
-> are scope-confounded and should not be quoted. Use the per-phase full-prove
-> comparison below instead.
-
-### The valid benchmark — same data, same scope, same output
-
-Both sides run the **full shard prove** (trace commit → LogUp-GKR → zerocheck →
-jagged eval) on the **same** rsp shard, and the outputs are byte-identical
-(verified), so per-phase wall-clocks are comparing the same computation.
+> Comparing a *synthetic* SP1 bench (`logup_gkr_bench`: random values, real
+> heights) against a sp1-zorch real-shard run breaks all three conditions —
+> different data, different scope (sp1-zorch includes the per-chip openings and
+> grind/head), and no golden equivalence, since the two never prove the same
+> instance. Ratios obtained that way are scope-confounded; do not quote them.
 
 #### sp1-zorch side — `verify_prove_shard` (per-phase + golden)
 
