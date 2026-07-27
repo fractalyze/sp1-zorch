@@ -251,13 +251,25 @@ class JaggedOpeningClaim:
 
 @dataclass(frozen=True)
 class JaggedCommitData:
-    """What the jagged PCS's commit half retains for its open half.
+    """What the jagged PCS's commit half hands to its open half, per round in
+    [prep, main] order.
 
-    Fiat-Shamir splits the two halves across the whole shard proof — the
+    Fiat-Shamir splits the halves across the whole shard proof — the
     commitment must bind the transcript before LogUp-GKR draws a challenge,
-    and the open cannot run until zerocheck produces the point to open at.
-    This is the scheme's own prover data bridging that gap, per round in
-    [prep, main] order; it is not a value any claim carries.
+    and the open cannot run until zerocheck produces the point to open at — so
+    this bridges that gap. It is not prover-only state: the open draws the
+    wire's ``original_commitments`` straight from `commitments`, and each
+    tree's top layer is serialized as that round's raw root. Only the lower
+    layers stay prover-side, to answer the query openings.
+
+    Committing binds in three steps, and which level goes where is why two of
+    them are kept here and the third is not:
+
+    - raw Merkle root, ``digest_layers[-1][0]`` — on the wire as that round's
+      raw root;
+    - shape-bound, `commitments` — the wire's ``original_commitments``;
+    - structure-bound — what the transcript absorbs and `BoundRoots.main` is
+      checked against, so it rides `ShardProof` rather than this type.
     """
 
     digest_layers: tuple[list[Array], ...]
@@ -282,7 +294,7 @@ class ShardProof:
     walked, one section per Stage, ending at the trivial claim.
     """
 
-    commitment: Array
+    commitment: Array  # structure-bound main root; see JaggedCommitData
     gkr: LogupGkrProof
     zerocheck: ZerocheckProof
     jagged: JaggedPcsProof
