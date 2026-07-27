@@ -2,8 +2,8 @@
 
 - **Overview & quick start:** [`README.md`](README.md)
 - **Conventions:** [`docs/conventions.md`](docs/conventions.md) — comments (why-not-what), external SP1 references (pinned permalinks).
-- **Architecture & terminology:** [`docs/architecture.md`](docs/architecture.md) — the shard proof as a composite Stage over per-phase Stages, each running inner Rounds; SP1 dump "phase" vocabulary mapping.
-- **Development:** [`docs/development.md`](docs/development.md) — environment setup, running tests (`size` vs `timeout`, fixtures), and the reproducible per-stage SP1 baseline (`shard_prover:verify_prove_shard` + SP1 `sp1_shard_prover`).
+- **Architecture & terminology:** [`docs/architecture.md`](docs/architecture.md) — the shard proof as a composite Stage over the PCS commit and three Stages, each running inner Rounds; SP1 dump "phase" vocabulary mapping.
+- **Development:** [`docs/development.md`](docs/development.md) — environment setup, running tests (`size` vs `timeout`, fixtures), and the reproducible per-phase SP1 baseline (`shard_prover:verify_prove_shard` + SP1 `sp1_shard_prover`).
 
 ## One non-negotiable
 
@@ -36,7 +36,7 @@ Pure Python on frx (Field, Ring Accelerated), run against the
 Fractalyze XLA GPU plugin. Bazel 9 (bzlmod). Tests default to
 `JAX_PLATFORMS=cpu`; the SP1 FFI byte-match needs a CUDA GPU. Full setup, the
 GPU-plugin gotcha (frx **silently falls back to CPU** without the cuda plugin
-deps), test `size`/`timeout` conventions, and the per-stage SP1 baseline live in
+deps), test `size`/`timeout` conventions, and the per-phase SP1 baseline live in
 [`docs/development.md`](docs/development.md).
 
 Two things that cost a session each:

@@ -7,7 +7,7 @@ tuples)`` — NOT the shard's runtime heights (they ride as a traced int32
 vector). So every shard of one chip-set class shares one executable, and the
 cache can be filled once per *distinct class* rather than once per shard.
 
-Two phases:
+Two steps:
 
   analyze  Scan ``--dump_dir`` (a dump holding ``shard*`` subdirs), derive
            each shard's zerocheck ``TotalCapClass``, LogUp-GKR ``GkrCapClass``,
@@ -60,6 +60,8 @@ import subprocess
 import sys
 import time
 from collections import defaultdict
+from collections.abc import Sequence
+from typing import Any
 from pathlib import Path
 
 from absl import app, flags
@@ -211,7 +213,7 @@ def _analyze(dirs: list[Path]) -> tuple[dict, dict]:
 def _plan(classes: dict, groups: dict) -> dict:
     """Assign each shard its group + cluster classes; count distinct compiles."""
     ratio = _GROUP_AREA_RATIO.value
-    manifest = {}
+    manifest: dict[str, Any] = {}
     plan = []
     for order, shards in groups.items():
         areas = [classes[s]["area_cap"] for s in shards]
@@ -246,7 +248,7 @@ def _snum(s: str) -> int:
     return int(s.replace("shard", ""))
 
 
-def main(argv):
+def main(argv: Sequence[str]) -> None:
     del argv
     dirs = _shard_dirs()
     print(f"=== analyzing {len(dirs)} shards ===", flush=True)

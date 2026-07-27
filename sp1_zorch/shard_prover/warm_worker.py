@@ -19,6 +19,8 @@ subprocess per shard from ``warm_shard_cache --warm``.
 import concurrent.futures
 import os
 import sys
+from collections.abc import Callable
+from typing import Any
 
 import frx  # establish the frx jax fork before anything imports `jax`
 import jax
@@ -53,12 +55,12 @@ if _cfg_path := os.environ.get("WARM_TARGET_CONFIG"):
         ).devices[0]
 
 
-def _compile_only_jit(fn=None, **kw):
+def _compile_only_jit(fn: Callable[..., Any] | None = None, **kw: Any) -> Any:
     if fn is None:
         return lambda f: _compile_only_jit(f, **kw)
     jitted = _real_jit(fn, **kw)
 
-    def wrapper(*args, **kwargs):
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
         # Nested (under an outer lower/eval_shape trace): run the real jit so it
         # inlines into the outer zone's module — never intercept a nested call.
         if _depth[0] > 0:
@@ -103,19 +105,21 @@ from sp1_zorch.logup_gkr import head as _head  # noqa: E402
 V.check_match = lambda *a, **k: True
 
 
-def _grind_no_pow(self, carry, transcript):
+def _grind_no_pow(self: Any, carry: Any, transcript: Any) -> tuple[Any, Any, Any]:
     transcript, _ = transcript.check_witness(self._pow_bits, self._witness)
     return carry, transcript, self._witness
 
 
-_head.GrindRound.__call__ = _grind_no_pow
+# Monkeypatched, not subclassed: the round is constructed deep inside the
+# prover, so there is no seam to inject a subclass through.
+_head.GrindRound.__call__ = _grind_no_pow  # type: ignore[method-assign]
 
 
 if __name__ == "__main__":
     # argv[1] = comma-separated shard dirs; argv[2] (optional) = group manifest
     # so grouped-zerocheck compiles match the real prove's pinned class.
     shards = sys.argv[1]
-    argv = ["warm_worker", f"--shard_dir={shards}", "--max_stage=4"]
+    argv = ["warm_worker", f"--shard_dir={shards}", "--max_phase=4"]
     if len(sys.argv) > 2 and sys.argv[2]:
         argv.append(f"--group_manifest_json={sys.argv[2]}")
     sys.argv = argv

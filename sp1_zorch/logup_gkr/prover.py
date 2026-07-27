@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import partial
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 import frx
@@ -343,7 +344,7 @@ def resolve_witness_and_grind(
         # would diverge that transcript, so keep the caller's witness.
         witness = fnp.zeros((), dtype=bf_dtype)
     # The head schedule (grind, challenges, output binding) runs as the
-    # shared glue Rounds -- the byte-match harness and the phase benchmark
+    # shared glue Rounds -- the byte-match harness and the shard benchmark
     # thread the same definitions, so the three cannot drift.
     _, transcript, _ = GrindRound(witness, pow_bits=pow_bits)(None, transcript)
     return transcript, witness
@@ -393,7 +394,9 @@ def _prove_from_first_layer(
     witness: Array,
     *,
     num_row_variables: int,
-    open_fn,
+    open_fn: Callable[
+        [Array, Transcript], tuple[Transcript, dict[str, ChipEvaluation]]
+    ],
 ) -> tuple[Transcript, LogupGkrProof]:
     """First-layer-onward prove over the tight-layout ``first`` layer: fold
     the pyramid, bind the output, prove the layer chain, open via

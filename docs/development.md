@@ -1,7 +1,7 @@
 # Development guide
 
 Everything needed to build, test, and benchmark sp1-zorch: the environment
-setup, the test conventions, and the reproducible per-stage baseline against
+setup, the test conventions, and the reproducible per-phase baseline against
 SP1. For architecture (Stage / Round) see
 [architecture.md](architecture.md); for coding style see
 [conventions.md](conventions.md).
@@ -92,10 +92,10 @@ bytes, no tolerances):
   repo and are checked with the `verify_*` `py_binary` tools via `--shard_dir`
   (GPU). See the SP1 byte-match notes in [`../CLAUDE.md`](../CLAUDE.md).
 
-## Per-stage baseline against SP1
+## Per-phase baseline against SP1
 
 How to compare sp1-zorch's GPU prover against SP1's native reference on a real
-rsp shard, **per Stage**, on the premise that **both prove the same shard, at the
+rsp shard, **per phase**, on the premise that **both prove the same shard, at the
 same scope, and produce the same output** (golden byte-match). Only under that
 premise is a wall-clock comparison meaningful.
 
@@ -105,16 +105,16 @@ premise is a wall-clock comparison meaningful.
 > (sp1-zorch includes the per-chip openings + grind/head; the SP1 synthetic
 > bench does not), and **no golden equivalence** between the two — they never
 > prove the same instance. Numbers from that approach (a "14×" logup-gkr ratio)
-> are scope-confounded and should not be quoted. Use the per-stage full-prove
+> are scope-confounded and should not be quoted. Use the per-phase full-prove
 > comparison below instead.
 
 ### The valid benchmark — same data, same scope, same output
 
 Both sides run the **full shard prove** (trace commit → LogUp-GKR → zerocheck →
 jagged eval) on the **same** rsp shard, and the outputs are byte-identical
-(verified), so per-stage wall-clocks are comparing the same computation.
+(verified), so per-phase wall-clocks are comparing the same computation.
 
-#### sp1-zorch side — `verify_prove_shard` (per-stage + golden)
+#### sp1-zorch side — `verify_prove_shard` (per-phase + golden)
 
 ```bash
 JAX_PLATFORMS=cuda \
@@ -146,10 +146,10 @@ LogUp-GKR zone is already captured as one big graph.
 runs the GPU plugin bundled in the pinned `frx-cuda12-pjrt` wheel; to measure a
 *locally built* Fractalyze XLA plugin instead, see [Measure shipped code](#measure-shipped-code).
 
-- Runs `ShardProver` (`TraceCommitter` → `LogupGkrProver`
-  → `ZerocheckProver` → `JaggedPcsProver`) on the real shard.
-- A `_TimedRound` wrapper prints **per-Stage wall-clock** in ms:
-  `[stage TraceCommitStage] X.Yms`, and likewise for the other three. `--runs=5`
+- Runs `ShardProver` (`JaggedPcsProver.commit` → `LogupGkrProver`
+  → `ZerocheckProver` → `JaggedPcsProver.prove`) on the real shard.
+- A `_TimedRound` wrapper prints **per-phase wall-clock** in ms:
+  `[phase TraceCommit] X.Yms`, and likewise for the other three. `--runs=5`
   proves five times in one process: pass 1 is cold (XLA compiles), passes
   2–5 are **warm** (executables reused); read a converged pass (3–5), not the
   first warm pass (see the run note above), and compare it against SP1.
@@ -164,7 +164,7 @@ runs the GPU plugin bundled in the pinned `frx-cuda12-pjrt` wheel; to measure a
 
 The `sp1-shard-test` bin (standalone crate under
 `riscv-witness/tools/sp1/sp1_shard_prover/`) proves one shard and prints each
-Stage's wall-clock — `[stage commit traces]`, `[stage logup gkr proof]`,
+phase's wall-clock — `[stage commit traces]`, `[stage logup gkr proof]`,
 `[stage zerocheck]`, `[stage prove evaluation claims]` — via a timing layer over
 SP1's own `debug_span!`s (no `RUST_LOG` tuning). The four span names map 1:1 to
 the table rows below. It has a **GPU** path and a **CPU** path.
@@ -189,11 +189,11 @@ riscv-witness#1971).
 **CPU — reference / parity only.** Without `--gpu` (or via `NoExec` / `Prove` with
 an ELF + stdin) the tool uses `CpuShardProver`: useful as the injection-validity
 / byte-match reference, but **not** the same hardware as sp1-zorch's GPU
-`verify_prove_shard`. Keep CPU stage times out of the GPU-vs-GPU table below.
+`verify_prove_shard`. Keep CPU phase times out of the GPU-vs-GPU table below.
 
-### Per-stage comparison (shard17)
+### Per-phase comparison (shard17)
 
-| Stage | SP1 GPU | sp1-zorch GPU | ratio | golden |
+| Phase | SP1 GPU | sp1-zorch GPU | ratio | golden |
 |---|---|---|---|---|
 | trace commit | 16.6 ms | 18.2 ms | 1.10× | byte-match |
 | LogUp-GKR | 19.9 ms | 28.7 ms | 1.44× | byte-match |
@@ -205,7 +205,7 @@ The two wall-clock columns are warm, byte-matched runs of the two tools above:
 the sp1-zorch column is the converged warm steady state (passes 3–5 of the
 `--runs=5` command, on an idle RTX 5090, published `frx` wheels — no locally
 built plugin — with the shard-invariant class routes on GKR, zerocheck, and
-the jagged stage; all four Stages byte-match and `--ffi_verify` reports
+the jagged open; all four phases byte-match and `--ffi_verify` reports
 `sp1_verify_shard: ACCEPTED`); the SP1 column is the SP1 GPU NoExec run.
 zerocheck (0.48×) runs at over twice SP1's speed — the jagged-packed shared
 round buffer with the shrink prefix and in-kernel folds — the PCS open is at
@@ -215,7 +215,7 @@ at 0.71×, with LogUp-GKR (1.44×) the one remaining gap.
 
 ### Measure shipped code
 
-A per-stage number is only a baseline if it runs the code the team **ships**, so
+A per-phase number is only a baseline if it runs the code the team **ships**, so
 before capturing one make sure the two knobs this repo lets you swap point at the
 shipped path, not a stale local one:
 

@@ -1,12 +1,12 @@
 # Copyright 2026 The sp1-zorch Authors. SPDX-License-Identifier: Apache-2.0
 """The shard proof's verifier as one composite zorch Stage.
 
-``ShardVerifier`` mirrors ``ShardProver`` phase for phase — one
-``VerifierStage`` role per prover role, glue included — consuming the named
+``ShardVerifier`` mirrors ``ShardProver`` role for role — one
+``VerifierStage`` per ``ProverStage``, glue included — consuming the named
 sections of ``ShardProof`` and reducing to the same trivial claim. The seams
-are the phases' reduced claims, so a phase cannot read something an earlier
-phase never derived; a section present on one side and not the other is a
-missing attribute rather than a silent Fiat-Shamir desync.
+are the Stages' reduced claims, so one cannot read something an earlier Stage
+never derived; a section present on one side and not the other is a missing
+attribute rather than a silent Fiat-Shamir desync.
 
 Static configuration (chip set, shapes, caps) lives on the role instances and
 the statement on ``ShardClaim``, mirroring the prover's split.
@@ -17,7 +17,6 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 
 import frx.numpy as fnp
-from frx import Array
 from rw_constraints import Chip
 from zorch.pcs.jagged.region import structure_counts
 from zorch.commit.smcs import SingleMatrixCommitmentScheme
@@ -30,14 +29,13 @@ from sp1_zorch.logup_gkr.circuit import GkrChip
 from sp1_zorch.logup_gkr.prover import LogupGkrProof
 from sp1_zorch.logup_gkr.verifier import verify_logup_gkr
 from sp1_zorch.shard_prover.prove_shard import (
-    CommitmentRoots,
     GkrOutputClaim,
     JaggedOpeningClaim,
     ShardClaim,
     ShardProof,
     TraceEvaluationClaim,
     ZerocheckClaim,
-    absorb_preamble,
+    bind_commitment,
     JaggedPcsProof,
 )
 from sp1_zorch.shard_prover.types import ChipShape
@@ -51,41 +49,6 @@ from zorch.stage import (
 )
 from zorch.transcript import GrindingTranscript, Transcript
 from zorch.utils.bits import log2_ceil_usize
-
-
-# Written phase outputs are array leaves; unwritten
-# Optional fields are None (an empty subtree), so it crosses a @jit
-# boundary as one argument.
-class TraceCommitAbsorber:
-    """Dual of the prover's committer: replays the preamble absorb stream via
-    ``absorb_preamble`` — the same one function the prover calls — with the
-    proof's commitment, and names the commitment roots. No local check: the
-    commitment is validated downstream, by the stacked-open dual's Merkle
-    openings against these roots.
-    """
-
-    def absorb(
-        self, claim: ShardClaim, commitment: Array, transcript: Transcript
-    ) -> tuple[Transcript, CommitmentRoots]:
-        """Absorb the preamble and derive the commitment roots.
-
-        The dual of the prover's committer: no claim is reduced here, so it is
-        not a stage — it binds the commitment into the stream and names the
-        roots a later opening checks against.
-
-        The prep root is unconditional: SP1's verifier always carries the vk's
-        preprocessed commitment, even though the prover keeps ``prep_region``
-        optional. The stacked-open dual checking openings against these roots
-        is where a no-prep proof would reconcile.
-        """
-        transcript = absorb_preamble(
-            transcript,
-            vk=claim.vk,
-            public_values=claim.public_values,
-            commitment=commitment,
-            chip_metadata=claim.chip_metadata,
-        )
-        return transcript, CommitmentRoots(claim.vk.preprocessed_commit, commitment)
 
 
 class LogupGkrVerifier(VerifierStage[ShardClaim, GkrOutputClaim, LogupGkrProof]):
@@ -263,13 +226,15 @@ class JaggedPcsVerifier(
         # [prep, main] manifests from the statement, mirroring the prover's
         # region walk.
         prep_names = [n for n in self._chip_names if shapes[n].prep is not None]
+        # `prep_names` was filtered on exactly this, so each lookup is present.
+        preps = {n: p for n in prep_names if (p := shapes[n].prep) is not None}
         regions: list[tuple[list[str], list[int], list[int], str]] = []
         if prep_names:
             regions.append(
                 (
                     prep_names,
-                    [shapes[n].prep.height for n in prep_names],
-                    [shapes[n].prep.width for n in prep_names],
+                    [preps[n].height for n in prep_names],
+                    [preps[n].width for n in prep_names],
                     "preprocessed",
                 )
             )
@@ -370,13 +335,13 @@ class JaggedPcsVerifier(
 
 
 class ShardVerifier(VerifierStage[ShardClaim, TrivialClaim, ShardProof]):
-    """The SP1 shard verifier: one dual per prover phase, in the prover's
+    """The SP1 shard verifier: one dual per prover role, in the prover's
     order, so the two Fiat-Shamir streams stay in lockstep.
 
-    Mirrors ``ShardProver`` phase for phase, and reduces to the same trivial
+    Mirrors ``ShardProver`` role for role, and reduces to the same trivial
     claim — the jagged opening is terminal on both sides. Each dual's reduced
-    claim is the next one's source claim, so a phase cannot silently read a
-    seam an earlier phase never wrote.
+    claim is the next one's source claim, so one cannot silently read a seam
+    an earlier Stage never wrote.
 
     ``verify_public_values`` runs the LogUp-GKR output-layer bus-balance leg
     (the public-values digest vs the circuit cumulative sum); a structural test
@@ -401,7 +366,6 @@ class ShardVerifier(VerifierStage[ShardClaim, TrivialClaim, ShardProof]):
         pow_bits: int = 0,
         verify_public_values: bool = True,
     ) -> None:
-        self.absorber = TraceCommitAbsorber()
         self.gkr = LogupGkrVerifier(
             gkr_chips,
             chip_names=chip_names,
@@ -434,8 +398,8 @@ class ShardVerifier(VerifierStage[ShardClaim, TrivialClaim, ShardProof]):
         reduction_proof: ShardProof,
         transcript: GrindingTranscript,
     ) -> VerifyResult[TrivialClaim]:
-        transcript, roots = self.absorber.absorb(
-            claim, reduction_proof.commitment, transcript
+        transcript, roots = bind_commitment(
+            transcript, claim, reduction_proof.commitment
         )
         gkr = self.gkr.verify(claim, reduction_proof.gkr, transcript)
         zerocheck = self.zerocheck.verify(

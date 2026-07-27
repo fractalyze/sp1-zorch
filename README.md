@@ -91,10 +91,10 @@ bazel test //...
 ## Documentation
 
 See [`docs/`](docs/README.md) — the [architecture](docs/architecture.md)
-(the shard proof as a composite Stage over per-phase Stages, each running
-inner Rounds, plus the SP1 dump vocabulary), the
+(the shard proof as a composite Stage over the PCS commit and three Stages,
+each running inner Rounds, plus the SP1 dump vocabulary), the
 [development guide](docs/development.md) (environment, testing, and the
-per-stage SP1 baseline), and the [conventions](docs/conventions.md).
+per-phase SP1 baseline), and the [conventions](docs/conventions.md).
 
 ## License
 

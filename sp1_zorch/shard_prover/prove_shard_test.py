@@ -1,16 +1,18 @@
 # Copyright 2026 The sp1-zorch Authors. SPDX-License-Identifier: Apache-2.0
-"""`ShardProver` vs the hand-threaded phase sequence.
+"""`ShardProver` vs the hand-threaded role sequence.
 
-The chain is wiring, not math — each stage function is gated by its own
+The composition is wiring, not math — each role is gated by its own
 tests — so this test demands the ``prove_rounds`` composition is byte-identical
 to calling commit, LogUp-GKR, and zerocheck by hand on the same sponge: same
 sections, same reduced claims, same Fiat-Shamir stream afterwards. Any drift
-in phase order, claim threading, or preamble encoding desynchronizes the two
+in role order, claim threading, or preamble encoding desynchronizes the two
 streams and fails loudly.
 """
 
 from __future__ import annotations
 
+from typing import Any
+from frx import Array
 import dataclasses
 from dataclasses import replace
 
@@ -43,12 +45,14 @@ from sp1_zorch.poseidon2.koalabear16 import koalabear16_params
 
 from sp1_zorch.shard_prover.prove_shard import (
     CommitmentRoots,
+    JaggedCommitData,
     JaggedOpeningClaim,
     JaggedPcsProver,
     RoundCommitments,
     LogupGkrProver,
     JaggedOpeningWitness,
     absorb_preamble,
+    bind_commitment,
     ShardClaim,
     ShardProver,
     ShardWitness,
@@ -80,7 +84,7 @@ class _WitnessChip:
     """Witness-shaped stub (a == 1 on real rows) whose second constraint folds
     in ``public_values[0]`` — the pv-binding seam the stage threads through."""
 
-    def eval_constraints(self, trace, public_values):
+    def eval_constraints(self, trace: Array, public_values: Array) -> Array:
         a, b, c = trace[:, 0], trace[:, 1], trace[:, 2]
         one = fnp.ones((), trace.dtype)
         pv0 = fnp.concatenate([public_values[:1], fnp.zeros((3,), BF)]).view(EF)[0]
@@ -90,7 +94,7 @@ class _WitnessChip:
 class _LookupChip:
     """Constraint-less chip (SP1's Byte / Program / Range shape)."""
 
-    def eval_constraints(self, trace, public_values):
+    def eval_constraints(self, trace: Array, public_values: Array) -> Array:
         return fnp.zeros((trace.shape[0], 0), dtype=trace.dtype)
 
 
@@ -103,20 +107,20 @@ def _interaction(mult_col: int, val_col: int, *, kind: int = 3) -> Interaction:
     )
 
 
-def _rand_bf(seed: int, shape) -> fnp.ndarray:
+def _rand_bf(seed: int, shape: tuple[int, ...]) -> fnp.ndarray:
     ints = np.random.default_rng(seed).integers(1, 1 << 30, size=shape, dtype=np.int64)
     return fnp.array(ints, dtype=BF)
 
 
-def _u32(a) -> np.ndarray:
+def _u32(a: Array) -> np.ndarray:
     return np.asarray(frx.lax.bitcast_convert_type(a, fnp.uint32)).reshape(-1)
 
 
-def _assert_bytes_equal(got, want, label: str = "") -> None:
+def _assert_bytes_equal(got: Array, want: Array, label: str = "") -> None:
     np.testing.assert_array_equal(_u32(got), _u32(want), err_msg=label)
 
 
-def _flatten_arrays(x) -> list:
+def _flatten_arrays(x: Any) -> list[Array]:
     """Every array leaf under ``x`` in deterministic order, recursing through
     lists/tuples, dicts, and dataclasses — so a proof message flattens without
     each proof type being a registered pytree. Static scalars (counts, flags)
@@ -141,7 +145,7 @@ def _flatten_arrays(x) -> list:
     return []
 
 
-def _assert_proof_byte_equal(got, want, label: str) -> None:
+def _assert_proof_byte_equal(got: Any, want: Any, label: str) -> None:
     gs, ws = _flatten_arrays(got), _flatten_arrays(want)
     assert len(gs) == len(ws), f"{label}: {len(gs)} vs {len(ws)} array leaves"
     for i, (g, w) in enumerate(zip(gs, ws, strict=True)):
@@ -152,7 +156,7 @@ class ProveShardChainTest(absltest.TestCase):
     """One chain run vs one hand replay; each test byte-compares one stage."""
 
     @classmethod
-    def setUpClass(cls):
+    def setUpClass(cls) -> None:
         # alpha: 3 main cols x 6 real rows (col 0 == 1 keeps the interaction
         # multiplicities and the witness constraints live; GKR's even/odd row
         # split needs even heights), prep 2 cols x 3 rows (shorter than
@@ -271,24 +275,23 @@ class ProveShardChainTest(absltest.TestCase):
         # the open's SP1 byte-match is the GPU verify_prove_shard harness's job.
         claim = ShardClaim(vk, public_values, metadata)
         witness = ShardWitness(main_region, prep_region)
-        # Run the phases explicitly rather than through `ShardProver.prove`:
+        # Run the roles explicitly rather than through `ShardProver.prove`:
         # the hand replay stops at zerocheck, so the in-sync check needs the
-        # transcript at that seam, and each phase's products are asserted on
+        # transcript at that seam, and each role's products are asserted on
         # below. Same order and threading, so the stream is the composite's.
-        transcript, commitment, digests, commitments = prover.committer.commit(
-            claim, witness, cheap_transcript(BF)
-        )
+        commitment, commit_data = prover.opening.commit(witness)
+        transcript, roots = bind_commitment(cheap_transcript(BF), claim, commitment)
         gkr = prover.gkr.prove(claim, witness, transcript)
         zc = prover.zerocheck.prove(
             ZerocheckClaim(public_values, gkr.reduced_claim), witness, gkr.transcript
         )
         cls.got_transcript = zc.transcript
         opening = prover.opening.prove(
-            JaggedOpeningClaim(zc.reduced_claim, commitments),
-            JaggedOpeningWitness(main_region, prep_region, digests, commitments),
+            JaggedOpeningClaim(zc.reduced_claim, roots),
+            JaggedOpeningWitness(main_region, prep_region, commit_data),
             zc.transcript,
         )
-        cls.commitment, cls.digests = commitment, digests
+        cls.commitment, cls.digests = commitment, commit_data.digest_layers
         cls.gkr_res, cls.zc_res = gkr, zc
         cls.jagged = opening.reduction_proof
         cls.msgs = [
@@ -369,12 +372,12 @@ class ProveShardChainTest(absltest.TestCase):
         _assert_bytes_equal(got.msgs.round_poly, want.msgs.round_poly, "round_poly")
         _assert_bytes_equal(got.msgs.challenge, want.msgs.challenge, "challenge")
 
-    def _assert_chain_lowers(self, prover) -> None:
+    def _assert_chain_lowers(self, prover: ShardProver) -> None:
         # The witness is built inside the traced function; backend compile stays
         # GPU's job -- poseidon2 has no CPU fusion emitter and CPU jit
         # miscompiles field dots (fractalyze/frx#168) -- so the smoke stops at
         # StableHLO lowering.
-        def run(dense, public_values, transcript):
+        def run(dense: Array, public_values: Array, transcript: Any) -> Any:
             witness = ShardWitness(
                 replace(self.main_region, dense=dense), self.prep_region
             )
@@ -427,7 +430,7 @@ class ProveShardChainTest(absltest.TestCase):
         its input buffers. Stops at StableHLO lowering: CPU can't execute field
         dots (fractalyze/frx#168), GPU owns backend compile."""
 
-        def run(witness, transcript):
+        def run(witness: ShardWitness, transcript: Any) -> Any:
             return self.prover.prove(self.claim, witness, transcript).transcript
 
         witness = ShardWitness(self.main_region, self.prep_region)
@@ -447,8 +450,8 @@ class ProveShardChainTest(absltest.TestCase):
         for leaf in leaves:
             self.assertIsInstance(leaf, frx.Array)
 
-    def test_committer_returns_digest_layers_not_mle(self) -> None:
-        """The committer hands back only each region's digest tree as
+    def test_commit_returns_digest_layers_not_mle(self) -> None:
+        """The PCS commit half hands back only each region's digest tree as
         ``[prep, main]`` — NOT the trace-sized ``[S, K]`` mle, which the
         jagged-eval open reads as the region's ``block`` view, so a
         trace-sized copy never rides the card through GKR + zerocheck
@@ -600,7 +603,7 @@ class LogupGkrProverCapClassTest(absltest.TestCase):
         open_before = open_traces_capped._cache_size()
         for rows, main_region, public_values, want in shards:
             result = stage.prove(
-                ShardClaim(None, public_values, None),
+                ShardClaim(None, public_values, None),  # type: ignore[arg-type]
                 ShardWitness(main_region, None),
                 cheap_transcript(BF),
             )
@@ -630,12 +633,12 @@ class ZerocheckProverTotalCapTest(absltest.TestCase):
     exact-heights prove (``prove_shard_zerocheck`` with per-shard heights)."""
 
     class _PvFreeChip:
-        def eval_constraints(self, trace, public_values):
+        def eval_constraints(self, trace: Array, public_values: Array) -> Array:
             a, b = trace[:, 0], trace[:, 1]
             one = fnp.ones((), trace.dtype)
             return fnp.stack([(a - one) * (b - one)], axis=-1)
 
-    def _rand_ef(self, seed: int, shape) -> fnp.ndarray:
+    def _rand_ef(self, seed: int, shape: tuple[int, ...]) -> fnp.ndarray:
         return _rand_bf(seed, tuple(shape) + (4,)).view(EF).reshape(shape)
 
     def test_total_cap_stage_matches_exact_and_shares_one_compile(self) -> None:
@@ -713,7 +716,7 @@ class JaggedPcsProverClassTest(absltest.TestCase):
     tier (fixes n_d and the padded dense) — share ONE ``_jagged_eval_jit``
     compile while byte-matching the eager ``eval_round_core`` path."""
 
-    def _rand_ef(self, seed: int, shape) -> fnp.ndarray:
+    def _rand_ef(self, seed: int, shape: tuple[int, ...]) -> fnp.ndarray:
         return _rand_bf(seed, tuple(shape) + (4,)).view(EF).reshape(shape)
 
     def test_eval_zone_matches_eager_and_shares_one_compile(self) -> None:
@@ -767,8 +770,10 @@ class JaggedPcsProverClassTest(absltest.TestCase):
             open_witness = JaggedOpeningWitness(
                 main_region,
                 None,
-                (commit_data.digest_layers,),
-                RoundCommitments(main=commit_data.smcs_commitment),
+                JaggedCommitData(
+                    (commit_data.digest_layers,),
+                    RoundCommitments(main=commit_data.smcs_commitment),
+                ),
             )
             got_r = stage.prove(open_claim, open_witness, cheap_transcript(BF))
             want_r = eager.prove(open_claim, open_witness, cheap_transcript(BF))

@@ -1,10 +1,11 @@
 # Architecture: the shard stage composition and SP1 dump vocabulary
 
-`ShardProver` is a composite **Stage** running four phases — trace commit,
-LogUp-GKR, zerocheck, jagged evaluation — over one duplex transcript, reducing
-the public shard statement to the trivial claim. `ShardVerifier` is its dual:
-one verifier role per prover role. This page names how the shard proof maps
-onto Stage / Round, then maps SP1's reference-dump terms onto the phases.
+`ShardProver` reduces the public shard statement to the trivial claim over one
+duplex transcript: the jagged PCS commits the trace, then three **Stages** —
+LogUp-GKR, zerocheck, jagged opening — each discharge the claim the one before
+produced. `ShardVerifier` is its dual: one verifier role per prover role. This
+page names how the shard proof maps onto Stage / Round, then maps SP1's
+reference-dump terms onto it.
 
 ## Stage / Round in this repo
 
@@ -14,23 +15,42 @@ onto Stage / Round, then maps SP1's reference-dump terms onto the phases.
   Rounds.
 - **Round** — the genuine inner rounds a Stage scans (per-variable sumcheck,
   GKR layers): `JaggedGkrLayerRound`, `OpenedValuesRound`, …
-- **Seams** — what crosses between phases is a *claim*, not a shared carry:
-  `GkrOutputClaim` then `TraceEvaluationClaim`, each a phase's reduced claim and
-  the next phase's source claim, so both roles derive the same thing. Trace
-  commit and the preamble absorb are not stages — a committer runs before any
-  claim exists, and `absorb_preamble` only touches the transcript, so it is one
-  shared function both roles call. Prover-only products (the commit digest
-  trees) stay locals in `ShardProver.prove` and reach the opening through its
-  witness, never through a claim.
+- **Seams** — what crosses between Stages is a *claim*, not a shared carry:
+  `GkrOutputClaim` then `TraceEvaluationClaim`, each one Stage's reduced claim
+  and the next one's source claim, so both roles derive the same thing.
+
+## The PCS brackets the Stages
+
+The trace commit is not a fourth Stage. It is the jagged PCS's own commit half:
+`JaggedPcsProver.commit` packs and Merkle-commits the regions, and
+`JaggedPcsProver.prove` — the Stage — opens what it committed. Fiat-Shamir
+forces the two apart, because the commitment must bind the transcript before
+LogUp-GKR draws a challenge and the open cannot run until zerocheck produces
+the point to open at.
+
+`JaggedCommitData` is what spans that gap: the scheme's own prover data (the
+digest trees and the round SMCS commitments), held as a local in
+`ShardProver.prove` and handed to the open through its witness. It rides no
+claim, because a claim is what both roles derive and the verifier never sees a
+digest tree.
+
+Between the two halves both roles call one shared `bind_commitment`, which
+absorbs SP1's preamble stream and names the roots the opening is checked
+against — so an ordering edit cannot land in one Fiat-Shamir stream and not the
+other.
 
 ## Stages
 
 | Stage (this repo) | Round composition | Claim carried | Module | rsp byte-match |
 |---|---|---|---|---|
-| Trace commit (`TraceCommitter`) | SMCS merkle commit over the jagged dense packing (no sumcheck rounds; transcript observes vk, public values, commitment, chip metadata via `absorb_preamble`) | — (seeds the transcript) | `sp1_zorch/commit` | `shard_prover:verify_prove_shard` (`--max_stage=1`) |
 | LogUp-GKR (`LogupGkrProver`) | A chain of layer Rounds (output layer → input layer), each layer a chain of per-variable sumcheck rounds | Per-layer running claim, ending in trace-column openings at the final evaluation point | `sp1_zorch/logup_gkr` | `logup_gkr:verify_first_layer`, `logup_gkr:verify_gkr_prove` |
 | Zerocheck (`ZerocheckProver`) | One jagged multi-chip sumcheck: 22 homogeneous per-variable rounds over `eq * (constraint RLC + GKR column term)`, then the per-chip opened values absorbed into the transcript | In: every chip's constraint zero-sum + its GKR opening claim; out: one claim at the sumcheck point + the opened values there (the evaluation Stage's per-column claims) | `sp1_zorch/zerocheck` | `zerocheck:verify_zerocheck` |
-| Jagged evaluation (`JaggedPcsProver`) | Outer/inner sumcheck reducing the committed trace to `D(z_final)`, then the stacked BaseFold open of `D` at that point | In: the zerocheck point + per-column claims off its source claim; out: the evaluation proof (jagged eval + stacked BaseFold PCS) | `zorch/pcs/jagged` | `shard_prover:verify_prove_shard` |
+| Jagged opening (`JaggedPcsProver.prove`) | Outer/inner sumcheck reducing the committed trace to `D(z_final)`, then the stacked BaseFold open of `D` at that point | In: the zerocheck point + per-column claims off its source claim; out: the evaluation proof (jagged eval + stacked BaseFold PCS) | `zorch/pcs/jagged` | `shard_prover:verify_prove_shard` |
+
+The commit half (`JaggedPcsProver.commit`, SMCS merkle commit over the jagged
+dense packing) carries no claim and is byte-matched by
+`shard_prover:verify_prove_shard --max_phase=1`; its structure is unit-tested in
+`commit:trace_commit_test`.
 
 Each Stage runnable above gates one Stage's math; `shard_prover:verify_prove_shard`
 gates the *composition* — it runs the assembled `ShardProver` over a dump and
@@ -42,26 +62,29 @@ consumes the named sections of `ShardProof` (see `shard_prover/serialize.py`).
 
 The byte-match reference is a dump captured from SP1's instrumented prover
 (capture recipe: whir-zorch `sp1/testing/testdata/rsp/README.md`). SP1's
-instrumentation calls the Stages **phases** — its `tracing` span boundaries —
-and several dump files carry that prefix. The numbering:
+instrumentation calls its `tracing` span boundaries **phases**, and several
+dump files carry that prefix. The numbering:
 
-| SP1 term | This repo's Stage |
+| SP1 phase | This repo |
 |---|---|
-| phase 1 | Trace commit |
-| phase 2 | LogUp-GKR |
-| phase 3 | Zerocheck |
-| phase 4 | Jagged evaluation / PCS opening |
+| phase 1 | the PCS commit half |
+| phase 2 | LogUp-GKR Stage |
+| phase 3 | Zerocheck Stage |
+| phase 4 | Jagged opening Stage |
 
-**Convention: "phase N" appears in this repo only when citing SP1 dump
-artifacts (file names, capture spans). Our own code, docs, and PRs name the
-levels Stage / Round as above.**
+**Convention: "phase" names an SP1 tracing span — dump file names, capture
+spans, and the byte-match harness that times itself against them
+(`--max_phase`, the `[phase X]` lines). It never names a level of our own
+composition: those are Stage and Round, as above. The two are not
+interchangeable, and phase 1 is the case that proves it — a PCS commit, not a
+Stage.**
 
 Per-file map (one rsp shard directory):
 
 | Dump file | Stage | Contents / consumer |
 |---|---|---|
 | `gpu_traces/*.bin`, `*.meta` | input | Per-chip main traces + dims (`.meta` alone for zero-real chips; `public_values.bin` rides alongside); `shard_prover.fixture_loader` |
-| `gpu_vk.txt`, `gpu_commitment.txt` | Trace commit | vk, main commitment; preamble observes the vk, `verify_prove_shard` (`--max_stage=1`) byte-matches the main commitment (the preprocessed commit is setup-bound in the vk, covered transitively by the full-chain open) |
+| `gpu_vk.txt`, `gpu_commitment.txt` | Trace commit | vk, main commitment; preamble observes the vk, `verify_prove_shard` (`--max_phase=1`) byte-matches the main commitment (the preprocessed commit is setup-bound in the vk, covered transitively by the full-chain open) |
 | `gpu_pre_gkr_diag.txt`, `gpu_post_grind_diag.txt`, `gpu_post_gkr_diag.txt` | LogUp-GKR | Challenger checkpoints (one cloned squeeze each); seal the transcript before/after the Stage |
 | `gpu_gkr_state.txt` | LogUp-GKR | Grind witness, alpha, beta seeds, output MLEs, z1 |
 | `gpu_first_layer.txt` | LogUp-GKR | Input-layer buffer (the one round `gkr_sumcheck_rounds.txt` does not log) |

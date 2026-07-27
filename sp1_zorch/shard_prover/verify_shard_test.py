@@ -14,6 +14,7 @@ dual's opening-shape statement checks.
 
 from __future__ import annotations
 
+from frx import Array
 from dataclasses import replace
 
 import frx
@@ -30,7 +31,7 @@ from sp1_zorch.shard_prover.verify_shard import (
 )
 
 
-from sp1_zorch.shard_prover.prove_shard import ZerocheckClaim
+from sp1_zorch.shard_prover.prove_shard import ZerocheckClaim, bind_commitment
 
 from sp1_zorch.shard_prover.shard_testkit import (
     CHIP_HEIGHT,
@@ -42,20 +43,20 @@ from sp1_zorch.shard_prover.shard_testkit import (
 BF = koalabear_mont
 
 
-def _u32(a) -> np.ndarray:
+def _u32(a: Array) -> np.ndarray:
     return np.asarray(frx.lax.bitcast_convert_type(a, fnp.uint32)).reshape(-1)
 
 
-def _assert_bytes_equal(got, want, label: str = "") -> None:
+def _assert_bytes_equal(got: Array, want: Array, label: str = "") -> None:
     np.testing.assert_array_equal(_u32(got), _u32(want), err_msg=label)
 
 
 class VerifyShardChainTest(absltest.TestCase):
-    """A full four-phase prove vs one full verify, every phase dual checked
+    """A full prove vs one full verify, every Stage's dual checked
     cryptographically end to end."""
 
     @classmethod
-    def setUpClass(cls):
+    def setUpClass(cls) -> None:
         fx = small_shard_fixture()
         cls.fx = fx
         proof = fx.proof
@@ -65,11 +66,9 @@ class VerifyShardChainTest(absltest.TestCase):
         cls.je_proof = proof.jagged
         verified = fx.verifier.verify(fx.claim, proof, cheap_transcript(BF))
         cls.dual_transcript, cls.dual_ok = verified.transcript, verified.ok
-        # The same phases again, kept apart, so a test can assert on one
-        # phase's reduced claim or drive one dual directly.
-        t, cls.roots = fx.verifier.absorber.absorb(
-            fx.claim, proof.commitment, cheap_transcript(BF)
-        )
+        # The same roles again, kept apart, so a test can assert on one
+        # Stage's reduced claim or drive one dual directly.
+        t, cls.roots = bind_commitment(cheap_transcript(BF), fx.claim, proof.commitment)
         gkr = fx.verifier.gkr.verify(fx.claim, proof.gkr, t)
         cls.gkr_reduced = gkr.reduced_claim
         cls.zc_claim = ZerocheckClaim(fx.claim.public_values, gkr.reduced_claim)
@@ -81,13 +80,12 @@ class VerifyShardChainTest(absltest.TestCase):
         """The mirror that matters: every claim the prover reduces to, the
         verifier re-derives from the proof alone and gets the same value.
 
-        A phase wired to the wrong claim, or a dual replaying a different
+        A Stage wired to the wrong claim, or a dual replaying a different
         schedule, breaks this even when both sides still accept — which is
         what a name-level symmetry check would miss."""
         fx = self.fx
-        t, _, _, _ = fx.prover.committer.commit(
-            fx.claim, fx.witness, cheap_transcript(BF)
-        )
+        commitment, _ = fx.prover.opening.commit(fx.witness)
+        t, _ = bind_commitment(cheap_transcript(BF), fx.claim, commitment)
         p_gkr = fx.prover.gkr.prove(fx.claim, fx.witness, t)
         p_zc = fx.prover.zerocheck.prove(
             ZerocheckClaim(fx.claim.public_values, p_gkr.reduced_claim),

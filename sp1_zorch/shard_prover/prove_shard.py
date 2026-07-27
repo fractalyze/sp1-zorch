@@ -1,14 +1,14 @@
 # Copyright 2026 The sp1-zorch Authors. SPDX-License-Identifier: Apache-2.0
 """The shard proof as one composite zorch Stage.
 
-``ShardProver`` runs the phases of ``docs/architecture.md`` — trace commit,
-LogUp-GKR, zerocheck, jagged evaluation proof — as ``ProverStage`` roles over
-one duplex transcript, reducing the public shard statement to the trivial
-claim. Each phase's reduced claim is the next one's source claim, so what
-crosses a seam is a claim both roles can derive rather than a shared mutable
-carry; the prover-only commit data stays a local in ``ShardProver.prove``.
-Static configuration (SMCS, chips, caps) lives on the role instances, the
-statement on ``ShardClaim``, and the trace on ``ShardWitness``.
+``ShardProver`` reduces the public shard statement to the trivial claim over
+one duplex transcript. The jagged PCS commits the trace, then three
+``ProverStage`` roles — LogUp-GKR, zerocheck, jagged opening — each discharge
+the claim the one before produced, so what crosses a seam is a claim both
+roles derive rather than a shared mutable carry. The PCS's own prover data
+spans its two halves as a local in ``ShardProver.prove``, belonging to no
+claim. Static configuration (SMCS, chips, caps) lives on the role instances,
+the statement on ``ShardClaim``, and the trace on ``ShardWitness``.
 """
 
 from __future__ import annotations
@@ -171,20 +171,33 @@ class JaggedOpeningClaim:
 
 
 @dataclass(frozen=True)
-class JaggedOpeningWitness:
-    """The regions plus the commit-time digest trees the open replays. The
-    digest trees are prover-only capability, which is why they ride the
-    witness and never the claim."""
+class JaggedCommitData:
+    """What the jagged PCS's commit half retains for its open half.
 
-    main_region: JaggedRegion
-    prep_region: JaggedRegion | None
-    commit_digest_layers: tuple[list[Array], ...]
+    Fiat-Shamir splits the two halves across the whole shard proof — the
+    commitment must bind the transcript before LogUp-GKR draws a challenge,
+    and the open cannot run until zerocheck produces the point to open at.
+    This is the scheme's own prover data bridging that gap, per round in
+    [prep, main] order; it is not a value any claim carries.
+    """
+
+    digest_layers: tuple[list[Array], ...]
     commitments: RoundCommitments
 
 
 @dataclass(frozen=True)
+class JaggedOpeningWitness:
+    """The regions plus the prover data the commit half produced."""
+
+    main_region: JaggedRegion
+    prep_region: JaggedRegion | None
+    commit_data: JaggedCommitData
+
+
+@dataclass(frozen=True)
 class ShardProof:
-    """One named reduction-proof section per shard phase."""
+    """The wire sections: the trace commitment, then one reduction proof per
+    Stage."""
 
     commitment: Array
     gkr: LogupGkrProof
@@ -230,74 +243,30 @@ def absorb_preamble(
     return transcript.observe(chip_metadata)
 
 
-class TraceCommitter:
-    """Trace commit plus the shard preamble: commit the main region, then
-    absorb SP1's preamble stream via ``absorb_preamble``. The message is the
-    structure-bound main commitment; the prover-side commit data reaches the
-    opening role through its witness."""
+def bind_commitment(
+    transcript: Transcript, claim: ShardClaim, commitment: Array
+) -> tuple[Transcript, CommitmentRoots]:
+    """Bind the committed trace into the stream and name the roots it is
+    opened against — what both composites do between the PCS's two halves.
 
-    def __init__(
-        self,
-        smcs: SingleMatrixCommitmentScheme,
-        *,
-        log_blowup: int,
-        jit: bool = True,
-    ) -> None:
-        self._smcs = smcs
-        self._log_blowup = log_blowup
-        self._jit = jit
+    The prover has just committed and the verifier has just read the
+    commitment off the wire; from here their transcripts must agree, so both
+    reach that state through this one function rather than two copies of the
+    same two steps.
 
-    def commit(
-        self, claim: ShardClaim, witness: ShardWitness, transcript: Transcript
-    ) -> tuple[Transcript, Array, tuple[list[Array], ...], RoundCommitments]:
-        """Commit the regions and absorb the preamble.
-
-        A committer, not a stage: it runs before any claim about the trace
-        exists — it creates the object the later claims are about — and it
-        hands back prover-only data (the digest trees) that no reduced claim
-        may carry. The composite keeps that data as a local and passes it to
-        the opening role, exactly the skip-level rule.
-        """
-        bound, main_data = commit_region(
-            witness.main_region,
-            self._smcs,
-            log_blowup=self._log_blowup,
-            jit=self._jit,
-        )
-        transcript = absorb_preamble(
-            transcript,
-            vk=claim.vk,
-            public_values=claim.public_values,
-            commitment=bound,
-            chip_metadata=claim.chip_metadata,
-        )
-        # Keep each region's commit witness for the jagged-eval open, in
-        # [prep, main] order (SP1's round_evaluation_claims). prep is bound into
-        # the vk at setup, not re-observed here, but the open still reproves it.
-        commit_data = []
-        if witness.prep_region is not None:
-            # prep uses main's jit knob: an eager commit de-fuses the Merkle
-            # fold into many tiny launches.
-            _, prep_data = commit_region(
-                witness.prep_region,
-                self._smcs,
-                log_blowup=self._log_blowup,
-                jit=self._jit,
-            )
-            commit_data.append(prep_data)
-        commit_data.append(main_data)
-        # Keep only the digest tree; the open recomputes the mle from the region
-        # dense (mle == dense.reshape(K, S).T) instead of holding a trace-sized
-        # copy through GKR + zerocheck. The mles in commit_data drop at return.
-        smcs = [d.smcs_commitment for d in commit_data]
-        return (
-            transcript,
-            bound,
-            tuple(d.digest_layers for d in commit_data),
-            RoundCommitments(
-                main=smcs[-1], preprocessed=smcs[0] if len(smcs) > 1 else None
-            ),
-        )
+    The prep root is unconditional: SP1's verifier always carries the vk's
+    preprocessed commitment, even though the prover keeps ``prep_region``
+    optional. The stacked-open dual checking openings against these roots is
+    where a no-prep proof would reconcile.
+    """
+    transcript = absorb_preamble(
+        transcript,
+        vk=claim.vk,
+        public_values=claim.public_values,
+        commitment=commitment,
+        chip_metadata=claim.chip_metadata,
+    )
+    return transcript, CommitmentRoots(claim.vk.preprocessed_commit, commitment)
 
 
 class LogupGkrProver(
@@ -403,21 +372,21 @@ class ZerocheckProver(
         ),
     )
     def _jit_body_totalcap_traced(
-        flat_arrival,
-        public_values,
-        eval_point,
-        chip_openings,
-        num_reals,
-        transcript,
+        flat_arrival: Array,
+        public_values: Array,
+        eval_point: Array,
+        chip_openings: Mapping[str, ChipEvaluation],
+        num_reals: Array,
+        transcript: Transcript,
         *,
-        chips,
-        max_log_row_count,
-        total_cap_class,
-        chip_names,
-        num_cols,
-        main_widths,
-        prep_widths,
-    ):
+        chips: tuple[tuple[str, Chip], ...],
+        max_log_row_count: int,
+        total_cap_class: TotalCapClass,
+        chip_names: tuple[str, ...],
+        num_cols: tuple[int, ...],
+        main_widths: tuple[int, ...],
+        prep_widths: tuple[int, ...],
+    ) -> tuple[Transcript, tuple[Any, ...]]:
         # The shard-invariant total-cap body (sp1-zorch#242): the arrival is
         # the ONE class-shaped flat jagged buffer (`pack_flat_arrival`) and
         # the shard's real heights ride in `num_reals` (one traced int32
@@ -603,10 +572,15 @@ def _jagged_eval_jit(
 class JaggedPcsProver(
     ProverStage[JaggedOpeningClaim, JaggedOpeningWitness, TrivialClaim, JaggedPcsProof]
 ):
-    """Jagged evaluation proof (SP1 Phase 4): reduce the committed trace to
-    ``D(z_final)`` via the outer/inner sumcheck, then open ``D`` at ``z_final``
-    with the stacked BaseFold FRI. Reads the zerocheck point, the per-chip
-    opened values at it, and the committed stacked witness off its witness.
+    """The jagged PCS, whose two halves bracket the shard proof.
+
+    ``commit`` packs and Merkle-commits the trace regions; ``prove`` is the
+    open — reduce the committed trace to ``D(z_final)`` via the outer/inner
+    sumcheck, then open ``D`` at ``z_final`` with the stacked BaseFold FRI,
+    reading the zerocheck point and the per-chip opened values off its claim.
+    Only the open reduces a claim, so only the open is the Stage role; the
+    commit is the scheme's other half, and ``JaggedCommitData`` is what it
+    hands forward.
 
     Eager orchestration over shard-invariant jitted zones (the LogupGkrStage
     pattern, sp1-zorch#274): the prologue folds per-shard heights into traced
@@ -629,6 +603,47 @@ class JaggedPcsProver(
         self._num_queries = num_queries
         self._pow_bits = pow_bits
         self._jit = jit
+
+    def commit(self, witness: ShardWitness) -> tuple[Array, JaggedCommitData]:
+        """Commit the trace regions; returns the bound main commitment and the
+        prover data the open replays.
+
+        No transcript argument: committing is not a transcript operation. The
+        composite absorbs the returned commitment through ``absorb_preamble``,
+        so the Fiat-Shamir binding has one visible home rather than hiding
+        inside the scheme.
+        """
+        bound, main_data = commit_region(
+            witness.main_region,
+            self._smcs,
+            log_blowup=self._log_blowup,
+            jit=self._jit,
+        )
+        # Per-round in [prep, main] order (SP1's round_evaluation_claims). prep
+        # is bound into the vk at setup, not re-observed here, but the open
+        # still reproves it.
+        commit_data = []
+        if witness.prep_region is not None:
+            # prep uses main's jit knob: an eager commit de-fuses the Merkle
+            # fold into many tiny launches.
+            _, prep_data = commit_region(
+                witness.prep_region,
+                self._smcs,
+                log_blowup=self._log_blowup,
+                jit=self._jit,
+            )
+            commit_data.append(prep_data)
+        commit_data.append(main_data)
+        # Keep only the digest tree; the open recomputes the mle from the region
+        # dense (mle == dense.reshape(K, S).T) instead of holding a trace-sized
+        # copy through GKR + zerocheck. The mles in commit_data drop at return.
+        smcs = [d.smcs_commitment for d in commit_data]
+        return bound, JaggedCommitData(
+            digest_layers=tuple(d.digest_layers for d in commit_data),
+            commitments=RoundCommitments(
+                main=smcs[-1], preprocessed=smcs[0] if len(smcs) > 1 else None
+            ),
+        )
 
     def prove(
         self,
@@ -731,7 +746,7 @@ class JaggedPcsProver(
         commit_rounds = tuple(
             StackedRound(region.block, digests)
             for (region, _), digests in zip(
-                regions, witness.commit_digest_layers, strict=True
+                regions, witness.commit_data.digest_layers, strict=True
             )
         )
         open_proof, transcript = stacked_basefold_open(
@@ -750,30 +765,32 @@ class JaggedPcsProver(
             JaggedPcsProof(
                 eval=eval_msg,
                 open=open_proof,
-                original_commitments=witness.commitments,
+                original_commitments=witness.commit_data.commitments,
             ),
             transcript,
         )
 
 
 class ShardProver(ProverStage[ShardClaim, ShardWitness, TrivialClaim, ShardProof]):
-    """The SP1 shard prover: commit, LogUp-GKR, zerocheck, jagged opening.
+    """The SP1 shard prover: the jagged PCS commit, then three Stages.
 
-    A composite role, so the phase wiring has one definition and the
-    benchmark, the byte-match runnables, and proof assembly cannot drift on
-    it. Each phase's reduced claim is the next one's source claim; what stays
-    prover-only — the commit digest trees — is a local here and reaches the
-    opening role through its witness, never through a claim.
+    A composite role, so the wiring has one definition and the benchmark, the
+    byte-match runnables, and proof assembly cannot drift on it. Three Stages
+    reduce the shard statement to the trivial claim — LogUp-GKR, zerocheck,
+    jagged opening — each one's reduced claim the next one's source claim.
+    They are bracketed by the PCS: ``opening.commit`` binds the trace up front
+    and ``opening.prove`` discharges it at the end, with ``JaggedCommitData``
+    held here in between because it belongs to neither claim.
 
     Reduces to the trivial claim: the jagged opening is terminal, so a shard
     proof is a complete argument rather than one link in a chain.
 
-    ``jit`` stages every phase's heavy body under a cached ``frx.jit``: the
+    ``jit`` stages every heavy body under a cached ``frx.jit``: the
     trace-commit tail (required at rsp scale), the zerocheck body, and the
     jagged-eval sumcheck zone (its stacked open always runs zorch's zoned
     jits) — eagerly the sumcheck bodies rebuild their closure-keyed
     ``scan``/``while`` bodies each prove, so JAX's compile cache misses and
-    every warm prove re-pays the phase compile. LogUp-GKR is always eager
+    every warm prove re-pays that compile. LogUp-GKR is always eager
     orchestration over class-keyed inner zones. Byte-identical either way.
     """
 
@@ -795,7 +812,6 @@ class ShardProver(ProverStage[ShardClaim, ShardWitness, TrivialClaim, ShardProof
         zerocheck_total_cap_class: TotalCapClass | None = None,
         gkr_cap_class: GkrCapClass | None = None,
     ) -> None:
-        self.committer = TraceCommitter(smcs, log_blowup=log_blowup, jit=jit)
         self.gkr = LogupGkrProver(
             gkr_chips,
             num_betas=num_betas,
@@ -823,10 +839,8 @@ class ShardProver(ProverStage[ShardClaim, ShardWitness, TrivialClaim, ShardProof
         witness: ShardWitness,
         transcript: GrindingTranscript,
     ) -> ProveResult[TrivialClaim, ShardProof]:
-        transcript, commitment, digest_layers, commitments = self.committer.commit(
-            claim, witness, transcript
-        )
-        roots = CommitmentRoots(claim.vk.preprocessed_commit, commitment)
+        commitment, commit_data = self.opening.commit(witness)
+        transcript, roots = bind_commitment(transcript, claim, commitment)
         gkr = self.gkr.prove(claim, witness, transcript)
         zerocheck = self.zerocheck.prove(
             ZerocheckClaim(claim.public_values, gkr.reduced_claim),
@@ -835,9 +849,7 @@ class ShardProver(ProverStage[ShardClaim, ShardWitness, TrivialClaim, ShardProof
         )
         opening = self.opening.prove(
             JaggedOpeningClaim(zerocheck.reduced_claim, roots),
-            JaggedOpeningWitness(
-                witness.main_region, witness.prep_region, digest_layers, commitments
-            ),
+            JaggedOpeningWitness(witness.main_region, witness.prep_region, commit_data),
             zerocheck.transcript,
         )
         return ProveResult(

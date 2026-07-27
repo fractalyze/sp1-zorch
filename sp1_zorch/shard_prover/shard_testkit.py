@@ -1,5 +1,5 @@
 # Copyright 2026 The sp1-zorch Authors. SPDX-License-Identifier: Apache-2.0
-"""Shared four-phase shard fixture for the prover/verifier test suites.
+"""Shared full-shard fixture for the prover/verifier test suites.
 
 One tiny single-chip shard — witness-shaped (column ``a == 1`` on real rows
 with ``C(0_row) != 0``) so the zerocheck statement holds and the padded-row
@@ -17,6 +17,7 @@ from typing import Any
 
 import frx.numpy as fnp
 import numpy as np
+from frx import Array
 from rw_constraints import Interaction, VirtualPairCol
 from zk_dtypes import koalabear_mont as BF
 
@@ -50,7 +51,7 @@ LOG_STACKING_HEIGHT = 3
 _NUM_BETAS = 3
 
 
-def rand_bf(seed: int, shape) -> fnp.ndarray:
+def rand_bf(seed: int, shape: tuple[int, ...]) -> fnp.ndarray:
     ints = np.random.default_rng(seed).integers(1, 1 << 30, size=shape, dtype=np.int64)
     return fnp.array(ints, dtype=BF)
 
@@ -60,7 +61,7 @@ class _WitnessChip:
     vanishes there while ``C(0_row) != 0`` keeps the padded-row correction
     live in the zerocheck dual's oracle check."""
 
-    def eval_constraints(self, trace, public_values):
+    def eval_constraints(self, trace: Array, public_values: Array) -> Array:
         a, b = trace[:, 0], trace[:, 1]
         one = fnp.ones((), trace.dtype)
         return fnp.stack([(a - one) * (b - one)], axis=-1)
@@ -70,7 +71,8 @@ class _WitnessChip:
 class ShardFixture:
     """An honest prover run plus the matching dual chain.
 
-    ``proof`` is the assembled ``ShardProof`` — one named section per phase,
+    ``proof`` is the assembled ``ShardProof`` — the commitment plus one named
+    section per Stage,
     which is what the verifier role consumes. ``prover_transcript`` is the
     prover's post-opening transcript, for byte-matching the dual's stream."""
 

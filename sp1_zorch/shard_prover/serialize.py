@@ -14,7 +14,8 @@ their base-field limbs before conversion.
 from __future__ import annotations
 
 import struct
-from typing import TYPE_CHECKING
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any
 
 import frx.numpy as fnp
 import numpy as np
@@ -24,12 +25,11 @@ from zk_dtypes import efinfo
 from sp1_zorch.shard_prover.types import ChipOpenedValues, MachineVerifyingKey
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
-
     from zorch.pcs.jagged.prover import JaggedEvalMsg
 
     from zorch.pcs.jagged.open import Opening, StackedOpenProof
     from zorch.pcs.jagged.region import JaggedRegion
+    from sp1_zorch.logup_gkr.prover import LogupGkrProof
     from sp1_zorch.shard_prover.prove_shard import (
         ShardClaim,
         ShardProof,
@@ -105,7 +105,7 @@ def _encode_partial_sumcheck_proof(
     return b"".join(parts)
 
 
-def _encode_logup_gkr_proof(proof, max_log_row_count: int) -> bytes:
+def _encode_logup_gkr_proof(proof: LogupGkrProof, max_log_row_count: int) -> bytes:
     """Encode ``LogupGkrProof<F, EF>`` (rust field order: circuit_output,
     round_proofs, logup_evaluations, witness).
 
@@ -155,7 +155,7 @@ def _encode_logup_gkr_proof(proof, max_log_row_count: int) -> bytes:
     return b"".join(parts)
 
 
-def _encode_digest(arr) -> bytes:
+def _encode_digest(arr: Any) -> bytes:
     """Encode ``GC::Digest = [F; 8]`` = 8 × canonical u32."""
     if hasattr(arr, "dtype"):
         return _field_bytes(arr)[:32]
@@ -188,7 +188,9 @@ def _encode_chip_opened_values(cov: ChipOpenedValues, max_log_row_count: int) ->
 
 
 def _encode_shard_opened_values(
-    chip_opened_values, chip_names, max_log_row_count: int
+    chip_opened_values: Sequence[ChipOpenedValues],
+    chip_names: Sequence[str],
+    max_log_row_count: int,
 ) -> bytes:
     """Encode ``ShardOpenedValues<F, EF> = {chips: BTreeMap<String,
     ChipOpenedValues>}`` — ascending chip-name order."""
@@ -426,7 +428,7 @@ def encode_shard_proof(
         digest_layers[-1][0] for digest_layers in commit_digest_layers
     ]
     # original_commitments = the SMCS commitment (pre-structure-binding), retained
-    # off the commit stage in the same [prep, main] order as commit_digest_layers.
+    # off the PCS commit in the same [prep, main] order as commit_digest_layers.
     component_commitments = jagged_proof.original_commitments.in_round_order()
     row_column_counts = [
         list(zip(region.row_counts, region.column_counts, strict=True))

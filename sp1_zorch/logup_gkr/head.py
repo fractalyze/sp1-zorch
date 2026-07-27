@@ -6,7 +6,7 @@ beta seeds, one discarded public-values challenge, the length-prefixed
 output-MLE observes, z1. Per zorch's stage-composition design
 (``docs/stage-composition.md`` in zorch), scheme glue like this composes as
 small consumer-local Rounds so that every consumer of the schedule — the
-prover, the byte-match harness, the phase benchmark — runs ONE definition
+prover, the byte-match harness, the shard benchmark — runs ONE definition
 instead of a hand-mirrored copy. The discarded challenge lives inside
 ``HeadChallengesRound``: no caller can forget it, and a schedule edit lands
 everywhere at once.
