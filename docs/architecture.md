@@ -72,7 +72,8 @@ consumes the named sections of `ShardProof` (see `shard_prover/serialize.py`).
 ## SP1 reference dump vocabulary
 
 The byte-match reference is a dump captured from SP1's instrumented prover
-(capture recipe: whir-zorch `sp1/testing/testdata/rsp/README.md`). SP1's
+(capture recipe:
+https://github.com/fractalyze/whir-zorch/blob/bdc2b24/sp1/testing/testdata/rsp/README.md). SP1's
 instrumentation calls its `tracing` span boundaries **phases**, and several
 dump files carry that prefix. The numbering:
 

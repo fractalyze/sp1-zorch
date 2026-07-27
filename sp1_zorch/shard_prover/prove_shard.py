@@ -54,10 +54,6 @@ from zorch.stage import (
 from zorch.transcript import GrindingTranscript, Transcript
 
 
-# Pytree: the two regions (themselves pytrees), public values, and written
-# stage outputs are array leaves; unwritten Optional fields are None (an empty
-# subtree). Lets the witness cross a @jit boundary as one donatable
-# argument.
 @dataclass(frozen=True)
 class ShardClaim:
     """Some trace of this shape is a valid execution of the shard.
