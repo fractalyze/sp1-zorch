@@ -264,6 +264,41 @@ def extract_sp1_outputs(floor: JaggedGkrLayer) -> LogUpGkrOutput:
     return extract_jagged_outputs(floor)
 
 
+@partial(frx.jit, static_argnames=("out_widths",))
+def _pyramid_zone(
+    first: JaggedGkrLayer, transcript: Transcript, *, out_widths: tuple[int, ...]
+) -> tuple[
+    list[JaggedGkrLayer],
+    tuple[Array, Array],
+    tuple[Array, Array, Array],
+    Transcript,
+]:
+    """Fold the pyramid, extract SP1's floor outputs, and bind them.
+
+    Eagerly this span is ~200 executables of sub-microsecond work, and being a
+    serial chain none of it overlaps device work -- it lands as stream idle.
+
+    Unrolled rather than scanned because the per-level widths differ. Fusing
+    here is safe on memory where fusing the first-layer build is not
+    (``_head_zone``): the levels are a chain, not a fan-in, so peak live
+    buffers stay the ~2x capacity the pyramid already holds.
+
+    Returns the output MLEs as a bare pair -- ``LogUpGkrOutput`` is not a
+    registered pytree, so it cannot cross a jit boundary.
+    """
+    schedules = list(
+        zip(
+            sp1_schedule_counts(first.row_counts, len(out_widths)),
+            out_widths,
+            strict=True,
+        )
+    )
+    layers = build_jagged_pyramid(first, schedules)
+    out = extract_sp1_outputs(layers[-1])
+    transcript, carry = bind_circuit_output(transcript, out)
+    return layers, (out.numerator, out.denominator), carry, transcript
+
+
 def resolve_witness_and_grind(
     transcript: Transcript,
     *,
@@ -401,29 +436,15 @@ def _prove_from_first_layer(
     transition_widths = capped_pyramid_widths(
         slot_cap, num_segments, num_row_variables - 1
     )
-    schedules = list(
-        zip(
-            sp1_schedule_counts(first.row_counts, num_row_variables - 1),
-            transition_widths,
-            strict=True,
-        )
+    layers, (out_num, out_den), carry, transcript = _pyramid_zone(
+        first, transcript, out_widths=tuple(transition_widths)
     )
-    layers = build_jagged_pyramid(first, schedules)
-    output = extract_sp1_outputs(layers[-1])
-    transcript, carry = bind_circuit_output(transcript, output)
+    output = LogUpGkrOutput(numerator=out_num, denominator=out_den)
 
-    # One cap per layer, sized to THAT layer's capped width. A single
-    # pyramid-wide cap would run every layer at the first layer's width, so
-    # the pyramid's geometric shrink would buy nothing at prove time: the
-    # floor layer holds a few hundred live elements and would still fold,
-    # pad and reduce over the whole 2^21-rounded first-layer buffer. Total
-    # round work is then depth x cap instead of ~2 x cap.
-    #
-    # The width is the compile key (`_jagged_round_zone` takes `caps`
-    # statically), so this trades one executable for one per distinct width.
-    # `_row_cap` quantizes -- stacking-height multiples above 2^21, powers of
-    # two below -- so the deep layers collapse onto a handful of shared
-    # classes rather than one per level.
+    # Per layer, not per pyramid: one shared cap would run every layer at the
+    # first layer's width, making total round work depth x cap instead of
+    # ~2 x cap. The width is the round zone's compile key, so this costs one
+    # executable per distinct width -- a handful, since `_row_cap` quantizes.
     layer_widths = [capacity, *transition_widths]
     layer_caps = [
         RoundWidthCaps(
@@ -433,11 +454,7 @@ def _prove_from_first_layer(
         )
         for w in layer_widths[: len(layers)]
     ]
-    # Each layer proves through the whole-layer jit zone (one executable per
-    # width class): the caps pre-lay in zorch's `_jagged_round_via_zone` keys
-    # the compile per (nrv, cap), so shards of a class share every layer
-    # program and XLA fuses the inter-round glue instead of the host
-    # dispatching per round. Popped in lockstep with `layers` (floor first).
+    # Popped in lockstep with `layers`, floor first.
     (_, _, eval_point), transcript, round_proofs = prove_rounds(
         (
             JaggedGkrLayerRound(layers.pop(), EF_CHALLENGES, caps=layer_caps.pop())
