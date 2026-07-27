@@ -543,6 +543,14 @@ class PreambleChipMetadataTest(absltest.TestCase):
         want = fnp.array([2, 6, 2, ord("a"), ord("b"), 4, 1, ord("c")], dtype=BF)
         _assert_bytes_equal(got, want, "chip metadata")
 
+    def test_unpaired_names_and_counts_rejected(self) -> None:
+        """The names and counts are parallel tuples, so the pairing is an
+        invariant the shape cannot carry. Passing a region's `row_counts` — its
+        `chip_heights` plus the two stacking entries — is the way to get it
+        wrong, and it must not survive construction."""
+        with self.assertRaisesRegex(ValueError, "2 chip names but 4 row counts"):
+            ChipMetadata(("ab", "c"), (6, 4, 8, 2))
+
 
 class JitPermutationTest(absltest.TestCase):
     """JitPermutation rides as a static meta_field in DuplexTranscript, so it

@@ -84,6 +84,18 @@ class ChipMetadata:
     chip_names: tuple[str, ...]
     num_reals: tuple[int, ...]
 
+    def __post_init__(self) -> None:
+        # Two parallel tuples, so the pairing is an invariant rather than a
+        # shape. Checked here because a mismatch is otherwise inert until
+        # something zips them, and the likeliest way to get one is passing a
+        # region's `row_counts` (its `chip_heights` plus two stacking entries)
+        # where its `chip_heights` belong.
+        if len(self.chip_names) != len(self.num_reals):
+            raise ValueError(
+                f"{len(self.chip_names)} chip names but "
+                f"{len(self.num_reals)} row counts"
+            )
+
     def by_chip(self) -> dict[str, int]:
         return dict(zip(self.chip_names, self.num_reals, strict=True))
 
