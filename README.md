@@ -58,6 +58,21 @@ pip install -r requirements.in \
     --extra-index-url https://fractalyze.github.io/pypi/simple/
 ```
 
+Install the git hooks with both stages named. Plain `pre-commit install` wires
+only the `pre-commit` stage, which leaves the commit-message linter inactive —
+a malformed commit message then sails through to CI:
+
+```sh
+pre-commit install --install-hooks --hook-type pre-commit --hook-type commit-msg
+```
+
+Commit messages follow [Conventional Commits](https://www.conventionalcommits.org):
+a valid type, a lowercase summary with no trailing period, a header of at most
+80 characters, and a body on everything but `docs`. The scope is the package the
+change lives in — `logup_gkr`, `poseidon2`, `shard_prover`, `zerocheck`. A
+change spanning several of them takes no scope. The same linter runs in CI over
+every commit in a pull request and over the PR title.
+
 **Dev against a local `zorch` checkout** instead of the pinned commit — create
 `.bazelrc.user` (gitignored):
 
