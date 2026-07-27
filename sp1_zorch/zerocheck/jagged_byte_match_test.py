@@ -218,6 +218,8 @@ class JaggedZerocheckByteMatchTest(absltest.TestCase):
         reference's ``[prep, main, eq_final]`` order (the driver folds
         ``[main | prep]`` traces)."""
         eq_final = eval_eq(self.zeta, self.zc_sumcheck_point)
+        # Guard the loop: no finals would make every check below vacuous.
+        self.assertNotEmpty(self.finals)
         for i, final in enumerate(self.finals):
             nc = final.shape[0]
             mw = self.main_widths[i]

@@ -481,6 +481,9 @@ class ProveShardChainTest(absltest.TestCase):
         trace evaluations at the zerocheck point, NOT the GKR-point openings)
         and the wire's ShardOpenedValues both read them there."""
         got = self.zc_res.reduced_claim.opened_values
+        # Guard the loop: an empty reference would let every check below be
+        # skipped and the test still pass.
+        self.assertNotEmpty(self.want_zc.opened_values)
         for name, want in self.want_zc.opened_values.items():
             _assert_bytes_equal(got[name].main, want.main, f"{name} main")
             if want.preprocessed is None:
@@ -714,7 +717,6 @@ class ZerocheckProverTotalCapTest(absltest.TestCase):
                 want.opened_values["alpha"].main,
                 label,
             )
-            _assert_bytes_equal(got.msgs.challenge, got.msgs.challenge, label)
         self.assertEqual(
             ZerocheckProver._jit_body_totalcap_traced._cache_size() - before, 1
         )
