@@ -42,6 +42,23 @@ EF_LIMBS = efinfo(EF).degree
 EF_CHALLENGES = ChallengePolicy(EF)
 
 
+def _sample_ef_point(
+    transcript: Transcript, num_coords: int
+) -> tuple[Transcript, Array]:
+    """Sample ``num_coords`` extension-field challenges as one stacked point.
+
+    The head samples a point twice — the beta seeds and the output-binding z1 —
+    and SP1 draws each coordinate as its own `sample_ext_element`, so the loop
+    is part of the transcript schedule rather than an implementation detail
+    that could be replaced by a single wider squeeze.
+    """
+    coords = []
+    for _ in range(num_coords):
+        transcript, c = sample_challenge(transcript, EF, EF_LIMBS)
+        coords.append(c)
+    return transcript, fnp.stack(coords) if coords else fnp.zeros((0,), EF)
+
+
 class GrindRound:
     """Observe the grind witness and judge the proof-of-work gate.
 
@@ -97,18 +114,16 @@ class HeadChallengesRound:
         self, carry: Any, transcript: Transcript
     ) -> tuple[Any, Transcript, HeadChallenges]:
         transcript, alpha = sample_challenge(transcript, EF, EF_LIMBS)
-        seeds = []
-        for _ in range(log2_ceil_usize(self._num_betas)):
-            transcript, seed = sample_challenge(transcript, EF, EF_LIMBS)
-            seeds.append(seed)
+        transcript, beta_seeds = _sample_ef_point(
+            transcript, log2_ceil_usize(self._num_betas)
+        )
         transcript, pv_challenge = sample_challenge(transcript, EF, EF_LIMBS)
         one = fnp.ones((), dtype=EF)
-        if seeds:
-            beta_seeds = fnp.stack(seeds)
-            betas = expand_eq_to_hypercube(beta_seeds, one)
-        else:
-            beta_seeds = fnp.zeros((0,), EF)
-            betas = one[None]
+        betas = (
+            expand_eq_to_hypercube(beta_seeds, one)
+            if beta_seeds.shape[0]
+            else one[None]
+        )
         return carry, transcript, HeadChallenges(alpha, beta_seeds, betas, pv_challenge)
 
 
@@ -136,11 +151,7 @@ class OutputBindRound:
         transcript = transcript.observe(num)
         transcript = transcript.observe(fnp.array(den.shape[0], prefix_dtype))
         transcript = transcript.observe(den)
-        coords = []
-        for _ in range(log2_strict_usize(num.shape[0])):
-            transcript, c = sample_challenge(transcript, EF, EF_LIMBS)
-            coords.append(c)
-        z1 = fnp.stack(coords)
+        transcript, z1 = _sample_ef_point(transcript, log2_strict_usize(num.shape[0]))
         return (eval_mle(num, z1), eval_mle(den, z1), z1), transcript, z1
 
 
