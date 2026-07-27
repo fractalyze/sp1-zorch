@@ -394,7 +394,7 @@ class EncodeEvaluationProofTest(absltest.TestCase):
     def test_field_order_final_evals_and_derived_log_m(self) -> None:
         open_proof = _open_proof()
         component_raw_roots = [fnp.arange(100, 108, dtype=F)]
-        # original_commitments are the SMCS commitments, distinct from the raw
+        # smcs_commitments are the SMCS commitments, distinct from the raw
         # roots the batch openings reconstruct.
         component_commitments = [fnp.arange(200, 208, dtype=F)]
         eval_msg = _eval_msg()
@@ -491,7 +491,7 @@ def _evaluation() -> TraceEvaluationClaim:
     )
 
 
-# SMCS commitments (original_commitments), distinct from the raw roots.
+# SMCS commitments (smcs_commitments), distinct from the raw roots.
 _COMMITMENTS = (fnp.arange(200, 208, dtype=F), fnp.arange(500, 508, dtype=F))
 
 
@@ -561,7 +561,7 @@ class EncodeShardProofTest(absltest.TestCase):
         jagged = JaggedPcsProof(
             eval=_eval_msg(),
             open=_open_proof(num_rounds=2),
-            original_commitments=SmcsCommitments(
+            smcs_commitments=SmcsCommitments(
                 main=_COMMITMENTS[1], preprocessed=_COMMITMENTS[0]
             ),
         )
@@ -596,7 +596,7 @@ class EncodeShardProofTest(absltest.TestCase):
                 jagged.open,
                 # Raw roots off the commit digest trees, [prep, main].
                 [fnp.arange(100, 108, dtype=F), fnp.arange(400, 408, dtype=F)],
-                # original_commitments = the SMCS commitments, [prep, main].
+                # smcs_commitments = the SMCS commitments, [prep, main].
                 [fnp.arange(200, 208, dtype=F), fnp.arange(500, 508, dtype=F)],
                 # Region layouts with the stacking dummies included.
                 [[(3, 1), (4, 1), (1, 1)], [(3, 2), (2, 1), (4, 1), (1, 1)]],

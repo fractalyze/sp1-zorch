@@ -427,9 +427,9 @@ def encode_shard_proof(
     component_raw_roots = [
         digest_layers[-1][0] for digest_layers in commit_digest_layers
     ]
-    # original_commitments = the SMCS commitment (pre-structure-binding), retained
+    # smcs_commitments = the SMCS commitment (pre-structure-binding), retained
     # off the PCS commit in the same [prep, main] order as commit_digest_layers.
-    component_commitments = jagged_proof.original_commitments.in_round_order()
+    component_commitments = jagged_proof.smcs_commitments.in_round_order()
     row_column_counts = [
         list(zip(region.row_counts, region.column_counts, strict=True))
         for region in regions

@@ -606,7 +606,7 @@ class JaggedPcsProof:
 
     eval: JaggedEvalMsg
     open: StackedOpenProof
-    original_commitments: SmcsCommitments
+    smcs_commitments: SmcsCommitments
 
 
 @partial(frx.jit, static_argnames=("rc_rounds", "cc_rounds", "target", "dtype"))
@@ -862,7 +862,7 @@ class JaggedPcsProver(
             JaggedPcsProof(
                 eval=eval_msg,
                 open=open_proof,
-                original_commitments=witness.commit_data.commitments,
+                smcs_commitments=witness.commit_data.commitments,
             ),
             transcript,
         )

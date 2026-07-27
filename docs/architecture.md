@@ -93,7 +93,7 @@ Per-file map (one rsp shard directory):
 | `gpu_zerocheck_state.txt` | Zerocheck | Batching + GKR opening-batch challenges, joint claimed sum, round count, final eval |
 | `phase3_lambda.txt` | Zerocheck | Chip-RLC lambda |
 | `phase3_chip_opened_values_full.txt` | Zerocheck | Per-chip main/prep opened values at the sumcheck point |
-| `gpu_z_row.txt` | Zerocheck | The sumcheck point, reversed (SP1's jagged row point) |
+| `gpu_z_row.txt` | LogUp-GKR → Zerocheck | SP1's `zeta`: the GKR evaluation point's row tail, which zerocheck takes as input. Despite the name, **not** the zerocheck sumcheck point — that one is never dumped |
 | `gpu_univariate.txt`, `gpu_sumcheck_finalize.txt` | all three Stages | One line/block per per-variable sumcheck round across all Stages (round polys + sampled challenge; finalize diagnostics). Neither logs a Stage's round 0 |
 | `phase4_column_claims.txt`, `phase4_sumcheck_claim.txt`, `phase4_z_col.txt` | Jagged opening | Column claims, reduced claim, column point |
 | `gpu_evaluation_proof.json` | Jagged opening | The serialized evaluation proof (jagged eval + stacked BaseFold PCS) |

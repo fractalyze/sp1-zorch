@@ -166,7 +166,8 @@ runs the GPU plugin bundled in the pinned `frx-cuda12-pjrt` wheel; to measure a
   2–5 are **warm** (executables reused); read a converged pass (3–5), not the
   first warm pass (see the run note above), and compare it against SP1.
 - **Golden**: the chain's commitment must equal the dump's `main_commit`
-  (`gpu_commitment.txt`), the zerocheck point must equal `gpu_z_row.txt`, the
+  (`gpu_commitment.txt`), the GKR evaluation point's row tail must equal
+  `gpu_z_row.txt` (SP1's `zeta`, not the zerocheck point), the
   jagged claim must equal `phase4_sumcheck_claim`, and with `--ffi_verify` the
   assembled bincode proof is byte-verified through SP1's `sp1_verify_shard` FFI.
   So sp1-zorch's output is byte-identical to SP1's — the same-output premise
