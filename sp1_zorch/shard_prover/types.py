@@ -50,24 +50,19 @@ class MachineVerifyingKey:
 
 
 @dataclass(frozen=True)
-class TraceShape:
-    """One trace matrix's statement shape."""
+class ChipWidths:
+    """One chip's column counts — SP1's ``chip.width()`` /
+    ``chip.preprocessed_width()`` (``crates/hypercube/src/verifier/shard.rs``).
 
-    height: int
-    width: int
+    A static property of the AIR, identical on every shard, so it is role
+    configuration rather than claim data. `prep` is None when the chip carries
+    no preprocessed trace, which keeps a half-stated preprocessed trace
+    unrepresentable. The other axis — how many rows each chip holds — varies
+    shard to shard and rides `ChipMetadata` on the claim.
+    """
 
-
-@dataclass(frozen=True)
-class ChipShape:
-    """One chip's statement trace shapes: the main trace, plus the
-    preprocessed trace when the chip carries one — the verifier-side
-    counterpart of SP1's ``chip.width()`` / ``chip.preprocessed_width()``
-    (``crates/hypercube/src/verifier/shard.rs``). One record per chip keeps
-    the height/width/prep statement atomic: a half-stated preprocessed
-    trace is unrepresentable."""
-
-    main: TraceShape
-    prep: TraceShape | None = None
+    main: int
+    prep: int | None = None
 
 
 @dataclass(frozen=True)

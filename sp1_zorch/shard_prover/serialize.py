@@ -417,7 +417,7 @@ def encode_shard_proof(
         )
     )
 
-    # Committed-round order is [prep, main] — the order TraceCommitStage
+    # Committed-round order is [prep, main] — the order the PCS commit half
     # wrote its StackedRounds in.
     regions = [
         region

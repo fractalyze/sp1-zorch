@@ -8,7 +8,8 @@ are the Stages' reduced claims, so one cannot read something an earlier Stage
 never derived; a section present on one side and not the other is a missing
 attribute rather than a silent Fiat-Shamir desync.
 
-Static configuration (chip set, shapes, caps) lives on the role instances and
+Static configuration (chip set, column counts, caps) lives on the role
+instances and
 the statement on ``ShardClaim``, mirroring the prover's split.
 """
 
@@ -38,7 +39,7 @@ from sp1_zorch.shard_prover.prove_shard import (
     bind_commitment,
     JaggedPcsProof,
 )
-from sp1_zorch.shard_prover.types import ChipShape
+from sp1_zorch.shard_prover.types import ChipWidths
 from sp1_zorch.zerocheck.prover import ZerocheckProof
 from sp1_zorch.zerocheck.verifier import verify_shard_zerocheck
 from zorch.coding.reed_solomon import BitReversedReedSolomon
@@ -62,7 +63,6 @@ class LogupGkrVerifier(VerifierStage[ShardClaim, GkrOutputClaim, LogupGkrProof])
         gkr_chips: Sequence[GkrChip],
         *,
         chip_names: Sequence[str],
-        chip_heights: Mapping[str, int],
         num_betas: int,
         num_row_variables: int,
         pow_bits: int = 0,
@@ -70,7 +70,6 @@ class LogupGkrVerifier(VerifierStage[ShardClaim, GkrOutputClaim, LogupGkrProof])
     ) -> None:
         self._gkr_chips = gkr_chips
         self._chip_names = chip_names
-        self._chip_heights = chip_heights
         self._num_betas = num_betas
         self._num_row_variables = num_row_variables
         self._pow_bits = pow_bits
@@ -86,7 +85,7 @@ class LogupGkrVerifier(VerifierStage[ShardClaim, GkrOutputClaim, LogupGkrProof])
         transcript, eval_point, ok = verify_logup_gkr(
             self._gkr_chips,
             self._chip_names,
-            self._chip_heights,
+            claim.chip_metadata.by_chip(),
             msg,
             transcript,
             claim.public_values if self._verify_public_values else None,
@@ -108,7 +107,8 @@ class ZerocheckVerifier(
     proof's oracle-checked opened values — the same seams the prover
     role reduces to for the jagged-eval stage.
 
-    The proof's opened values are checked against the statement shapes
+    The proof's opened values are checked against the statement's column
+    counts
     before anything consumes them (SP1's ``verify_opening_shape`` inside
     ``verify_zerocheck``, ``crates/hypercube/src/verifier/shard.rs``) — the
     verifier absorbs the proof's opened values, so a shape lie never
@@ -120,13 +120,12 @@ class ZerocheckVerifier(
         chips: Mapping[str, Chip],
         *,
         chip_names: Sequence[str],
-        chip_shapes: Mapping[str, ChipShape],
+        chip_widths: Mapping[str, ChipWidths],
         max_log_row_count: int,
     ) -> None:
         self._chips = chips
         self._chip_names = chip_names
-        self._chip_shapes = chip_shapes
-        self._chip_heights = {n: s.main.height for n, s in chip_shapes.items()}
+        self._chip_widths = chip_widths
         self._max_log_row_count = max_log_row_count
 
     def verify(
@@ -138,19 +137,19 @@ class ZerocheckVerifier(
         msg = reduction_proof
         opened = msg.opened_values
         for n in self._chip_names:
-            shape = self._chip_shapes[n]
-            if int(opened[n].main.shape[0]) != shape.main.width:
+            widths = self._chip_widths[n]
+            if int(opened[n].main.shape[0]) != widths.main:
                 raise ValueError(
                     f"chip {n!r}: need one main claim per statement column "
-                    f"({shape.main.width}), got {int(opened[n].main.shape[0])}"
+                    f"({widths.main}), got {int(opened[n].main.shape[0])}"
                 )
             prep_open = opened[n].preprocessed
-            if shape.prep is not None:
-                if prep_open is None or int(prep_open.shape[0]) != shape.prep.width:
+            if widths.prep is not None:
+                if prep_open is None or int(prep_open.shape[0]) != widths.prep:
                     got = "none" if prep_open is None else int(prep_open.shape[0])
                     raise ValueError(
                         f"chip {n!r}: need one preprocessed claim per "
-                        f"statement column ({shape.prep.width}), got {got}"
+                        f"statement column ({widths.prep}), got {got}"
                     )
             elif prep_open is not None:
                 raise ValueError(
@@ -161,7 +160,7 @@ class ZerocheckVerifier(
         transcript, point, ok = verify_shard_zerocheck(
             self._chips,
             self._chip_names,
-            self._chip_heights,
+            claim.chip_metadata.by_chip(),
             claim.public_values,
             claim.gkr.eval_point,
             claim.gkr.chip_openings,
@@ -184,7 +183,7 @@ class JaggedPcsVerifier(
     ``stacked_basefold_verify`` against the skip-level commitment
     roots.
 
-    The column manifest is built entirely from the statement shapes; the
+    The column manifest is built entirely from the statement; the
     opened values only supply the claims, their shapes already
     checked against the same statement by the zerocheck dual. A statement
     with no preprocessed chip states that no preprocessed round exists, so
@@ -198,7 +197,7 @@ class JaggedPcsVerifier(
         num_queries: int,
         pow_bits: int,
         chip_names: Sequence[str],
-        chip_shapes: Mapping[str, ChipShape],
+        chip_widths: Mapping[str, ChipWidths],
         log_stacking_height: int,
         max_log_row_count: int,
     ) -> None:
@@ -207,7 +206,7 @@ class JaggedPcsVerifier(
         self._num_queries = num_queries
         self._pow_bits = pow_bits
         self._chip_names = chip_names
-        self._chip_shapes = chip_shapes
+        self._chip_widths = chip_widths
         self._log_stacking_height = log_stacking_height
         self._max_log_row_count = max_log_row_count
 
@@ -221,28 +220,30 @@ class JaggedPcsVerifier(
         opened = claim.evaluation.opened_values
         zc_point = claim.evaluation.point
         ef = zc_point.dtype
-        shapes = self._chip_shapes
+        chip_widths = self._chip_widths
+        row_counts = claim.chip_metadata.by_chip()
 
         # [prep, main] manifests from the statement, mirroring the prover's
-        # region walk.
-        prep_names = [n for n in self._chip_names if shapes[n].prep is not None]
-        # `prep_names` was filtered on exactly this, so each lookup is present.
-        preps = {n: p for n in prep_names if (p := shapes[n].prep) is not None}
+        # region walk. Column counts are AIR-static role config; the row counts
+        # are per-shard and come off the claim.
+        prep_names = [n for n in self._chip_names if chip_widths[n].prep is not None]
+        # `prep_names` was filtered on exactly this, so each width is present.
+        preps = {n: w for n in prep_names if (w := chip_widths[n].prep) is not None}
         regions: list[tuple[list[str], list[int], list[int], str]] = []
         if prep_names:
             regions.append(
                 (
                     prep_names,
-                    [preps[n].height for n in prep_names],
-                    [preps[n].width for n in prep_names],
+                    [row_counts[n] for n in prep_names],
+                    [preps[n] for n in prep_names],
                     "preprocessed",
                 )
             )
         regions.append(
             (
                 list(self._chip_names),
-                [shapes[n].main.height for n in self._chip_names],
-                [shapes[n].main.width for n in self._chip_names],
+                [row_counts[n] for n in self._chip_names],
+                [chip_widths[n].main for n in self._chip_names],
                 "main",
             )
         )
@@ -303,7 +304,7 @@ class JaggedPcsVerifier(
         # preamble-observed commitment (SP1's table-sizes
         # check) — only then do the open's Merkle checks against the proof
         # commitments bind the openings to the statement.
-        statement_roots = claim.roots.as_statement(bool(prep_names))
+        statement_roots = claim.roots.in_round_order(bool(prep_names))
         if len(msg.open.component_commitments) != len(statement_roots):
             raise ValueError(
                 f"need one committed round per statement region "
@@ -356,7 +357,7 @@ class ShardVerifier(VerifierStage[ShardClaim, TrivialClaim, ShardProof]):
         gkr_chips: Sequence[GkrChip],
         chips: Mapping[str, Chip],
         chip_names: Sequence[str],
-        chip_shapes: Mapping[str, ChipShape],
+        chip_widths: Mapping[str, ChipWidths],
         num_betas: int,
         num_row_variables: int,
         max_log_row_count: int,
@@ -369,7 +370,6 @@ class ShardVerifier(VerifierStage[ShardClaim, TrivialClaim, ShardProof]):
         self.gkr = LogupGkrVerifier(
             gkr_chips,
             chip_names=chip_names,
-            chip_heights={n: s.main.height for n, s in chip_shapes.items()},
             num_betas=num_betas,
             num_row_variables=num_row_variables,
             pow_bits=pow_bits,
@@ -378,7 +378,7 @@ class ShardVerifier(VerifierStage[ShardClaim, TrivialClaim, ShardProof]):
         self.zerocheck = ZerocheckVerifier(
             chips,
             chip_names=chip_names,
-            chip_shapes=chip_shapes,
+            chip_widths=chip_widths,
             max_log_row_count=max_log_row_count,
         )
         self.opening = JaggedPcsVerifier(
@@ -387,7 +387,7 @@ class ShardVerifier(VerifierStage[ShardClaim, TrivialClaim, ShardProof]):
             num_queries=open_num_queries,
             pow_bits=open_pow_bits,
             chip_names=chip_names,
-            chip_shapes=chip_shapes,
+            chip_widths=chip_widths,
             log_stacking_height=log_stacking_height,
             max_log_row_count=max_log_row_count,
         )
@@ -403,12 +403,12 @@ class ShardVerifier(VerifierStage[ShardClaim, TrivialClaim, ShardProof]):
         )
         gkr = self.gkr.verify(claim, reduction_proof.gkr, transcript)
         zerocheck = self.zerocheck.verify(
-            ZerocheckClaim(claim.public_values, gkr.reduced_claim),
+            ZerocheckClaim(claim.public_values, gkr.reduced_claim, claim.chip_metadata),
             reduction_proof.zerocheck,
             gkr.transcript,
         )
         opening = self.opening.verify(
-            JaggedOpeningClaim(zerocheck.reduced_claim, roots),
+            JaggedOpeningClaim(zerocheck.reduced_claim, roots, claim.chip_metadata),
             reduction_proof.jagged,
             zerocheck.transcript,
         )

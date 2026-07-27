@@ -44,6 +44,7 @@ from sp1_zorch.shard_prover.types import ShardData
 from zorch.pcs.jagged.region import JaggedRegion
 from zorch.transcript import Transcript
 from sp1_zorch.shard_prover.prove_shard import (
+    ChipMetadata,
     GkrOutputClaim,
     ShardWitness,
     ZerocheckClaim,
@@ -138,6 +139,9 @@ def main() -> int:
             ZerocheckClaim(
                 shard.main_trace_data.public_values,
                 GkrOutputClaim(eval_point, openings),
+                ChipMetadata(
+                    tuple(main_region.chip_names), tuple(main_region.row_counts)
+                ),
             ),
             ShardWitness(main_region, prep_region),
             transcript,

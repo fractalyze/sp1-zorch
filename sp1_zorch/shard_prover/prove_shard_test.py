@@ -44,11 +44,11 @@ from sp1_zorch.logup_gkr.prover import (
 from sp1_zorch.poseidon2.koalabear16 import koalabear16_params
 
 from sp1_zorch.shard_prover.prove_shard import (
-    CommitmentRoots,
+    BoundRoots,
     JaggedCommitData,
     JaggedOpeningClaim,
     JaggedPcsProver,
-    RoundCommitments,
+    SmcsCommitments,
     LogupGkrProver,
     JaggedOpeningWitness,
     absorb_preamble,
@@ -61,7 +61,7 @@ from sp1_zorch.shard_prover.prove_shard import (
     ZerocheckProver,
     TraceEvaluationClaim,
     _jagged_eval_jit,
-    preamble_chip_metadata,
+    ChipMetadata,
 )
 from sp1_zorch.shard_prover.replay import JitPermutation
 from sp1_zorch.shard_prover.types import MachineVerifyingKey
@@ -203,14 +203,14 @@ class ProveShardChainTest(absltest.TestCase):
             cum_sum_y=_rand_bf(12, (7,)),
             enable_untrusted=0,
         )
-        metadata = preamble_chip_metadata(names, [6, 4], dtype=BF)
+        chip_metadata = ChipMetadata(tuple(names), (6, 4))
 
         # Hand-threaded reference: the replay-style stage sequence.
         bound, _ = commit_region(main_region, smcs, log_blowup=_LOG_BLOWUP)
         t = vk.observe_into(cheap_transcript(BF))
         t = t.observe(public_values)
         t = t.observe(bound)
-        t = t.observe(metadata)
+        t = t.observe(chip_metadata.preamble_stream(dtype=BF))
         t, gkr_proof = prove_logup_gkr(
             gkr_chips,
             main_region,
@@ -273,7 +273,7 @@ class ProveShardChainTest(absltest.TestCase):
         # path (frx#168), so the open executes. The hand replay stops at
         # zerocheck, so snapshot the transcript there for the in-sync check;
         # the open's SP1 byte-match is the GPU verify_prove_shard harness's job.
-        claim = ShardClaim(vk, public_values, metadata)
+        claim = ShardClaim(vk, public_values, chip_metadata)
         witness = ShardWitness(main_region, prep_region)
         # Run the roles explicitly rather than through `ShardProver.prove`:
         # the hand replay stops at zerocheck, so the in-sync check needs the
@@ -283,12 +283,14 @@ class ProveShardChainTest(absltest.TestCase):
         transcript, roots = bind_commitment(cheap_transcript(BF), claim, commitment)
         gkr = prover.gkr.prove(claim, witness, transcript)
         zc = prover.zerocheck.prove(
-            ZerocheckClaim(public_values, gkr.reduced_claim), witness, gkr.transcript
+            ZerocheckClaim(public_values, gkr.reduced_claim, claim.chip_metadata),
+            witness,
+            gkr.transcript,
         )
         cls.got_transcript = zc.transcript
         opening = prover.opening.prove(
-            JaggedOpeningClaim(zc.reduced_claim, roots),
-            JaggedOpeningWitness(main_region, prep_region, commit_data),
+            JaggedOpeningClaim(zc.reduced_claim, roots, claim.chip_metadata),
+            JaggedOpeningWitness(witness, commit_data),
             zc.transcript,
         )
         cls.commitment, cls.digests = commitment, commit_data.digest_layers
@@ -311,7 +313,7 @@ class ProveShardChainTest(absltest.TestCase):
         cls.vk = vk
         cls.gkr_chips = gkr_chips
         cls.chips = chips
-        cls.metadata = metadata
+        cls.chip_metadata = chip_metadata
 
     def test_chain_emits_one_message_per_stage(self) -> None:
         self.assertLen(self.msgs, 4)  # commit, LogUp-GKR, zerocheck, jagged eval
@@ -381,7 +383,7 @@ class ProveShardChainTest(absltest.TestCase):
             witness = ShardWitness(
                 replace(self.main_region, dense=dense), self.prep_region
             )
-            claim = ShardClaim(self.vk, public_values, self.metadata)
+            claim = ShardClaim(self.vk, public_values, self.chip_metadata)
             return prover.prove(claim, witness, transcript).transcript
 
         lowered = frx.jit(run).lower(
@@ -512,7 +514,7 @@ class PreambleAbsorbTest(absltest.TestCase):
         )
         public_values = _rand_bf(24, (8,))
         commitment = _rand_bf(25, (8,))
-        metadata = preamble_chip_metadata(("ab", "c"), (6, 4), dtype=BF)
+        metadata = ChipMetadata(("ab", "c"), (6, 4)).preamble_stream(dtype=BF)
 
         got_t = absorb_preamble(
             cheap_transcript(BF),
@@ -533,11 +535,11 @@ class PreambleAbsorbTest(absltest.TestCase):
 
 class PreambleChipMetadataTest(absltest.TestCase):
     """Pins the chip-metadata layout directly: the chain test only exercises it
-    on both TraceCommitStage and replay.py's preamble at once, where a layout
+    on both the PCS commit half and replay.py's preamble at once, where a layout
     bug would cancel out."""
 
     def test_flat_layout(self) -> None:
-        got = preamble_chip_metadata(("ab", "c"), (6, 4), dtype=BF)
+        got = ChipMetadata(("ab", "c"), (6, 4)).preamble_stream(dtype=BF)
         want = fnp.array([2, 6, 2, ord("a"), ord("b"), 4, 1, ord("c")], dtype=BF)
         _assert_bytes_equal(got, want, "chip metadata")
 
@@ -603,7 +605,7 @@ class LogupGkrProverCapClassTest(absltest.TestCase):
         open_before = open_traces_capped._cache_size()
         for rows, main_region, public_values, want in shards:
             result = stage.prove(
-                ShardClaim(None, public_values, None),  # type: ignore[arg-type]
+                ShardClaim(None, public_values, ChipMetadata((), ())),  # type: ignore[arg-type]
                 ShardWitness(main_region, None),
                 cheap_transcript(BF),
             )
@@ -676,7 +678,9 @@ class ZerocheckProverTotalCapTest(absltest.TestCase):
                 )
             }
             zc_claim = ZerocheckClaim(
-                public_values, GkrOutputClaim(gkr_eval_point, gkr_chip_openings)
+                public_values,
+                GkrOutputClaim(gkr_eval_point, gkr_chip_openings),
+                ChipMetadata(("alpha",), (rows,)),
             )
             zc_witness = ShardWitness(main_region, None)
             _, want = prove_shard_zerocheck(
@@ -763,16 +767,17 @@ class JaggedPcsProverClassTest(absltest.TestCase):
                         )
                     },
                 ),
-                CommitmentRoots(
-                    commit_data.smcs_commitment, commit_data.smcs_commitment
+                BoundRoots(
+                    preprocessed=commit_data.smcs_commitment,
+                    main=commit_data.smcs_commitment,
                 ),
+                ChipMetadata(("alpha",), (rows,)),
             )
             open_witness = JaggedOpeningWitness(
-                main_region,
-                None,
+                ShardWitness(main_region),
                 JaggedCommitData(
                     (commit_data.digest_layers,),
-                    RoundCommitments(main=commit_data.smcs_commitment),
+                    SmcsCommitments(main=commit_data.smcs_commitment),
                 ),
             )
             got_r = stage.prove(open_claim, open_witness, cheap_transcript(BF))

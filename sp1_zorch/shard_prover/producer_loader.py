@@ -55,7 +55,7 @@ def regions_from_producer(
     fixture path's, unchanged::
 
         prover.prove(
-            ShardClaim(shard.vk, shard.main_trace_data.public_values, metadata),
+            ShardClaim(shard.vk, shard.main_trace_data.public_values, shape),
             ShardWitness(main_region, prep_region),
             fresh_transcript(),
         )

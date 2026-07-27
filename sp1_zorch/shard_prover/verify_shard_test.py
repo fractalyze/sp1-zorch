@@ -25,7 +25,7 @@ from zk_dtypes import koalabear_mont
 
 from zorch.testkit.transcript import cheap_transcript
 
-from sp1_zorch.shard_prover.types import ChipShape, TraceShape
+from sp1_zorch.shard_prover.types import ChipWidths
 from sp1_zorch.shard_prover.verify_shard import (
     ZerocheckVerifier,
 )
@@ -34,7 +34,6 @@ from sp1_zorch.shard_prover.verify_shard import (
 from sp1_zorch.shard_prover.prove_shard import ZerocheckClaim, bind_commitment
 
 from sp1_zorch.shard_prover.shard_testkit import (
-    CHIP_HEIGHT,
     CHIP_WIDTH,
     MAX_LOG_ROW_COUNT,
     small_shard_fixture,
@@ -71,7 +70,9 @@ class VerifyShardChainTest(absltest.TestCase):
         t, cls.roots = bind_commitment(cheap_transcript(BF), fx.claim, proof.commitment)
         gkr = fx.verifier.gkr.verify(fx.claim, proof.gkr, t)
         cls.gkr_reduced = gkr.reduced_claim
-        cls.zc_claim = ZerocheckClaim(fx.claim.public_values, gkr.reduced_claim)
+        cls.zc_claim = ZerocheckClaim(
+            fx.claim.public_values, gkr.reduced_claim, fx.claim.chip_metadata
+        )
         cls.zc_transcript = gkr.transcript
         zc = fx.verifier.zerocheck.verify(cls.zc_claim, proof.zerocheck, gkr.transcript)
         cls.zc_reduced = zc.reduced_claim
@@ -88,7 +89,9 @@ class VerifyShardChainTest(absltest.TestCase):
         t, _ = bind_commitment(cheap_transcript(BF), fx.claim, commitment)
         p_gkr = fx.prover.gkr.prove(fx.claim, fx.witness, t)
         p_zc = fx.prover.zerocheck.prove(
-            ZerocheckClaim(fx.claim.public_values, p_gkr.reduced_claim),
+            ZerocheckClaim(
+                fx.claim.public_values, p_gkr.reduced_claim, fx.claim.chip_metadata
+            ),
             fx.witness,
             p_gkr.transcript,
         )
@@ -226,12 +229,7 @@ class VerifyShardChainTest(absltest.TestCase):
         stage = ZerocheckVerifier(
             self.fx.chips,
             chip_names=("alpha",),
-            chip_shapes={
-                "alpha": ChipShape(
-                    TraceShape(CHIP_HEIGHT, CHIP_WIDTH),
-                    prep=TraceShape(CHIP_HEIGHT, 1),
-                )
-            },
+            chip_widths={"alpha": ChipWidths(CHIP_WIDTH, prep=1)},
             max_log_row_count=MAX_LOG_ROW_COUNT,
         )
         with self.assertRaisesRegex(ValueError, "preprocessed claim per statement"):

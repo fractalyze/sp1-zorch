@@ -18,6 +18,16 @@ reference-dump terms onto it.
 - **Seams** — what crosses between Stages is a *claim*, not a shared carry:
   `GkrOutputClaim` then `TraceEvaluationClaim`, each one Stage's reduced claim
   and the next one's source claim, so both roles derive the same thing.
+- **Statement vs configuration** — a claim carries what varies per shard;
+  the roles carry what does not. The two trace dimensions split on exactly
+  that line: `ChipMetadata` (which chips, and each one's real row count)
+  changes shard to shard, so it is claim data and rides every claim down the
+  chain, because each Stage needs it. Column counts are fixed by each chip's
+  AIR — SP1's `chip.width()` — so `ChipWidths` is role configuration, as are
+  the security parameters (blowup, query count, grind bits). The row counts
+  are held as values; the preamble absorb stream is derived from them by
+  `ChipMetadata.preamble_stream`, never stored, so the two cannot
+  disagree.
 
 ## The PCS brackets the Stages
 

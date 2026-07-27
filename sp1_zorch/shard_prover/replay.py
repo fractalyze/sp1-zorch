@@ -35,7 +35,7 @@ from sp1_zorch.poseidon2.koalabear16 import koalabear16_params
 from sp1_zorch.shard_prover.fixture_loader import _parse_int_list, _parse_kv_lines
 from sp1_zorch.shard_prover.prove_shard import (
     absorb_preamble,
-    preamble_chip_metadata,
+    ChipMetadata,
 )
 from sp1_zorch.shard_prover.types import ShardData
 from zorch.hash.poseidon2.poseidon2 import Poseidon2
@@ -114,7 +114,9 @@ def preamble_transcript(shard: ShardData, shard_dir: Path) -> Transcript:
         vk=shard.vk,
         public_values=shard.main_trace_data.public_values,
         commitment=commitment,
-        chip_metadata=preamble_chip_metadata(names, num_reals, dtype=F),
+        chip_metadata=ChipMetadata(tuple(names), tuple(num_reals)).preamble_stream(
+            dtype=F
+        ),
     )
     return transcript
 

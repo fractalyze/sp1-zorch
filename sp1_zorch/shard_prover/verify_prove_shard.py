@@ -5,7 +5,7 @@ Runs ``ShardProver`` (trace commit -> LogUp-GKR
 -> zerocheck -> jagged evaluation proof) over a real rsp dump and seals the
 composition against the reference:
 
-- the commitment the chain's ``TraceCommitStage`` computes must equal the
+- the commitment the chain's PCS commit half computes must equal the
   dump's ``main_commit`` (``gpu_commitment.txt``);
 - the GKR evaluation point's row tail (SP1's ``zeta``) must equal
   ``gpu_z_row.txt``. ``zeta`` is a sponge image of every byte the chain
@@ -89,7 +89,6 @@ from sp1_zorch.shard_prover.fixture_loader import (
     load_fixture_shard,
 )
 from sp1_zorch.shard_prover.prove_shard import (
-    CommitmentRoots,
     JaggedCommitData,
     ShardClaim,
     ShardProof,
@@ -98,8 +97,8 @@ from sp1_zorch.shard_prover.prove_shard import (
     ZerocheckClaim,
     JaggedOpeningClaim,
     JaggedOpeningWitness,
-    absorb_preamble,
-    preamble_chip_metadata,
+    bind_commitment,
+    ChipMetadata,
 )
 from sp1_zorch.shard_prover.replay import (
     MAX_LOG_ROW_COUNT,
@@ -294,14 +293,7 @@ def _prove_phases(
         0,
         lambda: prover.opening.commit(witness),
     )
-    transcript = absorb_preamble(
-        transcript,
-        vk=claim.vk,
-        public_values=claim.public_values,
-        commitment=commitment,
-        chip_metadata=claim.chip_metadata,
-    )
-    roots = CommitmentRoots(claim.vk.preprocessed_commit, commitment)
+    transcript, roots = bind_commitment(transcript, claim, commitment)
 
     if n >= 2:
         gkr = _timed(
@@ -321,7 +313,7 @@ def _prove_phases(
             checks,
             2,
             lambda: prover.zerocheck.prove(
-                ZerocheckClaim(claim.public_values, gkr_claim),
+                ZerocheckClaim(claim.public_values, gkr_claim, claim.chip_metadata),
                 witness,
                 transcript,
             ),
@@ -336,10 +328,8 @@ def _prove_phases(
             checks,
             3,
             lambda: prover.opening.prove(
-                JaggedOpeningClaim(evaluation_claim, roots),
-                JaggedOpeningWitness(
-                    witness.main_region, witness.prep_region, commit_data
-                ),
+                JaggedOpeningClaim(evaluation_claim, roots, claim.chip_metadata),
+                JaggedOpeningWitness(witness, commit_data),
                 transcript,
             ),
         )
@@ -408,7 +398,7 @@ def _verify_shard(
         tuple(order), (main.chips, build_gkr_chips(main.chips, order))
     )
     public_values = main.public_values
-    chip_metadata = preamble_chip_metadata(order, num_reals, dtype=F)
+    shard_chip_metadata = ChipMetadata(tuple(order), tuple(num_reals))
     num_betas = num_beta_values(chips)
     del shard, main
     gc.collect()
@@ -525,7 +515,7 @@ def _verify_shard(
     # The zerocheck and GKR jits key statically on the chips / gkr_chips
     # tuples, so a multi-shard run must present the SAME objects to every
     # same-chip-set shard — a fresh fixture load's chips would miss the
-    shard_claim = ShardClaim(vk, public_values, chip_metadata)
+    shard_claim = ShardClaim(vk, public_values, shard_chip_metadata)
     shard_witness = ShardWitness(main_region, prep_region)
     prover = ShardProver(
         smcs=smcs,

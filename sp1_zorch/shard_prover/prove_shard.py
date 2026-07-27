@@ -69,12 +69,44 @@ from zorch.utils.bits import log2_ceil_usize
 # subtree). Lets the witness cross a @jit boundary as one donatable
 # argument.
 @dataclass(frozen=True)
+class ChipMetadata:
+    """Which chips this shard holds and how many real rows each one has, in
+    SP1's chip order.
+
+    The claim-side half of the trace dimensions: row counts change shard to
+    shard, so the statement has to give them, while column counts are fixed by
+    each chip's AIR and stay role configuration (`ChipWidths`). Held as values
+    rather than as the absorb stream they encode — `preamble_stream` derives
+    that — so both roles read the same statement instead of a blob only the
+    transcript can consume.
+    """
+
+    chip_names: tuple[str, ...]
+    num_reals: tuple[int, ...]
+
+    def by_chip(self) -> dict[str, int]:
+        return dict(zip(self.chip_names, self.num_reals, strict=True))
+
+    def preamble_stream(self, *, dtype: Any) -> Array:
+        """The preamble's chip-metadata stream as one flat array: chip count,
+        then per chip (num_real, name length, name bytes). One flat absorb
+        matches SP1's per-value observes byte-for-byte while skipping hundreds
+        of single-element transcript calls."""
+        metadata: list[int] = [len(self.chip_names)]
+        for name, num_real in zip(self.chip_names, self.num_reals, strict=True):
+            metadata.append(int(num_real))
+            metadata.append(len(name))
+            metadata.extend(name.encode("ascii"))
+        return fnp.array(metadata, dtype)
+
+
+@dataclass(frozen=True)
 class ShardClaim:
     """The public shard statement: what a verifier holds before any proof."""
 
     vk: MachineVerifyingKey
     public_values: Array
-    chip_metadata: Array
+    chip_metadata: ChipMetadata
 
 
 @partial(
@@ -112,6 +144,7 @@ class ZerocheckClaim:
 
     public_values: Array
     gkr: GkrOutputClaim
+    chip_metadata: ChipMetadata
 
 
 @dataclass(frozen=True)
@@ -123,35 +156,39 @@ class TraceEvaluationClaim:
     opened_values: Mapping[str, ChipEvaluation]
 
 
-@dataclass(frozen=True)
-class CommitmentRoots:
+@dataclass(frozen=True, kw_only=True)
+class BoundRoots:
     """The structure-bound Merkle roots an opening is checked against.
 
-    Named rather than a tuple of arrays: the SMCS commitments the prover also
-    holds have the identical shape, and only a distinct type stops the two
-    being passed to each other's slot. Both roles derive these — the verifier
-    from the vk and the proof's commitment — so they belong in the claim.
+    Both roles derive these — the verifier from the vk and the proof's
+    commitment — so they are claim data. The raw `SmcsCommitments` the prover
+    also holds are the same two arrays before structure binding, so only a
+    distinct type stops the two being passed to each other's slot; the fields
+    are keyword-only for the same reason.
     """
 
     preprocessed: Array
     main: Array
 
-    def as_statement(self, has_preprocessed: bool) -> list[Array]:
-        """The roots the opening binds against, matching SP1's round order."""
+    def in_round_order(self, has_preprocessed: bool) -> list[Array]:
+        """The roots the opening binds against, in SP1's round order."""
         return [self.preprocessed, self.main] if has_preprocessed else [self.main]
 
 
-@dataclass(frozen=True)
-class RoundCommitments:
-    """Per-round SMCS commitments — the wire's ``original_commitments``.
+@dataclass(frozen=True, kw_only=True)
+class SmcsCommitments:
+    """Per-round SMCS commitments before structure binding — the wire's
+    ``original_commitments``.
 
     Prover output the verifier cannot derive, so this is proof data, not claim
     data. `preprocessed` is absent when the shard commits no preprocessed
-    region, which is why the arity varies where `CommitmentRoots` is fixed.
+    region, which is why the arity varies where `BoundRoots` is fixed: SP1's
+    verifier always carries the vk's preprocessed commitment even when the
+    prover has no preprocessed region to commit.
     """
 
-    main: Array
     preprocessed: Array | None = None
+    main: Array
 
     def in_round_order(self) -> list[Array]:
         return (
@@ -167,7 +204,8 @@ class JaggedOpeningClaim:
     `evaluation.opened_values` at `evaluation.point`, under `roots`."""
 
     evaluation: TraceEvaluationClaim
-    roots: CommitmentRoots
+    roots: BoundRoots
+    chip_metadata: ChipMetadata
 
 
 @dataclass(frozen=True)
@@ -182,15 +220,14 @@ class JaggedCommitData:
     """
 
     digest_layers: tuple[list[Array], ...]
-    commitments: RoundCommitments
+    commitments: SmcsCommitments
 
 
 @dataclass(frozen=True)
 class JaggedOpeningWitness:
-    """The regions plus the prover data the commit half produced."""
+    """The shard's trace plus the prover data the commit half produced."""
 
-    main_region: JaggedRegion
-    prep_region: JaggedRegion | None
+    trace: ShardWitness
     commit_data: JaggedCommitData
 
 
@@ -203,21 +240,6 @@ class ShardProof:
     gkr: LogupGkrProof
     zerocheck: ZerocheckProof
     jagged: JaggedPcsProof
-
-
-def preamble_chip_metadata(
-    chip_names: Sequence[str], num_reals: Sequence[int], *, dtype: Any
-) -> Array:
-    """The preamble's chip-metadata stream as one flat array: chip count, then
-    per chip (num_real, name length, name bytes). One flat absorb matches
-    SP1's per-value observes byte-for-byte while skipping hundreds of
-    single-element transcript calls."""
-    metadata: list[int] = [len(chip_names)]
-    for name, num_real in zip(chip_names, num_reals, strict=True):
-        metadata.append(int(num_real))
-        metadata.append(len(name))
-        metadata.extend(name.encode("ascii"))
-    return fnp.array(metadata, dtype)
 
 
 def absorb_preamble(
@@ -245,7 +267,7 @@ def absorb_preamble(
 
 def bind_commitment(
     transcript: Transcript, claim: ShardClaim, commitment: Array
-) -> tuple[Transcript, CommitmentRoots]:
+) -> tuple[Transcript, BoundRoots]:
     """Bind the committed trace into the stream and name the roots it is
     opened against — what both composites do between the PCS's two halves.
 
@@ -264,9 +286,13 @@ def bind_commitment(
         vk=claim.vk,
         public_values=claim.public_values,
         commitment=commitment,
-        chip_metadata=claim.chip_metadata,
+        chip_metadata=claim.chip_metadata.preamble_stream(
+            dtype=claim.public_values.dtype
+        ),
     )
-    return transcript, CommitmentRoots(claim.vk.preprocessed_commit, commitment)
+    return transcript, BoundRoots(
+        preprocessed=claim.vk.preprocessed_commit, main=commitment
+    )
 
 
 class LogupGkrProver(
@@ -509,7 +535,7 @@ class JaggedPcsProof:
 
     eval: JaggedEvalMsg
     open: StackedOpenProof
-    original_commitments: RoundCommitments
+    original_commitments: SmcsCommitments
 
 
 @partial(frx.jit, static_argnames=("rc_rounds", "cc_rounds", "target", "dtype"))
@@ -640,7 +666,7 @@ class JaggedPcsProver(
         smcs = [d.smcs_commitment for d in commit_data]
         return bound, JaggedCommitData(
             digest_layers=tuple(d.digest_layers for d in commit_data),
-            commitments=RoundCommitments(
+            commitments=SmcsCommitments(
                 main=smcs[-1], preprocessed=smcs[0] if len(smcs) > 1 else None
             ),
         )
@@ -651,7 +677,7 @@ class JaggedPcsProver(
         witness: JaggedOpeningWitness,
         transcript: GrindingTranscript,
     ) -> ProveResult[TrivialClaim, JaggedPcsProof]:
-        main = witness.main_region
+        main = witness.trace.main_region
         openings = claim.evaluation.opened_values
         zc_point = claim.evaluation.point
         # The jagged eval runs in the extension field — the upstream sumcheck
@@ -666,7 +692,7 @@ class JaggedPcsProver(
         cc_rounds: list[Sequence[int]] = []
         claims_chips: list[list[Array]] = []
         denses: list[Array] = []
-        prep = witness.prep_region
+        prep = witness.trace.prep_region
         regions = ([(prep, "preprocessed")] if prep is not None else []) + [
             (main, "main")
         ]
@@ -843,13 +869,13 @@ class ShardProver(ProverStage[ShardClaim, ShardWitness, TrivialClaim, ShardProof
         transcript, roots = bind_commitment(transcript, claim, commitment)
         gkr = self.gkr.prove(claim, witness, transcript)
         zerocheck = self.zerocheck.prove(
-            ZerocheckClaim(claim.public_values, gkr.reduced_claim),
+            ZerocheckClaim(claim.public_values, gkr.reduced_claim, claim.chip_metadata),
             witness,
             gkr.transcript,
         )
         opening = self.opening.prove(
-            JaggedOpeningClaim(zerocheck.reduced_claim, roots),
-            JaggedOpeningWitness(witness.main_region, witness.prep_region, commit_data),
+            JaggedOpeningClaim(zerocheck.reduced_claim, roots, claim.chip_metadata),
+            JaggedOpeningWitness(witness, commit_data),
             zerocheck.transcript,
         )
         return ProveResult(

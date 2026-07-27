@@ -31,16 +31,15 @@ from zorch.commit.smcs import SingleMatrixCommitmentScheme
 from sp1_zorch.logup_gkr.circuit import GkrChip
 from sp1_zorch.poseidon2.koalabear16 import koalabear16_params
 from sp1_zorch.shard_prover.prove_shard import (
-    preamble_chip_metadata,
+    ChipMetadata,
     ShardClaim,
     ShardProof,
     ShardProver,
     ShardWitness,
 )
 from sp1_zorch.shard_prover.types import (
-    ChipShape,
+    ChipWidths,
     MachineVerifyingKey,
-    TraceShape,
 )
 from sp1_zorch.shard_prover.verify_shard import ShardVerifier
 
@@ -112,7 +111,7 @@ def small_shard_fixture() -> ShardFixture:
         cum_sum_y=rand_bf(34, (7,)),
         enable_untrusted=0,
     )
-    metadata = preamble_chip_metadata(("alpha",), [CHIP_HEIGHT], dtype=BF)
+    chip_metadata = ChipMetadata(("alpha",), (CHIP_HEIGHT,))
     gkr_chips = (
         GkrChip(
             "alpha",
@@ -151,14 +150,14 @@ def small_shard_fixture() -> ShardFixture:
     # logup_gkr/public_values_test.
     verifier = ShardVerifier(
         chip_names=("alpha",),
-        chip_shapes={"alpha": ChipShape(TraceShape(CHIP_HEIGHT, CHIP_WIDTH))},
+        chip_widths={"alpha": ChipWidths(CHIP_WIDTH)},
         log_stacking_height=LOG_STACKING_HEIGHT,
         open_num_queries=2,
         verify_public_values=False,
         **shared,
     )
 
-    claim = ShardClaim(vk, public_values, metadata)
+    claim = ShardClaim(vk, public_values, chip_metadata)
     witness = ShardWitness(main_region, None)
     proved = prover.prove(claim, witness, cheap_transcript(BF))
 

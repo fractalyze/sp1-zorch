@@ -25,8 +25,9 @@ from zorch.pcs.jagged.prover import JaggedEvalMsg
 from zorch.pcs.jagged.open import StackedOpenProof
 from sp1_zorch.logup_gkr.prover import ChipEvaluation, LogupGkrProof
 from sp1_zorch.shard_prover.prove_shard import (
+    ChipMetadata,
     JaggedPcsProof,
-    RoundCommitments,
+    SmcsCommitments,
     ShardClaim,
     ShardProof,
     ShardWitness,
@@ -560,7 +561,7 @@ class EncodeShardProofTest(absltest.TestCase):
         jagged = JaggedPcsProof(
             eval=_eval_msg(),
             open=_open_proof(num_rounds=2),
-            original_commitments=RoundCommitments(
+            original_commitments=SmcsCommitments(
                 main=_COMMITMENTS[1], preprocessed=_COMMITMENTS[0]
             ),
         )
@@ -606,7 +607,7 @@ class EncodeShardProofTest(absltest.TestCase):
             encode_shard_proof(
                 # Only `public_values` is read here; the vk and chip metadata
                 # reach the wire through their own encoders.
-                ShardClaim(None, public_values, fnp.zeros(0, dtype=F)),  # type: ignore[arg-type]
+                ShardClaim(None, public_values, ChipMetadata((), ())),  # type: ignore[arg-type]
                 ShardWitness(main_region, prep_region),
                 ShardProof(commitment, gkr, zerocheck, jagged),
                 _evaluation(),
