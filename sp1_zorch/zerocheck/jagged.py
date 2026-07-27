@@ -1120,7 +1120,6 @@ def prove_jagged_zerocheck(
 
     ef = zeta.dtype
     ef_limbs = _challenge_limbs(ef)
-    one = fnp.ones((), ef)
     zero = fnp.zeros((), ef)
 
     # C_alpha(0_row), the constant every padded row contributes — probed once

@@ -1,0 +1,47 @@
+# Commit-scope policy for sp1-zorch.
+#
+# A scope is the directory the change lives in, named with the `sp1_zorch/` root
+# stripped, and it must be the deepest directory containing every touched file.
+# The package names are the vocabulary — logup_gkr, poseidon2, shard_prover,
+# zerocheck — so it stays in step with the tree instead of drifting from it.
+#
+# A prover change often spans several of those stages at once. There is no
+# honest scope for that, so it takes none — `perf: ...` — which is why a scope
+# is not required here.
+
+roots = ["sp1_zorch"]
+require_scope = false
+
+# Cross-cutting files that would otherwise drag a scoped change up to nothing.
+# These are path prefixes, not basenames: sp1_zorch/BUILD.bazel is listed
+# because it sits above every package, while a nested
+# sp1_zorch/<pkg>/BUILD.bazel already derives to its own package.
+exempt_paths = [
+  "docs",
+  "README.md",
+  "CLAUDE.md",
+  ".github",
+  ".gitignore",
+  ".bazelrc",
+  ".python-version",
+  "tools",
+  "pyproject.toml",
+  "requirements.in",
+  "requirements_lock_3_11.txt",
+  "MODULE.bazel",
+  "MODULE.bazel.lock",
+  "BUILD.bazel",
+  "sp1_zorch/BUILD.bazel",
+  # Fixtures are data, not code: a commit that refreshes them alongside the
+  # code they exercise keeps the code's scope. Exempted rather than folded
+  # away by the dictionary, because the dictionary drops one named segment and
+  # would leave the directories beneath it — testdata/gpu_fibonacci derives to
+  # `zerocheck/gpu_fibonacci` — so every new fixture directory would need its
+  # own entry.
+  "sp1_zorch/zerocheck/testdata",
+]
+
+[scopes]
+# __init__.py carries the version and sits above every package, so derivation
+# yields nothing for it.
+release = ["sp1_zorch/__init__.py"]
