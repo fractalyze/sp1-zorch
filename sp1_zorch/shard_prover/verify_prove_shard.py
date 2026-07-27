@@ -186,6 +186,8 @@ _JAXPROF_DIR = flags.DEFINE_string(
     None,
     "Write an frx profiler trace of the last (warm) prove pass here.",
 )
+
+
 def _device_arrays(value, _seen=None):
     """Every `frx.Array` reachable from `value`, for blocking on a phase.
 
@@ -387,9 +389,15 @@ def _verify_shard(
     # shards of one class share the executable. Default class: this shard's
     # own a-priori-tight bounds; --zc_class_json pins a cross-shard class
     # (assemble it as the per-field max of the ZC_CLASS lines printed here).
-    print("CHIP_HEIGHTS " + " ".join(f"{n}:{int(r)}" for n, r in zip(order, num_reals)), flush=True)
+    print(
+        "CHIP_HEIGHTS " + " ".join(f"{n}:{int(r)}" for n, r in zip(order, num_reals)),
+        flush=True,
+    )
     prep_widths = (
-        {n: int(prep_region.chip_widths[k]) for k, n in enumerate(prep_region.chip_names)}
+        {
+            n: int(prep_region.chip_widths[k])
+            for k, n in enumerate(prep_region.chip_names)
+        }
         if prep_region is not None
         else {}
     )
@@ -399,10 +407,7 @@ def _verify_shard(
     ]
     own_class = TotalCapClass.from_heights([int(r) for r in num_reals], chip_cols)
     print(
-        "ZC_CLASS "
-        + json.dumps(
-            {"area_cap": own_class.area_cap}
-        ),
+        "ZC_CLASS " + json.dumps({"area_cap": own_class.area_cap}),
         flush=True,
     )
     tc_class = own_class
@@ -416,9 +421,7 @@ def _verify_shard(
     # GKR_CLASS lines printed here).
     # From the region heights (what the stage packs), not num_reals — the
     # two agree on real rows but the pack's bound check runs on the region.
-    own_gkr = GkrCapClass.from_heights(
-        [int(h) for h in main_region.chip_heights]
-    )
+    own_gkr = GkrCapClass.from_heights([int(h) for h in main_region.chip_heights])
     print(
         "GKR_CLASS "
         + json.dumps(
@@ -455,8 +458,7 @@ def _verify_shard(
             if "gkr" in entry:
                 gkr_class = GkrCapClass(
                     tuple(int(entry["gkr"][name]) for name in order),
-                    (int(entry["gkr_slot_cap"])
-                     if "gkr_slot_cap" in entry else None),
+                    (int(entry["gkr_slot_cap"]) if "gkr_slot_cap" in entry else None),
                 )
 
     # The jagged class is fully derived — no pin flag. Same (L, n_d) ⇒
@@ -511,7 +513,6 @@ def _verify_shard(
         zerocheck_total_cap_class=tc_class,
         gkr_cap_class=gkr_class,
     )
-
 
     # Parse the golden references up front: a missing/malformed fixture then
     # fails at startup rather than after stage 1's ~2-3 min cold compile, and

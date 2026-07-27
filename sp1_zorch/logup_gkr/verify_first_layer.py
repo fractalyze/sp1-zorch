@@ -72,9 +72,7 @@ def _round_schedule_check(gkr_chips, traces, shard_dir: Path) -> bool:
     check re-runs the schedule in SP1's units instead of converting the
     materialized row counts. Static accounting only, no field math.
     """
-    blocks = (shard_dir / "gkr_sumcheck_rounds.txt").read_text().split(
-        "--- round ---"
-    )
+    blocks = (shard_dir / "gkr_sumcheck_rounds.txt").read_text().split("--- round ---")
     rounds = [_parse_kv_lines(b) for b in blocks if b.strip()]
 
     counts = tuple(
@@ -161,9 +159,7 @@ def main(argv) -> None:
     seeds = []
     while f"beta_seed[{len(seeds)}]" in state:
         seeds.append(_parse_ef_list(state[f"beta_seed[{len(seeds)}]"]))
-    betas = expand_eq_to_hypercube(
-        fnp.concatenate(seeds), fnp.array(1, dtype=EF)
-    )
+    betas = expand_eq_to_hypercube(fnp.concatenate(seeds), fnp.array(1, dtype=EF))
 
     gkr_chips = build_gkr_chips(shard.main_trace_data.chips, order)
     layer = generate_first_layer(gkr_chips, main_region, prep_region, alpha, betas)

@@ -204,9 +204,7 @@ class ProveLogupGkrTest(absltest.TestCase):
         transcript = cheap_transcript(F)
         _, transcript, _ = GrindRound(proof.witness)(None, transcript)
         _, transcript, _ = HeadChallengesRound(3)(None, transcript)
-        carry, transcript, _ = OutputBindRound(proof.circuit_output)(
-            None, transcript
-        )
+        carry, transcript, _ = OutputBindRound(proof.circuit_output)(None, transcript)
 
         (num_eval, den_eval, point), _, ok = verify_rounds(
             [VerifierRound(EF_CHALLENGES) for _ in proof.round_proofs],
@@ -377,9 +375,9 @@ class CappedProveTest(absltest.TestCase):
         names = ("A", "B")
         member_totals = [
             sum(
-                GkrCapClass.from_heights(
-                    [int(h) for h in s.chip_heights]
-                ).slot_counts(self._CHIPS, names)
+                GkrCapClass.from_heights([int(h) for h in s.chip_heights]).slot_counts(
+                    self._CHIPS, names
+                )
             )
             for s in shards
         ]

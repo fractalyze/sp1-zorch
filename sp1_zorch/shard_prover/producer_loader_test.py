@@ -85,8 +85,7 @@ class RegionsFromProducerParityTest(absltest.TestCase):
         # arrays — so bit-parity below compares two ingests, not one array
         # with itself.
         producer = {
-            "sp1_" + sp1_name_to_rw(name): fnp.array(raw)
-            for name, raw in raws.items()
+            "sp1_" + sp1_name_to_rw(name): fnp.array(raw) for name, raw in raws.items()
         }
         self.producer_order = tuple(sorted(producer))
         self.producer_chips = {n: producer[n] for n in self.producer_order}
@@ -203,7 +202,9 @@ class RwNameToSp1Test(absltest.TestCase):
 
     def test_registry_prefix_is_stripped(self):
         self.assertEqual(rw_name_to_sp1("sp1_add"), "Add")
-        self.assertEqual(rw_name_to_sp1("sp1_memory_global_final"), "MemoryGlobalFinalize")
+        self.assertEqual(
+            rw_name_to_sp1("sp1_memory_global_final"), "MemoryGlobalFinalize"
+        )
 
     def test_round_trip_through_forward_map(self):
         for rw in ("add", "byte_lookup", "utype", "uint256_mul", "divrem"):

@@ -216,8 +216,13 @@ class ChipOpeningsRound:
 @partial(
     frx.jit,
     static_argnames=(
-        "trace_dimension", "cap_class", "chip_names", "main_widths",
-        "prep_names", "prep_widths", "prep_heights",
+        "trace_dimension",
+        "cap_class",
+        "chip_names",
+        "main_widths",
+        "prep_names",
+        "prep_widths",
+        "prep_heights",
     ),
 )
 def open_traces_capped(
@@ -429,9 +434,7 @@ def _prove_from_first_layer(
     schedules = list(
         zip(
             sp1_schedule_counts(first.row_counts, num_row_variables - 1),
-            capped_pyramid_widths(
-                slot_cap, num_segments, num_row_variables - 1
-            ),
+            capped_pyramid_widths(slot_cap, num_segments, num_row_variables - 1),
             strict=True,
         )
     )
@@ -515,9 +518,7 @@ def prove_logup_gkr(
         bf_dtype=main_region.dense.dtype,
     )
     if cap_class is None:
-        cap_class = GkrCapClass.from_heights(
-            [int(h) for h in main_region.chip_heights]
-        )
+        cap_class = GkrCapClass.from_heights([int(h) for h in main_region.chip_heights])
     main_flat, prep_flat, heights = pack_gkr_arrival(
         main_region, prep_region, cap_class
     )

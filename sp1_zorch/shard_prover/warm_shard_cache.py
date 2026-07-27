@@ -72,40 +72,66 @@ from sp1_zorch.zerocheck.jagged import TotalCapClass
 from sp1_zorch.logup_gkr.circuit import GkrCapClass, build_gkr_chips
 
 _DUMP_DIR = flags.DEFINE_string(
-    "dump_dir", None, "Dump directory holding shard* subdirs (or a comma list "
-    "of shard dirs).", required=True)
+    "dump_dir",
+    None,
+    "Dump directory holding shard* subdirs (or a comma list " "of shard dirs).",
+    required=True,
+)
 _OUT_MANIFEST = flags.DEFINE_string(
-    "out_manifest", None, "Write the per-shard group-class manifest here "
-    "(the --group_manifest_json verify_prove_shard consumes).")
+    "out_manifest",
+    None,
+    "Write the per-shard group-class manifest here "
+    "(the --group_manifest_json verify_prove_shard consumes).",
+)
 _GROUP_AREA_RATIO = flags.DEFINE_float(
-    "group_area_ratio", 0.4, "Share one zerocheck compile across a chip set "
+    "group_area_ratio",
+    0.4,
+    "Share one zerocheck compile across a chip set "
     "only when its min/max area_cap exceeds this (else each shard keeps its "
-    "own area to avoid over-pricing small shards).")
+    "own area to avoid over-pricing small shards).",
+)
 _WARM = flags.DEFINE_bool(
-    "warm", False, "After analysis, compile-only fill the cache (phase 2): fan "
+    "warm",
+    False,
+    "After analysis, compile-only fill the cache (phase 2): fan "
     "out warm_worker subprocesses that lower+compile every zone WITHOUT "
-    "executing (~2 GiB each), all writing --cache_dir.")
+    "executing (~2 GiB each), all writing --cache_dir.",
+)
 _CACHE_DIR = flags.DEFINE_string(
-    "cache_dir", None, "Persistent compile cache dir the warm workers fill "
-    "(and a real prove later hits). Required with --warm.")
+    "cache_dir",
+    None,
+    "Persistent compile cache dir the warm workers fill "
+    "(and a real prove later hits). Required with --warm.",
+)
 _JOBS = flags.DEFINE_integer(
-    "jobs", 8, "Max parallel warm workers per GPU. The effective count is capped by "
+    "jobs",
+    8,
+    "Max parallel warm workers per GPU. The effective count is capped by "
     "--mem_budget_gib / (biggest shard's compile-only peak) so concurrent "
-    "workers fit the card; small-shard dumps use the full --jobs.")
+    "workers fit the card; small-shard dumps use the full --jobs.",
+)
 _MEM_BUDGET_GIB = flags.DEFINE_float(
-    "mem_budget_gib", 30.0, "Device-memory budget the concurrent workers must "
-    "fit (sum of their est peaks).")
+    "mem_budget_gib",
+    30.0,
+    "Device-memory budget the concurrent workers must " "fit (sum of their est peaks).",
+)
 _WORKER_MEM_FRACTION = flags.DEFINE_float(
-    "worker_mem_fraction", 0.5, "Per-worker cuda_async pool cap "
+    "worker_mem_fraction",
+    0.5,
+    "Per-worker cuda_async pool cap "
     "(XLA_PYTHON_CLIENT_MEM_FRACTION): releases autotune scratch between zones. "
     "Must exceed a shard's single-zone autotune need (~13.5 GiB at 400M area, "
-    "so 0.5=16 GiB on a 32 GB card); with N concurrent workers keep N*frac<~1.")
+    "so 0.5=16 GiB on a 32 GB card); with N concurrent workers keep N*frac<~1.",
+)
 _GPUS = flags.DEFINE_string(
-    "gpus", "", "Comma-separated GPU ids to spread the warm across (e.g. "
+    "gpus",
+    "",
+    "Comma-separated GPU ids to spread the warm across (e.g. "
     "'0,1'). Chip-set groups are dispatched dynamically, costliest first — "
     "whichever GPU drains its queue takes the next group; a whole group stays "
     "on one GPU (concurrent same-class compiles would race the cache). Empty: "
-    "one pool on the inherited CUDA_VISIBLE_DEVICES.")
+    "one pool on the inherited CUDA_VISIBLE_DEVICES.",
+)
 
 
 def _shard_dirs() -> list[Path]:
@@ -129,12 +155,17 @@ def _shard_class(sd: Path) -> dict:
     order = list(main.traces.chip_order)
     num_reals = [int(main.traces.per_chip[n].num_real) for n in order]
     prep_w = (
-        {n: int(prep_region.chip_widths[k])
-         for k, n in enumerate(prep_region.chip_names)}
-        if prep_region is not None else {}
+        {
+            n: int(prep_region.chip_widths[k])
+            for k, n in enumerate(prep_region.chip_names)
+        }
+        if prep_region is not None
+        else {}
     )
-    chip_cols = [int(main_region.chip_widths[i]) + prep_w.get(name, 0)
-                 for i, name in enumerate(order)]
+    chip_cols = [
+        int(main_region.chip_widths[i]) + prep_w.get(name, 0)
+        for i, name in enumerate(order)
+    ]
     zc = TotalCapClass.from_heights(num_reals, chip_cols)
     gkr = GkrCapClass.from_heights([int(h) for h in main_region.chip_heights])
     gkr_chips = build_gkr_chips(main.chips, order)
@@ -148,8 +179,12 @@ def _shard_class(sd: Path) -> dict:
         "area_cap": int(zc.area_cap),
         "gkr_heights": {n: int(h) for n, h in zip(order, gkr.chip_heights)},
         "gkr_slot_bound": int(slot_bound),
-        "jagged": {"L": jl, "n_d": (area - 1).bit_length() + 1, "K": jks,
-                   "rlc_bits": max(sum(jks) - 1, 0).bit_length()},
+        "jagged": {
+            "L": jl,
+            "n_d": (area - 1).bit_length() + 1,
+            "K": jks,
+            "rlc_bits": max(sum(jks) - 1, 0).bit_length(),
+        },
     }
 
 
@@ -162,8 +197,11 @@ def _analyze(dirs: list[Path]) -> tuple[dict, dict]:
     for sd in dirs:
         classes[sd.name] = _shard_class(sd)
         c = classes[sd.name]
-        print(f"{sd.name}: chips={len(c['order'])} area_cap={c['area_cap']} "
-              f"K={c['jagged']['K']} L={c['jagged']['L']}", flush=True)
+        print(
+            f"{sd.name}: chips={len(c['order'])} area_cap={c['area_cap']} "
+            f"K={c['jagged']['K']} L={c['jagged']['L']}",
+            flush=True,
+        )
     groups = defaultdict(list)
     for name, c in classes.items():
         groups[tuple(c["order"])].append(name)
@@ -184,21 +222,23 @@ def _plan(classes: dict, groups: dict) -> dict:
         # heights-keyed first-layer/open zones tolerate the per-chip-max pin
         # (their inflation is transient) — so the whole group shares one
         # compile set (GkrCapClass, sp1-zorch#290).
-        gmax = {n: max(classes[s]["gkr_heights"][n] for s in shards)
-                for n in order}
+        gmax = {n: max(classes[s]["gkr_heights"][n] for s in shards) for n in order}
         slot_pin = max(classes[s]["gkr_slot_bound"] for s in shards)
         zc_variants = 1 if tight else len({a for a in areas})
         for s in shards:
             manifest.setdefault(s, {})["gkr"] = gmax
             manifest[s]["gkr_slot_cap"] = slot_pin
-            manifest[s]["area_cap"] = (
-                area_pin if tight else classes[s]["area_cap"])
-        plan.append({
-            "chips": len(order), "shards": sorted(shards, key=_snum),
-            "tight_zerocheck_group": tight, "area_pin": area_pin,
-            "distinct_zerocheck_compiles": zc_variants,
-            "distinct_gkr_compiles": 1,
-        })
+            manifest[s]["area_cap"] = area_pin if tight else classes[s]["area_cap"]
+        plan.append(
+            {
+                "chips": len(order),
+                "shards": sorted(shards, key=_snum),
+                "tight_zerocheck_group": tight,
+                "area_pin": area_pin,
+                "distinct_zerocheck_compiles": zc_variants,
+                "distinct_gkr_compiles": 1,
+            }
+        )
     return {"manifest": manifest, "plan": plan}
 
 
@@ -218,12 +258,16 @@ def main(argv):
         tot_zc += g["distinct_zerocheck_compiles"]
         tot_gkr += g["distinct_gkr_compiles"]
         tag = "GROUP" if g["tight_zerocheck_group"] else "own"
-        print(f"  {tag:>5} {g['chips']:>2}ch {len(g['shards']):>2}sh "
-              f"{[_snum(s) for s in g['shards']]}: "
-              f"zc_compiles={g['distinct_zerocheck_compiles']} "
-              f"gkr_compiles={g['distinct_gkr_compiles']} area_pin={g['area_pin']}")
-    print(f"\ndistinct compiles to fill: {tot_zc} zerocheck + {tot_gkr} GKR "
-          f"(+ per-chipset trace/open zones) vs {len(classes)} shards naive")
+        print(
+            f"  {tag:>5} {g['chips']:>2}ch {len(g['shards']):>2}sh "
+            f"{[_snum(s) for s in g['shards']]}: "
+            f"zc_compiles={g['distinct_zerocheck_compiles']} "
+            f"gkr_compiles={g['distinct_gkr_compiles']} area_pin={g['area_pin']}"
+        )
+    print(
+        f"\ndistinct compiles to fill: {tot_zc} zerocheck + {tot_gkr} GKR "
+        f"(+ per-chipset trace/open zones) vs {len(classes)} shards naive"
+    )
     manifest_path = _OUT_MANIFEST.value
     if _WARM.value and not _CACHE_DIR.value:
         raise ValueError("--warm requires --cache_dir")
@@ -266,13 +310,13 @@ def _group_queue(classes: dict, groups: dict) -> list[list[str]]:
         costed.append((zc_cost + max(areas) + rider * len(shards), shards))
     ordered = [shards for _, shards in sorted(costed, key=lambda t: -t[0])]
     for cost, shards in sorted(costed, key=lambda t: -t[0]):
-        print(f"  queue: est {cost / 1e6:.0f}M {[_snum(s) for s in shards]}",
-              flush=True)
+        print(
+            f"  queue: est {cost / 1e6:.0f}M {[_snum(s) for s in shards]}", flush=True
+        )
     return ordered
 
 
-def _warm(dirs: list[Path], classes: dict, groups: dict,
-          manifest_path: str) -> None:
+def _warm(dirs: list[Path], classes: dict, groups: dict, manifest_path: str) -> None:
     cache = _CACHE_DIR.value
     Path(cache).mkdir(parents=True, exist_ok=True)
     # One shard per worker process; per GPU, workers launch peak-aware —
@@ -280,8 +324,9 @@ def _warm(dirs: list[Path], classes: dict, groups: dict,
     # budget — so a big shard runs ~solo while small ones pack around it.
     # Biggest shard first within a group, so its cold class compiles while
     # the riders queue behind it.
-    shards = sorted((str(sd) for sd in dirs),
-                    key=lambda s: -classes[Path(s).name]["area_cap"])
+    shards = sorted(
+        (str(sd) for sd in dirs), key=lambda s: -classes[Path(s).name]["area_cap"]
+    )
     peaks = {s: _est_peak_gib(classes[Path(s).name]["area_cap"]) for s in shards}
     budget = _MEM_BUDGET_GIB.value
     # Cap each worker's cuda_async pool so freed autotune scratch is RELEASED
@@ -289,21 +334,29 @@ def _warm(dirs: list[Path], classes: dict, groups: dict,
     # so the warmed executable matches a normal prove and runs fast). Without
     # this a 400M shard's scratch piles up past 32 GiB; with it the peak holds
     # at ~11.5 GiB. cuda_async allocator required.
-    env = dict(os.environ,
-               FRX_COMPILATION_CACHE_DIR=cache, JAX_COMPILATION_CACHE_DIR=cache,
-               XLA_PYTHON_CLIENT_ALLOCATOR="cuda_async",
-               XLA_PYTHON_CLIENT_MEM_FRACTION=str(_WORKER_MEM_FRACTION.value))
+    env = dict(
+        os.environ,
+        FRX_COMPILATION_CACHE_DIR=cache,
+        JAX_COMPILATION_CACHE_DIR=cache,
+        XLA_PYTHON_CLIENT_ALLOCATOR="cuda_async",
+        XLA_PYTHON_CLIENT_MEM_FRACTION=str(_WORKER_MEM_FRACTION.value),
+    )
     # Analysis (this process) runs CPU-only via JAX_PLATFORMS=cpu so it grabs no
     # device memory; workers need the GPU, so drop the override for them.
     env.pop("JAX_PLATFORMS", None)
-    print(f"=== warming {len(dirs)} shards, peak-aware pool (<= {budget:.0f} GiB, "
-          f"<= {_JOBS.value} procs/GPU); est peaks "
-          f"{peaks[shards[0]]:.0f}..{peaks[shards[-1]]:.0f} GiB ===", flush=True)
+    print(
+        f"=== warming {len(dirs)} shards, peak-aware pool (<= {budget:.0f} GiB, "
+        f"<= {_JOBS.value} procs/GPU); est peaks "
+        f"{peaks[shards[0]]:.0f}..{peaks[shards[-1]]:.0f} GiB ===",
+        flush=True,
+    )
     gpus = [g.strip() for g in _GPUS.value.split(",") if g.strip()] or [None]
     by_name = {Path(s).name: s for s in shards}
-    group_q = ([[by_name[n] for n in grp] for grp in
-                _group_queue(classes, groups)]
-               if gpus != [None] else [list(shards)])
+    group_q = (
+        [[by_name[n] for n in grp] for grp in _group_queue(classes, groups)]
+        if gpus != [None]
+        else [list(shards)]
+    )
     pending: dict = {g: [] for g in gpus}  # per-GPU shard queue
     running: dict = {}  # Popen -> (shard, peak, gpu)
     ok = fail = 0
@@ -313,9 +366,11 @@ def _warm(dirs: list[Path], classes: dict, groups: dict,
             # Steal the next group when this GPU's queue drains — dispatch
             # follows actual completion, not a static estimate.
             if not queue and group_q:
-                queue.extend(sorted(
-                    group_q.pop(0),
-                    key=lambda s: -classes[Path(s).name]["area_cap"]))
+                queue.extend(
+                    sorted(
+                        group_q.pop(0), key=lambda s: -classes[Path(s).name]["area_cap"]
+                    )
+                )
             launched = True
             while launched and queue:
                 launched = False
@@ -324,15 +379,19 @@ def _warm(dirs: list[Path], classes: dict, groups: dict,
                 s = queue[0]
                 # Always allow one worker even if a lone big shard exceeds
                 # the budget.
-                if len(mine) < _JOBS.value and (
-                        not mine or used + peaks[s] <= budget):
+                if len(mine) < _JOBS.value and (not mine or used + peaks[s] <= budget):
                     queue.pop(0)
-                    wenv = env if g is None else dict(
-                        env, CUDA_VISIBLE_DEVICES=g)
+                    wenv = env if g is None else dict(env, CUDA_VISIBLE_DEVICES=g)
                     p = subprocess.Popen(
-                        [sys.executable, "-m",
-                         "sp1_zorch.shard_prover.warm_worker",
-                         s, manifest_path or ""], env=wenv)
+                        [
+                            sys.executable,
+                            "-m",
+                            "sp1_zorch.shard_prover.warm_worker",
+                            s,
+                            manifest_path or "",
+                        ],
+                        env=wenv,
+                    )
                     running[p] = (s, peaks[s], g)
                     launched = True
         for p in list(running):
@@ -342,13 +401,17 @@ def _warm(dirs: list[Path], classes: dict, groups: dict,
                     ok += 1
                 else:
                     fail += 1
-                    print(f"  warm worker for {Path(s).name} exited "
-                          f"{p.returncode}", flush=True)
+                    print(
+                        f"  warm worker for {Path(s).name} exited " f"{p.returncode}",
+                        flush=True,
+                    )
         if running:
             time.sleep(2)
-    print(f"=== warm done: {ok}/{ok + fail} shards ok; "
-          f"cache entries: {sum(1 for _ in Path(cache).rglob('*') if _.is_file())} ===",
-          flush=True)
+    print(
+        f"=== warm done: {ok}/{ok + fail} shards ok; "
+        f"cache entries: {sum(1 for _ in Path(cache).rglob('*') if _.is_file())} ===",
+        flush=True,
+    )
 
 
 if __name__ == "__main__":

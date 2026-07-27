@@ -399,9 +399,9 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
         caps_r = cls.shrink_schedule(
             nchips * _NUM_COLS, jagged._SHRINK_ROUNDS, num_vars
         )
-        want_shapes = {
-            f"{caps_r[r] // 2}" for r in range(round_bodies)
-        } | {f"1x{_NUM_COLS}"}
+        want_shapes = {f"{caps_r[r] // 2}" for r in range(round_bodies)} | {
+            f"1x{_NUM_COLS}"
+        }
         self.assertEqual(shapes, want_shapes)
 
     def test_round_loop_stays_rolled(self) -> None:
@@ -412,9 +412,7 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
         num_reals = [5, 2]
         tail3 = self._constraint_markers(jagged._SHRINK_ROUNDS + 3, num_reals)
         tail1 = self._constraint_markers(jagged._SHRINK_ROUNDS + 1, num_reals)
-        self.assertEqual(
-            (len(tail3[0]), len(tail3[1])), (len(tail1[0]), len(tail1[1]))
-        )
+        self.assertEqual((len(tail3[0]), len(tail3[1])), (len(tail1[0]), len(tail1[1])))
 
     def _tail_dot_count(self, num_vars: int, num_reals) -> int:
         """``dot_general`` op count in the lowered prove. The GKR column term

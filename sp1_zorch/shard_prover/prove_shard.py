@@ -154,7 +154,11 @@ class RoundCommitments:
     preprocessed: Array | None = None
 
     def in_round_order(self) -> list[Array]:
-        return [self.preprocessed, self.main] if self.preprocessed is not None else [self.main]
+        return (
+            [self.preprocessed, self.main]
+            if self.preprocessed is not None
+            else [self.main]
+        )
 
 
 @dataclass(frozen=True)
@@ -290,7 +294,9 @@ class TraceCommitter:
             transcript,
             bound,
             tuple(d.digest_layers for d in commit_data),
-            RoundCommitments(main=smcs[-1], preprocessed=smcs[0] if len(smcs) > 1 else None),
+            RoundCommitments(
+                main=smcs[-1], preprocessed=smcs[0] if len(smcs) > 1 else None
+            ),
         )
 
 
@@ -387,8 +393,13 @@ class ZerocheckProver(
     @partial(
         frx.jit,
         static_argnames=(
-            "chips", "max_log_row_count", "total_cap_class", "chip_names",
-            "num_cols", "main_widths", "prep_widths",
+            "chips",
+            "max_log_row_count",
+            "total_cap_class",
+            "chip_names",
+            "num_cols",
+            "main_widths",
+            "prep_widths",
         ),
     )
     def _jit_body_totalcap_traced(
@@ -590,9 +601,7 @@ def _jagged_eval_jit(
 
 
 class JaggedPcsProver(
-    ProverStage[
-        JaggedOpeningClaim, JaggedOpeningWitness, TrivialClaim, JaggedPcsProof
-    ]
+    ProverStage[JaggedOpeningClaim, JaggedOpeningWitness, TrivialClaim, JaggedPcsProof]
 ):
     """Jagged evaluation proof (SP1 Phase 4): reduce the committed trace to
     ``D(z_final)`` via the outer/inner sumcheck, then open ``D`` at ``z_final``

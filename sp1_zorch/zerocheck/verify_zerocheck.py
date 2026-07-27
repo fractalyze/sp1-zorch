@@ -254,10 +254,7 @@ def main(argv) -> None:
         traces = chip_traces(order, heights_host, main_region, prep_region)
         flat = pack_flat_arrival(traces, heights_host, cls, MAX_LOG_ROW_COUNT)
         prep_w = (
-            {
-                n: int(w)
-                for n, w in zip(prep_region.chip_names, prep_region.chip_widths)
-            }
+            {n: int(w) for n, w in zip(prep_region.chip_names, prep_region.chip_widths)}
             if prep_region is not None
             else {}
         )

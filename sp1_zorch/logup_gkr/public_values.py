@@ -62,10 +62,22 @@ _BYTE_RANGE = 6
 # ``SepticDigest::zero()`` — the curve point every global cumulative sum starts
 # from (SP1 ``crates/hypercube/src/septic_digest.rs``, derived from sqrt(2)).
 _CURVE_CUMULATIVE_SUM_START_X = (
-    0x1414213, 0x5623730, 0x9504880, 0x1688724, 0x2096980, 0x7856967, 0x1875376,
+    0x1414213,
+    0x5623730,
+    0x9504880,
+    0x1688724,
+    0x2096980,
+    0x7856967,
+    0x1875376,
 )
 _CURVE_CUMULATIVE_SUM_START_Y = (
-    2020310104, 1513506566, 1843922297, 2003644209, 805967281, 1882435203, 1623804682,
+    2020310104,
+    1513506566,
+    1843922297,
+    2003644209,
+    805967281,
+    1882435203,
+    1623804682,
 )
 
 
@@ -302,10 +314,14 @@ class _Folder:
 
     # --- byte / state interaction helpers (SP1 ``ByteAirBuilder`` etc.) ------
 
-    def send_byte(self, opcode: Array, a: Array, b: Array, c: Array, mult: Array) -> None:
+    def send_byte(
+        self, opcode: Array, a: Array, b: Array, c: Array, mult: Array
+    ) -> None:
         self.send([opcode, a, b, c], mult, _KIND_BYTE)
 
-    def send_state(self, clk_high: Array, clk_low: Array, pc: Array, mult: Array) -> None:
+    def send_state(
+        self, clk_high: Array, clk_low: Array, pc: Array, mult: Array
+    ) -> None:
         self.send([clk_high, clk_low, pc[0], pc[1], pc[2]], mult, _KIND_STATE)
 
     def receive_state(
@@ -363,7 +379,9 @@ def _eval_state(pv: _Pv, f: _Folder) -> None:
     inv8 = f.const(8)
 
     # Range-check the timestamp limbs.
-    f.send_byte(f.const(_BYTE_RANGE), pv.initial_timestamp[0], f.const(16), f.zero, f.one)
+    f.send_byte(
+        f.const(_BYTE_RANGE), pv.initial_timestamp[0], f.const(16), f.zero, f.one
+    )
     f.send_byte(
         f.const(_BYTE_RANGE),
         (pv.initial_timestamp[3] - f.one) / inv8,
@@ -380,10 +398,18 @@ def _eval_state(pv: _Pv, f: _Folder) -> None:
         f.one,
     )
     f.send_byte(
-        f.const(_BYTE_U8RANGE), f.zero, pv.initial_timestamp[1], pv.initial_timestamp[2], f.one
+        f.const(_BYTE_U8RANGE),
+        f.zero,
+        pv.initial_timestamp[1],
+        pv.initial_timestamp[2],
+        f.one,
     )
     f.send_byte(
-        f.const(_BYTE_U8RANGE), f.zero, pv.last_timestamp[1], pv.last_timestamp[2], f.one
+        f.const(_BYTE_U8RANGE),
+        f.zero,
+        pv.last_timestamp[1],
+        pv.last_timestamp[2],
+        f.one,
     )
 
     # Range-check the initial / final program-counter limbs.
@@ -399,7 +425,9 @@ def _eval_state(pv: _Pv, f: _Folder) -> None:
     is_execution_shard = pv.is_execution_shard
     f.assert_bool(is_execution_shard)
     f.when_not(is_execution_shard).assert_eq(initial_timestamp_low, last_timestamp_low)
-    f.when_not(is_execution_shard).assert_eq(initial_timestamp_high, last_timestamp_high)
+    f.when_not(is_execution_shard).assert_eq(
+        initial_timestamp_high, last_timestamp_high
+    )
     f.when_not(is_execution_shard).assert_all_eq(pv.pc_start, pv.next_pc)
 
     # IsZeroOperation on the high timestamp bits.
@@ -510,8 +538,12 @@ def _eval_global_sum(pv: _Pv, f: _Folder) -> None:
 
 def _eval_global_memory_init(pv: _Pv, f: _Folder) -> None:
     for i in range(3):
-        f.send_byte(f.const(_BYTE_RANGE), pv.previous_init_addr[i], f.const(16), f.zero, f.one)
-        f.send_byte(f.const(_BYTE_RANGE), pv.last_init_addr[i], f.const(16), f.zero, f.one)
+        f.send_byte(
+            f.const(_BYTE_RANGE), pv.previous_init_addr[i], f.const(16), f.zero, f.one
+        )
+        f.send_byte(
+            f.const(_BYTE_RANGE), pv.last_init_addr[i], f.const(16), f.zero, f.one
+        )
     f.send(
         [f.zero, *[pv.previous_init_addr[i] for i in range(3)], f.one],
         f.one,
@@ -527,16 +559,26 @@ def _eval_global_memory_init(pv: _Pv, f: _Folder) -> None:
 def _eval_global_memory_finalize(pv: _Pv, f: _Folder) -> None:
     for i in range(3):
         f.send_byte(
-            f.const(_BYTE_RANGE), pv.previous_finalize_addr[i], f.const(16), f.zero, f.one
+            f.const(_BYTE_RANGE),
+            pv.previous_finalize_addr[i],
+            f.const(16),
+            f.zero,
+            f.one,
         )
-        f.send_byte(f.const(_BYTE_RANGE), pv.last_finalize_addr[i], f.const(16), f.zero, f.one)
+        f.send_byte(
+            f.const(_BYTE_RANGE), pv.last_finalize_addr[i], f.const(16), f.zero, f.one
+        )
     f.send(
         [f.zero, *[pv.previous_finalize_addr[i] for i in range(3)], f.one],
         f.one,
         _KIND_MEMORY_GLOBAL_FINALIZE,
     )
     f.receive(
-        [pv.global_finalize_count, *[pv.last_finalize_addr[i] for i in range(3)], f.one],
+        [
+            pv.global_finalize_count,
+            *[pv.last_finalize_addr[i] for i in range(3)],
+            f.one,
+        ],
         f.one,
         _KIND_MEMORY_GLOBAL_FINALIZE,
     )
@@ -551,7 +593,11 @@ def _eval_global_page_prot_init(pv: _Pv, f: _Folder) -> None:
         _KIND_PAGE_PROT_GLOBAL_INIT,
     )
     f.receive(
-        [pv.global_page_prot_init_count, *[pv.last_init_page_idx[i] for i in range(3)], f.one],
+        [
+            pv.global_page_prot_init_count,
+            *[pv.last_init_page_idx[i] for i in range(3)],
+            f.one,
+        ],
         enabled,
         _KIND_PAGE_PROT_GLOBAL_INIT,
     )

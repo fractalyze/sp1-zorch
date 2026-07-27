@@ -46,9 +46,7 @@ _PV_NPY = (
 def _ef(seed: int, n: int) -> fnp.ndarray:
     """A deterministic EF vector with small, distinct, in-range limbs."""
     limbs = (np.arange(n * 4) * 48271 + seed * 7 + 1).reshape(n, 4) % 0x7F000001
-    return frx.lax.bitcast_convert_type(
-        fnp.asarray(limbs, dtype=fnp.uint32), EF
-    )
+    return frx.lax.bitcast_convert_type(fnp.asarray(limbs, dtype=fnp.uint32), EF)
 
 
 class EvalPublicValuesTest(absltest.TestCase):
@@ -112,9 +110,7 @@ class EvalPublicValuesTest(absltest.TestCase):
         _, digest = eval_public_values(public_values, pv_challenge, alpha, betas)
 
         tampered = public_values.at[129].add(fnp.ones((), F))  # global_count
-        _, tampered_digest = eval_public_values(
-            tampered, pv_challenge, alpha, betas
-        )
+        _, tampered_digest = eval_public_values(tampered, pv_challenge, alpha, betas)
         self.assertFalse(bool(digest == tampered_digest))
 
     def test_send_then_receive_cancels(self) -> None:

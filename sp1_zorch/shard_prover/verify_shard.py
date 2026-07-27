@@ -88,9 +88,7 @@ class TraceCommitAbsorber:
         return transcript, CommitmentRoots(claim.vk.preprocessed_commit, commitment)
 
 
-class LogupGkrVerifier(
-    VerifierStage[ShardClaim, GkrOutputClaim, LogupGkrProof]
-):
+class LogupGkrVerifier(VerifierStage[ShardClaim, GkrOutputClaim, LogupGkrProof]):
     """Stage-2 dual of ``LogupGkrStage``: verifies the LogUp-GKR proof via
     ``verify_logup_gkr`` and writes the derived evaluation point plus the
     proof's leaf-checked chip openings as its reduced claim — the same seams the
@@ -368,9 +366,7 @@ class JaggedPcsVerifier(
             num_queries=self._num_queries,
             pow_bits=self._pow_bits,
         )
-        return VerifyResult(
-            TrivialClaim(), transcript, ok_eval & ok_bind & ok_open
-        )
+        return VerifyResult(TrivialClaim(), transcript, ok_eval & ok_bind & ok_open)
 
 
 class ShardVerifier(VerifierStage[ShardClaim, TrivialClaim, ShardProof]):

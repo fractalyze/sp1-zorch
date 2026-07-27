@@ -74,9 +74,7 @@ class VerifyShardChainTest(absltest.TestCase):
         cls.gkr_reduced = gkr.reduced_claim
         cls.zc_claim = ZerocheckClaim(fx.claim.public_values, gkr.reduced_claim)
         cls.zc_transcript = gkr.transcript
-        zc = fx.verifier.zerocheck.verify(
-            cls.zc_claim, proof.zerocheck, gkr.transcript
-        )
+        zc = fx.verifier.zerocheck.verify(cls.zc_claim, proof.zerocheck, gkr.transcript)
         cls.zc_reduced = zc.reduced_claim
 
     def test_both_roles_derive_the_same_seams(self) -> None:
@@ -208,9 +206,7 @@ class VerifyShardChainTest(absltest.TestCase):
             opened_values={"alpha": replace(ev, main=ev.main[:-1])},
         )
         with self.assertRaisesRegex(ValueError, "main claim per statement"):
-            self.fx.verifier.zerocheck.verify(
-                self.zc_claim, bad, self.zc_transcript
-            )
+            self.fx.verifier.zerocheck.verify(self.zc_claim, bad, self.zc_transcript)
 
     def test_unexpected_preprocessed_opening_rejected(self) -> None:
         """A statement with no preprocessed trace rejects a proof that opens
@@ -221,9 +217,7 @@ class VerifyShardChainTest(absltest.TestCase):
             opened_values={"alpha": replace(ev, preprocessed=ev.main[:1])},
         )
         with self.assertRaisesRegex(ValueError, "no preprocessed trace"):
-            self.fx.verifier.zerocheck.verify(
-                self.zc_claim, bad, self.zc_transcript
-            )
+            self.fx.verifier.zerocheck.verify(self.zc_claim, bad, self.zc_transcript)
 
     def test_missing_preprocessed_opening_rejected(self) -> None:
         """A statement whose chip carries a preprocessed trace rejects a

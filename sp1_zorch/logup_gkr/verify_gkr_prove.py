@@ -202,19 +202,13 @@ def main(argv) -> None:
     # assembly (per-chip max heights, max slot_cap); --gkr_class_json pins
     # one for the prove.
     own = GkrCapClass.from_heights([int(h) for h in main_region.chip_heights])
-    gkr_chips = build_gkr_chips(
-        shard.main_trace_data.chips, main_region.chip_names
-    )
+    gkr_chips = build_gkr_chips(shard.main_trace_data.chips, main_region.chip_names)
     print(
         "GKR_CLASS "
         + json.dumps(
             {
-                "chip_heights": dict(
-                    zip(main_region.chip_names, own.chip_heights)
-                ),
-                "slot_cap": own.resolved_slot_cap(
-                    gkr_chips, main_region.chip_names
-                ),
+                "chip_heights": dict(zip(main_region.chip_names, own.chip_heights)),
+                "slot_cap": own.resolved_slot_cap(gkr_chips, main_region.chip_names),
             }
         ),
         flush=True,

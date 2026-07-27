@@ -493,7 +493,6 @@ class ProveShardChainTest(absltest.TestCase):
         _assert_bytes_equal(got, want, "post-chain sample")
 
 
-
 class PreambleAbsorbTest(absltest.TestCase):
     """Pins ``absorb_preamble`` against a raw transcript walk — the one
     deliberate second writing of the preamble schedule, so an accidental
@@ -609,9 +608,7 @@ class LogupGkrProverCapClassTest(absltest.TestCase):
 
             label = f"rows {rows}"
             _assert_proof_byte_equal(got, want, label)
-            _assert_bytes_equal(
-                result.reduced_claim.eval_point, want.eval_point, label
-            )
+            _assert_bytes_equal(result.reduced_claim.eval_point, want.eval_point, label)
             _assert_bytes_equal(
                 result.reduced_claim.chip_openings["alpha"].main,
                 want.chip_openings["alpha"].main,
@@ -703,9 +700,7 @@ class ZerocheckProverTotalCapTest(absltest.TestCase):
                 want.opened_values["alpha"].main,
                 label,
             )
-            _assert_bytes_equal(
-                got.msgs.challenge, got.msgs.challenge, label
-            )
+            _assert_bytes_equal(got.msgs.challenge, got.msgs.challenge, label)
         self.assertEqual(
             ZerocheckProver._jit_body_totalcap_traced._cache_size() - before, 1
         )
@@ -765,7 +760,9 @@ class JaggedPcsProverClassTest(absltest.TestCase):
                         )
                     },
                 ),
-                CommitmentRoots(commit_data.smcs_commitment, commit_data.smcs_commitment),
+                CommitmentRoots(
+                    commit_data.smcs_commitment, commit_data.smcs_commitment
+                ),
             )
             open_witness = JaggedOpeningWitness(
                 main_region,

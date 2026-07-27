@@ -97,15 +97,11 @@ def verify_shard_zerocheck(
     opened = select_openings(proof.opened_values, chip_names)
     opened_rows = [ev.all_evals() for ev in opened]
 
-    transcript, batching, gkr_batch, lambda_ = sample_stage_challenges(
-        transcript, ef
-    )
+    transcript, batching, gkr_batch, lambda_ = sample_stage_challenges(transcript, ef)
 
     zeta = eval_point[-max_log_row_count:]
 
-    claims = gkr_opening_claims(
-        [chip_openings[name] for name in chip_names], gkr_batch
-    )
+    claims = gkr_opening_claims([chip_openings[name] for name in chip_names], gkr_batch)
     lambdas = rlc_coeffs(lambda_, len(chip_names))
     claimed_sum = fnp.sum(claims * lambdas)
 
@@ -152,9 +148,7 @@ def verify_shard_zerocheck(
             0 if stmt.preprocessed is None else int(stmt.preprocessed.shape[0])
         )
         eval_fn = export_order_eval_fn(chips[name], main_width, num_cols)
-        num_constraints = probe_num_constraints(
-            eval_fn, num_cols, ef, public_values
-        )
+        num_constraints = probe_num_constraints(eval_fn, num_cols, ef, public_values)
         if num_constraints:
             # Row 0 is the opening, row 1 a zero row: one batched fold yields
             # the opened evaluation and the padded-row adjustment together

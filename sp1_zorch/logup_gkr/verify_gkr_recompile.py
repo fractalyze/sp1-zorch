@@ -57,8 +57,7 @@ def main() -> int:
     parser.add_argument(
         "--shard-dirs",
         required=True,
-        help="comma-separated shard dump dirs of ONE GkrCapClass (same chip "
-        "set).",
+        help="comma-separated shard dump dirs of ONE GkrCapClass (same chip " "set).",
     )
     parser.add_argument(
         "--gkr_class_json",

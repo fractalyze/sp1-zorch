@@ -57,6 +57,7 @@ def generate_circuit_layers(
         layers.append(jagged_layer_transition(layers[-1], counts))
     return layers
 
+
 ALPHA = fnp.array(7, F)
 BETAS = fnp.array([5, 11], F)
 
@@ -301,7 +302,9 @@ class ScanBuildJaggedPyramidWiringTest(absltest.TestCase):
         # sp1_schedules is exactly the per-transition out_row_counts
         # generate_circuit_layers folds through (the [1:] of its layer shapes).
         first = self._first_layer(ALPHA, BETAS)
-        self.assertEqual(sp1_schedules(_host_counts(first), 4), [(6, 2), (4, 2), (2, 2)])
+        self.assertEqual(
+            sp1_schedules(_host_counts(first), 4), [(6, 2), (4, 2), (2, 2)]
+        )
 
     def test_depth_one_has_no_transitions(self) -> None:
         first = self._first_layer(ALPHA, BETAS)
@@ -389,7 +392,11 @@ def _reference_first_layer(chips, main_region, prep_region, alpha, betas):
             continue
         main = _chip_view(main_region, m_idx[chip.name])
         h = main.shape[0]
-        prep = _chip_view(prep_region, p_idx[chip.name])[:h] if chip.name in p_idx else None
+        prep = (
+            _chip_view(prep_region, p_idx[chip.name])[:h]
+            if chip.name in p_idx
+            else None
+        )
         slot = 2 * sp1_col_h(h)
         pad = slot - h // 2
         pn, pd = fnp.zeros(pad, dtype=bf), fnp.ones(pad, dtype=ef)
@@ -556,7 +563,9 @@ class FirstLayerBatchedEquivalenceTest(absltest.TestCase):
             kind=2,
             is_send=True,
         )
-        self._assert_equiv([GkrChip("A", (inter,))], _region(main, names=("A",)), None, BETAS)
+        self._assert_equiv(
+            [GkrChip("A", (inter,))], _region(main, names=("A",)), None, BETAS
+        )
 
     def test_many_interactions_past_old_chunk_size(self) -> None:
         # The old build chunked at 128 interactions; the batched build is one
@@ -566,7 +575,9 @@ class FirstLayerBatchedEquivalenceTest(absltest.TestCase):
             _interaction(i % 4, (i + 1) % 4, kind=(i % 6) + 1, is_send=(i % 2 == 0))
             for i in range(200)
         )
-        self._assert_equiv([GkrChip("A", inters)], _region(main, names=("A",)), None, BETAS)
+        self._assert_equiv(
+            [GkrChip("A", inters)], _region(main, names=("A",)), None, BETAS
+        )
 
 
 class GkrCapClassTest(absltest.TestCase):
@@ -602,9 +613,7 @@ class GkrCapClassTest(absltest.TestCase):
         region = _region(main_a, main_b, names=("A", "B"))
         exact = generate_first_layer(chips, region, None, ALPHA, BETAS)
         cls = GkrCapClass.from_heights([int(h) for h in region.chip_heights])
-        self.assertEqual(
-            cls.slot_counts(chips, region.chip_names), _host_counts(exact)
-        )
+        self.assertEqual(cls.slot_counts(chips, region.chip_names), _host_counts(exact))
         self.assertEqual(
             cls.schedules(chips, region.chip_names, 4),
             sp1_schedules(_host_counts(exact), 4),
@@ -735,9 +744,7 @@ class CappedFirstLayerTest(absltest.TestCase):
             self._assert_matches_exact(capped, exact)
         # One compile per chip across both shards: the class shapes + traced
         # height keep the second shard a cache hit.
-        self.assertEqual(
-            _chip_first_layer._cache_size() - before, len(chips)
-        )
+        self.assertEqual(_chip_first_layer._cache_size() - before, len(chips))
 
     def test_prep_chip_matches_exact_under_a_wider_class(self) -> None:
         # Keygen-height prep above main (recursion-shard shape); the class

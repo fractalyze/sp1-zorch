@@ -57,9 +57,7 @@ class CheckMatchTest(absltest.TestCase):
     def test_shape_divergence_is_a_mismatch(self):
         # (1,) vs (1, 1) broadcast as all-equal; the harness must still
         # report a mismatch.
-        self.assertFalse(
-            check_match("shape", fnp.ones((1,), F), fnp.ones((1, 1), F))
-        )
+        self.assertFalse(check_match("shape", fnp.ones((1,), F), fnp.ones((1, 1), F)))
 
 
 class ReadDumpTest(absltest.TestCase):

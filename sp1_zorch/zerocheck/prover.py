@@ -179,9 +179,7 @@ def sample_stage_challenges(
     return transcript, batching, gkr_batch, lambda_
 
 
-def gkr_opening_claims(
-    openings: Sequence[ChipEvaluation], gkr_batch: Array
-) -> Array:
+def gkr_opening_claims(openings: Sequence[ChipEvaluation], gkr_batch: Array) -> Array:
     """Each chip's GKR opening claim: its ``[main | prep]`` evaluations
     weighted by the shared beta powers — the seed of the round engine's
     ``p(1) = claim - p(0)`` identity. One definition: the prover seeds the
@@ -190,9 +188,7 @@ def gkr_opening_claims(
     evals = [opening.all_evals() for opening in openings]
     max_cols = max(e.shape[0] for e in evals)
     gkr_all = (
-        gkr_powers(gkr_batch, max_cols)
-        if max_cols
-        else fnp.zeros(0, gkr_batch.dtype)
+        gkr_powers(gkr_batch, max_cols) if max_cols else fnp.zeros(0, gkr_batch.dtype)
     )
     return fnp.stack([fnp.sum(gkr_all[: e.shape[0]] * e) for e in evals])
 
@@ -309,17 +305,13 @@ def prove_shard_zerocheck(
 
     zeta = eval_point[-max_log_row_count:]
 
-    chip_names = (
-        list(chip_names) if chip_names is not None else main_region.chip_names
-    )
+    chip_names = list(chip_names) if chip_names is not None else main_region.chip_names
     if flat_arrival is not None:
         # Flat jagged arrival (pack_flat_arrival): no per-chip trace buffers
         # exist — the constraint seams read column counts / main widths from
         # the statics the caller threads through.
         if num_reals is None or total_cap_class is None:
-            raise ValueError(
-                "flat_arrival rides the traced total_cap_class path"
-            )
+            raise ValueError("flat_arrival rides the traced total_cap_class path")
         if num_cols is None or main_widths is None:
             raise ValueError("flat_arrival needs num_cols and main_widths")
         eval_fns = [
@@ -418,7 +410,9 @@ def prove_shard_zerocheck(
     # not closed over — a closure would carry a tracer into the composite under
     # the jitted stage body.
     eval_fns = [
-        export_order_eval_fn(chips[name], int(main_region.chip_widths[i]), int(t.shape[0]))
+        export_order_eval_fn(
+            chips[name], int(main_region.chip_widths[i]), int(t.shape[0])
+        )
         for i, (name, t) in enumerate(zip(chip_names, traces))
     ]
 

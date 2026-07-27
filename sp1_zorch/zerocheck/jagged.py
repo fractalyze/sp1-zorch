@@ -255,9 +255,11 @@ class JaggedZerocheckSummand:
             self,
             "_term_fns",
             tuple(
-                partial(_constraint_and_column_term, fn, self.public_values)
-                if alpha.shape[-1] > 0
-                else _column_term
+                (
+                    partial(_constraint_and_column_term, fn, self.public_values)
+                    if alpha.shape[-1] > 0
+                    else _column_term
+                )
                 for fn, alpha in zip(self.eval_fns, self.alphas)
             ),
         )
@@ -314,8 +316,9 @@ class JaggedZerocheckSummand:
         if is_zero:
             zero = fnp.zeros((), p0.dtype)
             return zero, zero, zero
-        v0, v2, v4 = _summand_values(self._term_fns[i], self.alphas[i], p0, diff,
-                                     gkr_powers, nr_live, is_round0)
+        v0, v2, v4 = _summand_values(
+            self._term_fns[i], self.alphas[i], p0, diff, gkr_powers, nr_live, is_round0
+        )
         return fnp.sum(v0 * eq), fnp.sum(v2 * eq), fnp.sum(v4 * eq)
 
     def correct(
@@ -406,9 +409,11 @@ def _summand_values(term, alpha, p0, diff, gkr_powers, nr_live, is_round0):
         # per-row, eq-unweighted; the carry is row-major, so no transpose
         return term(rows, a, gkr_powers, num_non_padded)
 
-    return (one(t_traces[0], mask_round0=True),
-            one(t_traces[1], mask_round0=False),
-            one(t_traces[2], mask_round0=False))
+    return (
+        one(t_traces[0], mask_round0=True),
+        one(t_traces[1], mask_round0=False),
+        one(t_traces[2], mask_round0=False),
+    )
 
 
 def _zero_chip_poly(interp, claim, ef):
@@ -419,8 +424,9 @@ def _zero_chip_poly(interp, claim, ef):
     return round_coeffs_from_matrix(interp, z, claim, (z, z))
 
 
-def _reduce_and_assemble(vals, eq, interp, claim, last, eq_adj, padded_row_adj,
-                         nr_live, vgeq):
+def _reduce_and_assemble(
+    vals, eq, interp, claim, last, eq_adj, padded_row_adj, nr_live, vgeq
+):
     """A live chip's round poly: eq-weighted reduce of the per-t summand values
     + geq zero-extension correction + Gruen degree-4 assembly. Byte-identical to
     chip_raw_evals+correct+round_coeffs_from_matrix; also the marker's
@@ -501,14 +507,11 @@ class TotalCapClass:
         # (`eq_widths`, num_vars-only), added to each cap in `shrink_schedule`.
         # area is the even-padded packed live area.
         area = sum(
-            nc * (nr + nr % 2)
-            for nr, nc in zip(num_reals, num_cols, strict=True)
+            nc * (nr + nr % 2) for nr, nc in zip(num_reals, num_cols, strict=True)
         )
         return cls(area_cap=area)
 
-    def shrink_schedule(
-        self, sum_cols: int, rounds: int, num_vars: int
-    ) -> list[int]:
+    def shrink_schedule(self, sum_cols: int, rounds: int, num_vars: int) -> list[int]:
         """Static per-round BUFFER caps for the shrinking round prefix: at
         round ``r`` every chip's live height is ``ceil(h / 2^r)``, so the
         packed area halves per round while these caps stay static.
@@ -585,6 +588,7 @@ def pack_flat_arrival(
 # another round only buys compile time (each prefix round compiles its own
 # body).
 _SHRINK_ROUNDS = 5
+
 
 def _prove_total_cap(
     summand: JaggedZerocheckSummand,
@@ -693,9 +697,7 @@ def _prove_total_cap(
     chip_of_seg = fnp.asarray(
         [i for i, nc in enumerate(cols_arr) for _ in range(nc)], fnp.int32
     )
-    col_of_seg = fnp.asarray(
-        [c for nc in cols_arr for c in range(nc)], fnp.int32
-    )
+    col_of_seg = fnp.asarray([c for nc in cols_arr for c in range(nc)], fnp.int32)
 
     def _evenpad(h: Array) -> Array:
         return h + (h % 2)
@@ -729,9 +731,7 @@ def _prove_total_cap(
         ``p0h[j] = v0`` and ``diffh[j] = v1 - v0`` match the unfolded pack's
         stride-2 slices byte for byte."""
         seg_lens = (_evenpad(live_rows) // 2)[chip_of_seg]
-        seg_starts = fnp.concatenate(
-            [fnp.zeros((1,), fnp.int32), fnp.cumsum(seg_lens)]
-        )
+        seg_starts = fnp.concatenate([fnp.zeros((1,), fnp.int32), fnp.cumsum(seg_lens)])
         j = fnp.arange(area_out // 2, dtype=fnp.int32)
         # `scan_unrolled` unrolls the ~log2(num_segments) binary-search steps
         # inline; the default `scan` lowers to a while loop whose per-trip carry
@@ -739,8 +739,7 @@ def _prove_total_cap(
         # the dominant ZerocheckStage MemcpyD2D cost (one such while per round).
         # Byte-identical (same search, just unrolled).
         seg = fnp.clip(
-            fnp.searchsorted(seg_starts, j, side="right", method="scan_unrolled")
-            - 1,
+            fnp.searchsorted(seg_starts, j, side="right", method="scan_unrolled") - 1,
             0,
             sum_cols - 1,
         )
@@ -826,8 +825,9 @@ def _prove_total_cap(
     if eq_buf.shape[0] < W:
         eq_buf = _zero_extend(eq_buf, W)
 
-    def _jagged_window(flat: Array, off: Array, stride: Array, n_rows: int,
-                       n_cols: int) -> Array:
+    def _jagged_window(
+        flat: Array, off: Array, stride: Array, n_rows: int, n_cols: int
+    ) -> Array:
         """A chip's ``[n_rows, n_cols]`` window out of the flat halved buffer:
         column ``c`` is the rank-1 slice at ``off + c*stride`` (unmasked — the
         caller owns the dead-row zeroing)."""
@@ -911,16 +911,21 @@ def _prove_total_cap(
                         delta=diffh,
                         fold_coeff=t_coeffs[k],
                         column_weights=chip_gkr[i],
-                        aux_operands=(
-                            (summand.public_values,) if constrained else ()
-                        ),
+                        aux_operands=((summand.public_values,) if constrained else ()),
                     )
                     for k in range(3)
                 )
                 polys_list.append(
                     zerocheck_round_poly(
-                        vals, eq_slice, interp, chip_claims[i], last, eq_adj, adjs[i],
-                        heights[i], vgeqs[i],
+                        vals,
+                        eq_slice,
+                        interp,
+                        chip_claims[i],
+                        last,
+                        eq_adj,
+                        adjs[i],
+                        heights[i],
+                        vgeqs[i],
                     )
                 )
 
@@ -951,8 +956,14 @@ def _prove_total_cap(
             vgeqs = [vg.fix_last_variable(r) for vg in vgeqs]
             chip_claims, eq_adj = fold_round_scalars(polys, r, eq_adj, last)
             carry = (
-                new_p0h, new_diffh, vgeqs, chip_claims, eq_adj, new_heights,
-                fold_eq(eq_buf), transcript,
+                new_p0h,
+                new_diffh,
+                vgeqs,
+                chip_claims,
+                eq_adj,
+                new_heights,
+                fold_eq(eq_buf),
+                transcript,
             )
             return carry, RoundMsg(round_poly=rlc, challenge=r)
 
@@ -1132,24 +1143,36 @@ def prove_jagged_zerocheck(
     # ([1, nc]) trace as of fractalyze/xla#704; the same circuit then lowers to
     # ~785 instrs and Global cold-compiles in a few seconds.
     probe_cols = (
-        list(num_cols) if num_cols is not None
-        else [t.shape[0] for t in traces]
+        list(num_cols) if num_cols is not None else [t.shape[0] for t in traces]
     )
     adjs = [
-        zero
-        if static_nrs[i] == 0 or alphas[i].shape[-1] == 0
-        else constraint_eval(
-            eval_fns[i],
-            fnp.zeros((1, probe_cols[i]), dtype=ef),
-            alphas[i],
-            live_width=1,
-            aux_operands=(public_values,),
-        )[0]
+        (
+            zero
+            if static_nrs[i] == 0 or alphas[i].shape[-1] == 0
+            else constraint_eval(
+                eval_fns[i],
+                fnp.zeros((1, probe_cols[i]), dtype=ef),
+                alphas[i],
+                live_width=1,
+                aux_operands=(public_values,),
+            )[0]
+        )
         for i in range(num_chips)
     ]
 
     return _prove_total_cap(
-        summand, traces, static_nrs, list(num_reals), total_cap_class,
-        zeta, transcript, list(claims), adjs, ef, ef_limbs, num_vars,
-        flat_arrival=flat_arrival, num_cols=num_cols,
+        summand,
+        traces,
+        static_nrs,
+        list(num_reals),
+        total_cap_class,
+        zeta,
+        transcript,
+        list(claims),
+        adjs,
+        ef,
+        ef_limbs,
+        num_vars,
+        flat_arrival=flat_arrival,
+        num_cols=num_cols,
     )

@@ -203,7 +203,9 @@ class VerifyShardZerocheckTest(absltest.TestCase):
         ch = self.proof.msgs.challenge
         bad = replace(
             self.proof,
-            msgs=replace(self.proof.msgs, challenge=ch.at[0].add(fnp.ones((), ch.dtype))),
+            msgs=replace(
+                self.proof.msgs, challenge=ch.at[0].add(fnp.ones((), ch.dtype))
+            ),
         )
         _, _, ok = self._verify(bad)
         self.assertFalse(bool(ok))

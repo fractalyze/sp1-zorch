@@ -213,7 +213,9 @@ def _chip_mult_fingerprint(
     forms = c_all[:, None] + w_all @ trace_cat.T  # [forms, height], BF
 
     # Multiplicity per interaction; receives negate (× field -1 == negation).
-    mult = forms[fnp.asarray(mult_form)] * fnp.asarray(mult_sign, dtype=bf_dtype)[:, None]
+    mult = (
+        forms[fnp.asarray(mult_form)] * fnp.asarray(mult_sign, dtype=bf_dtype)[:, None]
+    )
 
     # Fingerprint = alpha + betas[0]·kind + Σ_i betas[i+1]·valueᵢ, the value sum
     # unrolled over the (small) widest fingerprint. Padded slots gather the zero
@@ -230,8 +232,13 @@ def _chip_mult_fingerprint(
 @partial(
     frx.jit,
     static_argnames=(
-        "chip", "main_start", "main_width", "cap", "prep_start",
-        "prep_width", "prep_height",
+        "chip",
+        "main_start",
+        "main_width",
+        "cap",
+        "prep_start",
+        "prep_width",
+        "prep_height",
     ),
 )
 def _chip_first_layer(
@@ -258,9 +265,7 @@ def _chip_first_layer(
     every build's intermediates at once and blows the wide-shard budget."""
     height = cap
     main_trace = (
-        main_flat[main_start : main_start + main_width * cap]
-        .reshape(main_width, cap)
-        .T
+        main_flat[main_start : main_start + main_width * cap].reshape(main_width, cap).T
     )
     prep_trace = None
     if prep_width:
@@ -391,9 +396,7 @@ def generate_first_layer(
     One build path: the class-shaped build at the shard's own tight class,
     where the layout equals the exact SP1 layout byte-for-byte.
     """
-    cap_class = GkrCapClass.from_heights(
-        [int(h) for h in main_region.chip_heights]
-    )
+    cap_class = GkrCapClass.from_heights([int(h) for h in main_region.chip_heights])
     main_flat, prep_flat, heights = pack_gkr_arrival(
         main_region, prep_region, cap_class
     )
@@ -525,9 +528,7 @@ class GkrCapClass:
                     f"split needs an even height"
                 )
             if h > cap:
-                raise ValueError(
-                    f"chip {i} height {h} exceeds its class bound {cap}"
-                )
+                raise ValueError(f"chip {i} height {h} exceeds its class bound {cap}")
 
     def check_slot_cap(
         self,
@@ -539,15 +540,12 @@ class GkrCapClass:
         capacity — the ``slot_cap`` half of admission, host-side like
         ``check_bounds``."""
         tight = sum(
-            GkrCapClass.from_heights(heights).slot_counts(
-                gkr_chips, chip_names
-            )
+            GkrCapClass.from_heights(heights).slot_counts(gkr_chips, chip_names)
         )
         cap = self.resolved_slot_cap(gkr_chips, chip_names)
         if tight > cap:
             raise ValueError(
-                f"shard tight slot total {tight} exceeds the class "
-                f"slot_cap {cap}"
+                f"shard tight slot total {tight} exceeds the class " f"slot_cap {cap}"
             )
 
     def slot_counts(
@@ -575,9 +573,7 @@ class GkrCapClass:
         """The class transition schedule — ``sp1_schedules`` over the class
         slot counts; pointwise dominates every admitted shard's exact
         schedule (``sp1_next_row_counts`` is monotone)."""
-        return sp1_schedules(
-            self.slot_counts(gkr_chips, chip_names), num_row_variables
-        )
+        return sp1_schedules(self.slot_counts(gkr_chips, chip_names), num_row_variables)
 
 
 def interaction_chip_indices(
@@ -608,9 +604,7 @@ def traced_slot_counts(heights: Array, seg_chip_idx: tuple[int, ...]) -> Array:
 
 
 @partial(frx.jit, static_argnames=("num_transitions",))
-def sp1_schedule_counts(
-    tight_counts: Array, num_transitions: int
-) -> list[Array]:
+def sp1_schedule_counts(tight_counts: Array, num_transitions: int) -> list[Array]:
     """``sp1_schedules`` on traced counts: ``ceil(rc / 4) * 2`` per segment
     per transition. One compiled dispatch — eagerly the chain is
     ``num_transitions`` launches of trivial work on a warm serve."""
@@ -639,9 +633,7 @@ def capped_pyramid_widths(
     return widths
 
 
-def _arrival_offsets(
-    widths: Sequence[int], heights: Sequence[int]
-) -> tuple[int, ...]:
+def _arrival_offsets(widths: Sequence[int], heights: Sequence[int]) -> tuple[int, ...]:
     """Chip offsets into a flat chip-major column-major arrival:
     ``cumsum(width * height)``. ``pack_gkr_arrival`` and the class-shaped
     consumers MUST derive the same offsets or views read across chips."""
@@ -673,13 +665,11 @@ def _pack_main_zone(
             continue
         h = heights[i]
         start = starts[i]
-        block = frx.vmap(
-            lambda c: lax.dynamic_slice(dense, (start + c * h,), (cap,))
-        )(fnp.arange(w, dtype=fnp.int32))  # [w, cap]
+        block = frx.vmap(lambda c: lax.dynamic_slice(dense, (start + c * h,), (cap,)))(
+            fnp.arange(w, dtype=fnp.int32)
+        )  # [w, cap]
         live = fnp.arange(cap, dtype=fnp.int32)[None, :] < h
-        parts.append(
-            fnp.where(live, block, fnp.zeros((), dense.dtype)).reshape(-1)
-        )
+        parts.append(fnp.where(live, block, fnp.zeros((), dense.dtype)).reshape(-1))
     return fnp.concatenate(parts)
 
 

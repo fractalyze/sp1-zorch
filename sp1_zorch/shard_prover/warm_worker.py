@@ -34,7 +34,8 @@ _stats = {"compiled": 0}
 # Default 2: concurrent on-device autotune scratch is the binding resource
 # (~13.5 GiB per 400M-area zone against the worker's pool cap).
 _pool = concurrent.futures.ThreadPoolExecutor(
-    max_workers=int(os.environ.get("WARM_COMPILE_THREADS", "2")))
+    max_workers=int(os.environ.get("WARM_COMPILE_THREADS", "2"))
+)
 _futures: list = []
 
 # Deviceless warm: WARM_TARGET_CONFIG points at a GpuTargetConfigProto textproto
@@ -43,13 +44,13 @@ _futures: list = []
 # no CUDA device needed. Run with JAX_PLATFORMS=cpu so the eager glue (dummy
 # inputs, eval_shape zeros) stays on host; only the plugin's compiler runs.
 _topo_dev = None
-if (_cfg_path := os.environ.get("WARM_TARGET_CONFIG")):
+if _cfg_path := os.environ.get("WARM_TARGET_CONFIG"):
     from frx.experimental import topologies  # noqa: E402
 
     with open(_cfg_path) as _f:
         _topo_dev = topologies.get_topology_desc(
-            "warm-aot", "cuda", target_config=_f.read(),
-            topology="1x1x1").devices[0]
+            "warm-aot", "cuda", target_config=_f.read(), topology="1x1x1"
+        ).devices[0]
 
 
 def _compile_only_jit(fn=None, **kw):
@@ -87,8 +88,7 @@ def _drain_compiles() -> int:
             _stats["compiled"] += 1
         except Exception as e:  # noqa: BLE001 — surface every zone failure
             failed += 1
-            print(f"=== zone compile FAILED: {type(e).__name__}: {e} ===",
-                  flush=True)
+            print(f"=== zone compile FAILED: {type(e).__name__}: {e} ===", flush=True)
     _futures.clear()
     return failed
 
@@ -125,8 +125,11 @@ if __name__ == "__main__":
         pass
     n_failed = _drain_compiles()
     st = frx.local_devices()[0].memory_stats() or {}
-    print(f"=== worker done: {_stats['compiled']} zones compiled, "
-          f"{n_failed} failed, "
-          f"peak={st.get('peak_bytes_in_use', 0) / 2**30:.2f}GiB ===", flush=True)
+    print(
+        f"=== worker done: {_stats['compiled']} zones compiled, "
+        f"{n_failed} failed, "
+        f"peak={st.get('peak_bytes_in_use', 0) / 2**30:.2f}GiB ===",
+        flush=True,
+    )
     if n_failed:
         sys.exit(1)

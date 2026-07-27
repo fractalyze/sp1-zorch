@@ -63,9 +63,7 @@ class GrindRound:
     ) -> tuple[Any, GrindingTranscript, Array]:
         transcript, ok = transcript.check_witness(self._pow_bits, self._witness)
         if self._pow_bits > 0 and not bool(ok):
-            raise ValueError(
-                f"witness fails the {self._pow_bits}-bit proof of work"
-            )
+            raise ValueError(f"witness fails the {self._pow_bits}-bit proof of work")
         return carry, transcript, self._witness
 
 

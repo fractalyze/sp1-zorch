@@ -73,9 +73,7 @@ def virtual_padding_geq(threshold: Array | int, point: Array) -> Array:
     return geq.eval_at(0)
 
 
-def padding_geqs(
-    heights: Iterable[int], trace_point: Array
-) -> dict[int, Array]:
+def padding_geqs(heights: Iterable[int], trace_point: Array) -> dict[int, Array]:
     """The ``index >= height`` indicator masses at ``trace_point``, one per
     distinct height — the padded-row corrections of the GKR leaf check and
     the zerocheck oracle check.
@@ -125,9 +123,7 @@ def _leaf_evaluations(
         # columns (the padding row's worth) together.
         main = fnp.stack([opening.main, fnp.zeros_like(opening.main)])
         prep = (
-            fnp.stack(
-                [opening.preprocessed, fnp.zeros_like(opening.preprocessed)]
-            )
+            fnp.stack([opening.preprocessed, fnp.zeros_like(opening.preprocessed)])
             if opening.preprocessed is not None
             else None
         )
