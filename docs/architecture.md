@@ -42,9 +42,8 @@ is what both roles derive and the verifier never sees a digest tree.
 Between the halves both roles call one shared `bind_commitment`, which absorbs
 SP1's preamble stream and names the roots the opening is checked against, so an
 ordering edit cannot land in one Fiat-Shamir stream and not the other. The
-commit half carries no claim of its own; it is byte-matched by
-`shard_prover:verify_prove_shard --max_phase=1` and unit-tested for structure
-in `commit:trace_commit_test`.
+commit half is byte-matched by `shard_prover:verify_prove_shard --max_phase=1`
+and unit-tested for structure in `commit:trace_commit_test`.
 
 ## Stages
 
@@ -69,24 +68,24 @@ dump files carry that prefix. The numbering:
 
 | SP1 phase | This repo |
 |---|---|
-| phase 1 | the PCS commit half |
-| phase 2 | LogUp-GKR Stage |
-| phase 3 | Zerocheck Stage |
-| phase 4 | Jagged opening Stage |
+| phase 1 | PCS commit |
+| phase 2 | LogUp-GKR |
+| phase 3 | Zerocheck |
+| phase 4 | Jagged opening |
 
 **Convention: "phase" names an SP1 tracing span and nothing else** — dump file
 names, capture spans, and the byte-match harness that times itself against
 them (`--max_phase`, the `[phase X]` lines). Our own levels are Stage and
-Round. The table above is not a synonym list: phase 1 is a PCS commit, not a
-Stage.
+Round, and the mapping above is not a synonym list — the two vocabularies
+disagree on the first row.
 
 Per-file map (one rsp shard directory):
 
-| Dump file | Stage | Contents / consumer |
+| Dump file | Phase | Contents / consumer |
 |---|---|---|
 | `gpu_traces/*.bin`, `*.meta` | input | Per-chip main traces + dims (`.meta` alone for zero-real chips; `public_values.bin` rides alongside); `shard_prover.fixture_loader` |
-| `gpu_vk.txt`, `gpu_commitment.txt` | Trace commit | vk, main commitment; preamble observes the vk, `verify_prove_shard` (`--max_phase=1`) byte-matches the main commitment (the preprocessed commit is setup-bound in the vk, covered transitively by the full-chain open) |
-| `gpu_pre_gkr_diag.txt`, `gpu_post_grind_diag.txt`, `gpu_post_gkr_diag.txt` | LogUp-GKR | Challenger checkpoints (one cloned squeeze each); seal the transcript before/after the Stage |
+| `gpu_vk.txt`, `gpu_commitment.txt` | PCS commit | vk and main commitment. The preprocessed commit is setup-bound in the vk, so nothing byte-matches it directly; the full-chain open covers it transitively |
+| `gpu_pre_gkr_diag.txt`, `gpu_post_grind_diag.txt`, `gpu_post_gkr_diag.txt` | LogUp-GKR | Challenger checkpoints (one cloned squeeze each); seal the transcript on either side of the Stage |
 | `gpu_gkr_state.txt` | LogUp-GKR | Grind witness, alpha, beta seeds, output MLEs, z1 |
 | `gpu_first_layer.txt` | LogUp-GKR | Input-layer buffer (the one round `gkr_sumcheck_rounds.txt` does not log) |
 | `gkr_sumcheck_rounds.txt` | LogUp-GKR | Per-layer lambda + claim, output to input |
@@ -95,9 +94,9 @@ Per-file map (one rsp shard directory):
 | `phase3_lambda.txt` | Zerocheck | Chip-RLC lambda |
 | `phase3_chip_opened_values_full.txt` | Zerocheck | Per-chip main/prep opened values at the sumcheck point |
 | `gpu_z_row.txt` | Zerocheck | The sumcheck point, reversed (SP1's jagged row point) |
-| `gpu_univariate.txt`, `gpu_sumcheck_finalize.txt` | cross-stage | One line/block per per-variable sumcheck round across all Stages (round polys + sampled challenge; finalize diagnostics). Neither logs a Stage's round 0 |
-| `phase4_column_claims.txt`, `phase4_sumcheck_claim.txt`, `phase4_z_col.txt` | Jagged evaluation | Column claims, reduced claim, column point |
-| `gpu_evaluation_proof.json` | Jagged evaluation | The serialized evaluation proof (jagged eval + stacked BaseFold PCS) |
+| `gpu_univariate.txt`, `gpu_sumcheck_finalize.txt` | all three Stages | One line/block per per-variable sumcheck round across all Stages (round polys + sampled challenge; finalize diagnostics). Neither logs a Stage's round 0 |
+| `phase4_column_claims.txt`, `phase4_sumcheck_claim.txt`, `phase4_z_col.txt` | Jagged opening | Column claims, reduced claim, column point |
+| `gpu_evaluation_proof.json` | Jagged opening | The serialized evaluation proof (jagged eval + stacked BaseFold PCS) |
 
 Files not listed (ad-hoc `gpu_nrv*_*.bin` buffers) are point-in-time debug
 captures with no consumer here.
