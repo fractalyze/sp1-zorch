@@ -502,7 +502,7 @@ def prove_logup_gkr(
     pow_witness: Array | None = None,
 ) -> tuple[Transcript, LogupGkrProof]:
     """Run the LogUp-GKR stage on a transcript positioned after the shard
-    preamble — the single source for the stage (``LogupGkrStage``:
+    preamble — the single source for the stage (``LogupGkrProver``:
     host-side grind, then class-keyed inner zones).
 
     The one prove path is the shard-invariant class contract:

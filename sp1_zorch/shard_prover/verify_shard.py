@@ -55,7 +55,7 @@ from zorch.utils.bits import log2_ceil_usize
 
 
 class LogupGkrVerifier(VerifierStage[ShardClaim, GkrOutputClaim, LogupGkrProof]):
-    """Stage-2 dual of ``LogupGkrStage``: verifies the LogUp-GKR proof via
+    """Dual of ``LogupGkrProver``: verifies the LogUp-GKR proof via
     ``verify_logup_gkr`` and writes the derived evaluation point plus the
     proof's leaf-checked chip openings as its reduced claim — the same seams the
     prover role reduces to for the zerocheck stage."""

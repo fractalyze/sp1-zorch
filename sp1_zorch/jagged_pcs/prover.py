@@ -132,7 +132,7 @@ class JaggedPcsProver(
     commit is the scheme's other half, and ``JaggedCommitData`` is what it
     hands forward.
 
-    Eager orchestration over shard-invariant jitted zones (the LogupGkrStage
+    Eager orchestration over shard-invariant jitted zones (the LogupGkrProver
     pattern, sp1-zorch#274): the prologue folds per-shard heights into traced
     array values and pads the combined dense to its power-of-two tier, so the
     eval zone's compile keys on the layout class alone; the stacked open runs
