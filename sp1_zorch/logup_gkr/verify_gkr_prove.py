@@ -34,9 +34,9 @@ from absl import app, flags
 
 from sp1_zorch.logup_gkr.circuit import GkrCapClass, build_gkr_chips
 from sp1_zorch.logup_gkr.head import (
-    GrindRound,
-    HeadChallengesRound,
-    OutputBindRound,
+    absorb_grind,
+    bind_circuit_output,
+    sample_head_challenges,
 )
 from sp1_zorch.logup_gkr.prover import LogupGkrProof, num_beta_values
 from sp1_zorch.logup_gkr.public_values import eval_public_values
@@ -87,11 +87,11 @@ def _replay_challenges_to_z1(
     which challenge first diverged when a later anchor mismatches. Runs
     after the prove since the z1 leg absorbs the circuit output."""
     # pow_bits=0: advance the recorded witness's stream without re-judging it.
-    _, transcript, _ = GrindRound(proof.pow_witness)(None, transcript)
+    transcript = absorb_grind(transcript, proof.pow_witness)
     ok = check_match(
         "post_grind_diag", clone_diag(transcript), int(state["witness_diag"])
     )
-    _, transcript, head = HeadChallengesRound(num_betas)(None, transcript)
+    transcript, head = sample_head_challenges(transcript, num_betas)
     ok &= check_match("alpha", head.alpha, _parse_ef_list(state["alpha"])[0])
     for i in range(head.beta_seeds.shape[0]):
         ok &= check_match(
@@ -99,7 +99,7 @@ def _replay_challenges_to_z1(
             head.beta_seeds[i],
             _parse_ef_list(state[f"beta_seed[{i}]"])[0],
         )
-    _, transcript, z1 = OutputBindRound(proof.circuit_output)(None, transcript)
+    transcript, (_, _, z1) = bind_circuit_output(transcript, proof.circuit_output)
     z1_keys = sum(1 for k in state if k.startswith("z1["))
     ok &= check_match("z1 count", z1.shape[0], z1_keys)
     for i in range(min(z1.shape[0], z1_keys)):
@@ -137,8 +137,8 @@ def _check_public_values_leg(
     circuit's cumulative sum ``sum(num/den)`` cancels the interaction digest.
     A from-scratch re-prove of an unbalanced witness changes that sum and
     fails the equality; a valid shard balances exactly."""
-    _, transcript, _ = GrindRound(proof.pow_witness)(None, preamble)
-    _, transcript, head = HeadChallengesRound(num_betas)(None, transcript)
+    transcript = absorb_grind(preamble, proof.pow_witness)
+    transcript, head = sample_head_challenges(transcript, num_betas)
     public_values = shard.main_trace_data.public_values
     accumulator, digest = eval_public_values(
         public_values, head.pv_challenge, head.alpha, head.betas

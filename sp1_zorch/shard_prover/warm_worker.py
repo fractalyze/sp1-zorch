@@ -98,21 +98,23 @@ def _drain_compiles() -> int:
 frx.jit = _compile_only_jit
 
 from sp1_zorch.shard_prover import verify_prove_shard as V  # noqa: E402
-from sp1_zorch.logup_gkr import head as _head  # noqa: E402
+from sp1_zorch.logup_gkr import prover as _gkr_prover  # noqa: E402
 
 # Bypass value-dependent HOST checks that zero'd compile-only outputs can't
 # satisfy — they gate correctness, not compilation.
 V.check_match = lambda *a, **k: True
 
 
-def _grind_no_pow(self: Any, carry: Any, transcript: Any) -> tuple[Any, Any, Any]:
-    transcript, _ = transcript.check_witness(self._pow_bits, self._witness)
-    return carry, transcript, self._witness
+def _grind_no_pow(transcript: Any, pow_witness: Any, *, pow_bits: int = 0) -> Any:
+    transcript, _ = transcript.check_witness(pow_bits, pow_witness)
+    return transcript
 
 
-# Monkeypatched, not subclassed: the round is constructed deep inside the
-# prover, so there is no seam to inject a subclass through.
-_head.GrindRound.__call__ = _grind_no_pow  # type: ignore[method-assign]
+# Rebinds the name in the module that calls it, the same way `check_match` is
+# rebound above: the call sits deep inside the prover with no seam to inject
+# through, and `from ... import absorb_grind` resolves it as a module global
+# at call time.
+_gkr_prover.absorb_grind = _grind_no_pow
 
 
 if __name__ == "__main__":

@@ -17,9 +17,9 @@ from zk_dtypes import koalabearx4_mont as EF
 
 from sp1_zorch.logup_gkr.head import (
     EF_LIMBS,
-    GrindRound,
-    HeadChallengesRound,
-    OutputBindRound,
+    absorb_grind,
+    bind_circuit_output,
+    sample_head_challenges,
 )
 from zorch.logup_gkr.circuit import LogUpGkrOutput
 from zorch.poly.eq import expand_eq_to_hypercube
@@ -47,9 +47,10 @@ class HeadStreamTest(absltest.TestCase):
         num_betas = 3
 
         transcript = cheap_transcript(F)
-        _, transcript, witness_msg = GrindRound(witness)(None, transcript)
-        _, transcript, head = HeadChallengesRound(num_betas)(None, transcript)
-        carry, transcript, z1_msg = OutputBindRound(output)(None, transcript)
+        transcript = absorb_grind(transcript, witness)
+        transcript, head = sample_head_challenges(transcript, num_betas)
+        transcript, carry = bind_circuit_output(transcript, output)
+        z1_msg = carry[2]
 
         raw = cheap_transcript(F)
         raw = raw.observe(witness)
@@ -71,7 +72,6 @@ class HeadStreamTest(absltest.TestCase):
             coords.append(c)
         z1 = fnp.stack(coords)
 
-        self.assertTrue(bool(fnp.all(witness_msg == witness)))
         self.assertTrue(bool(fnp.all(head.alpha == alpha)))
         self.assertTrue(bool(fnp.all(head.beta_seeds == fnp.stack(seeds))))
         self.assertTrue(
@@ -96,7 +96,7 @@ class HeadStreamTest(absltest.TestCase):
 
     def test_single_beta_has_no_seeds_and_unit_expansion(self) -> None:
         transcript = cheap_transcript(F)
-        _, _, head = HeadChallengesRound(1)(None, transcript)
+        _, head = sample_head_challenges(transcript, 1)
         self.assertEqual(head.beta_seeds.shape[0], 0)
         self.assertTrue(bool(fnp.all(head.betas == fnp.ones((1,), EF))))
 
@@ -119,10 +119,10 @@ class GrindGateTest(absltest.TestCase):
         self.assertIsNotNone(even)
 
         with self.assertRaises(ValueError):
-            GrindRound(odd, pow_bits=1)(None, cheap_transcript(F))
-        GrindRound(even, pow_bits=1)(None, cheap_transcript(F))
+            absorb_grind(cheap_transcript(F), odd, pow_bits=1)
+        absorb_grind(cheap_transcript(F), even, pow_bits=1)
         # pow_bits == 0 never gates — replay callers rely on it.
-        GrindRound(odd)(None, cheap_transcript(F))
+        absorb_grind(cheap_transcript(F), odd)
 
 
 if __name__ == "__main__":

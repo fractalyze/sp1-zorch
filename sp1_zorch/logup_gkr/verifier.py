@@ -34,8 +34,8 @@ from frx import Array
 from sp1_zorch.logup_gkr.circuit import GkrChip, generate_interaction_vals_batch
 from sp1_zorch.logup_gkr.head import (
     EF_CHALLENGES,
-    HeadChallengesRound,
-    OutputBindRound,
+    bind_circuit_output,
+    sample_head_challenges,
 )
 from sp1_zorch.logup_gkr.prover import (
     ChipEvaluation,
@@ -185,13 +185,13 @@ def verify_logup_gkr(
             f"circuit output must have {expected_output} entries, got "
             f"{proof.circuit_output.numerator.shape[0]}"
         )
-    # Grind gate. The prover's GrindRound judges host-side and raises; the
+    # Grind gate. The prover's `absorb_grind` judges host-side and raises; the
     # dual needs the verdict as a traced leg of ok, so it calls the same
     # one-definition predicate directly.
     transcript, ok_pow = transcript.check_witness(pow_bits, proof.pow_witness)
 
-    _, transcript, head = HeadChallengesRound(num_betas)(None, transcript)
-    carry, transcript, _ = OutputBindRound(proof.circuit_output)(None, transcript)
+    transcript, head = sample_head_challenges(transcript, num_betas)
+    transcript, carry = bind_circuit_output(transcript, proof.circuit_output)
 
     # SP1 rejects a zero output denominator before walking the layers: the
     # bus-balance fractions divide by it, and a zero would let an adversary

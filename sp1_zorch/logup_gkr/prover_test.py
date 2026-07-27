@@ -25,9 +25,9 @@ from zorch.pcs.jagged.region import JaggedRegion
 from sp1_zorch.logup_gkr.circuit import GkrCapClass, GkrChip
 from sp1_zorch.logup_gkr.head import (
     EF_CHALLENGES,
-    GrindRound,
-    HeadChallengesRound,
-    OutputBindRound,
+    absorb_grind,
+    bind_circuit_output,
+    sample_head_challenges,
 )
 from sp1_zorch.shard_prover.types import ShardWitness
 from sp1_zorch.logup_gkr.prover import (
@@ -211,9 +211,9 @@ class ProveLogupGkrTest(absltest.TestCase):
         proof = self._prove()
 
         transcript = cheap_transcript(F)
-        _, transcript, _ = GrindRound(proof.pow_witness)(None, transcript)
-        _, transcript, _ = HeadChallengesRound(3)(None, transcript)
-        carry, transcript, _ = OutputBindRound(proof.circuit_output)(None, transcript)
+        transcript = absorb_grind(transcript, proof.pow_witness)
+        transcript, _ = sample_head_challenges(transcript, 3)
+        transcript, carry = bind_circuit_output(transcript, proof.circuit_output)
 
         (num_eval, den_eval, point), _, ok = verify_rounds(
             [VerifierRound(EF_CHALLENGES) for _ in proof.round_proofs],

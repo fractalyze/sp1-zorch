@@ -43,9 +43,9 @@ from sp1_zorch.logup_gkr.circuit import (
 )
 from sp1_zorch.logup_gkr.head import (
     EF_CHALLENGES,
-    GrindRound,
-    HeadChallengesRound,
-    OutputBindRound,
+    absorb_grind,
+    bind_circuit_output,
+    sample_head_challenges,
 )
 from zorch.logup_gkr.circuit import (
     JaggedGkrLayer,
@@ -350,7 +350,7 @@ def resolve_witness_and_grind(
     # The head schedule (grind, challenges, output binding) runs as the
     # shared glue Rounds -- the byte-match harness and the shard benchmark
     # thread the same definitions, so the three cannot drift.
-    _, transcript, _ = GrindRound(pow_witness, pow_bits=pow_bits)(None, transcript)
+    transcript = absorb_grind(transcript, pow_witness, pow_bits=pow_bits)
     return transcript, pow_witness
 
 
@@ -447,7 +447,7 @@ def _prove_from_first_layer(
     )
     layers = build_jagged_pyramid(first, schedules)
     output = extract_sp1_outputs(layers[-1])
-    carry, transcript, _ = OutputBindRound(output)(None, transcript)
+    transcript, carry = bind_circuit_output(transcript, output)
 
     caps = RoundWidthCaps(
         elements=_row_cap(capacity),
@@ -486,7 +486,7 @@ def _head_zone(
     samples cost ~14 ms of warm host gaps between tiny permutes. Only the
     head fuses: swallowing the first-layer build too hands XLA every chip's
     intermediates at once and blows the wide-shard memory budget."""
-    _, transcript, head = HeadChallengesRound(num_betas)(None, transcript)
+    transcript, head = sample_head_challenges(transcript, num_betas)
     return transcript, head.alpha, head.betas
 
 
