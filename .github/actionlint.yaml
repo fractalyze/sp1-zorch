@@ -1,0 +1,9 @@
+# actionlint.yaml
+#
+# The CI matrix dispatches to self-hosted boxes by label; actionlint rejects any
+# label it does not know unless they are declared here.
+
+self-hosted-runner:
+  labels:
+    - cpu
+    - gpu

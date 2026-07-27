@@ -15,14 +15,14 @@ py_library(
     ],
     visibility = ["//visibility:public"],
     deps = [
-        "@zorch//zorch/pcs/jagged:region",
         "//sp1_zorch/logup_gkr",
         "@zorch//zorch:constraint_eval",
         "@zorch//zorch:round",
-        "@zorch//zorch:verify",
-        "@zorch//zorch/sumcheck",
         "@zorch//zorch:transcript",
-        "@zorch//zorch/poly:poly",
+        "@zorch//zorch:verify",
+        "@zorch//zorch/pcs/jagged:region",
+        "@zorch//zorch/poly",
+        "@zorch//zorch/sumcheck",
         requirement("frx"),
         requirement("rw_constraints"),
         requirement("zk_dtypes"),
@@ -72,8 +72,8 @@ py_test(
     deps = [
         ":zerocheck",
         "@zorch//zorch:transcript",
+        "@zorch//zorch/poly",
         "@zorch//zorch/testkit:transcript",
-        "@zorch//zorch/poly:poly",
         requirement("absl_py"),
         requirement("frx"),
         requirement("numpy"),
@@ -88,14 +88,14 @@ py_test(
     # compiles monolithically (MLIR greedy-rewriter ~O(N^2), fractalyze/xla#121)
     # and the test never finishes; on GPU it's fast, so this is GPU-only.
     size = "large",
-    tags = ["gpu_only"],
     srcs = ["jagged_byte_match_test.py"],
     data = glob(["testdata/gpu_fibonacci/**"]),
+    tags = ["gpu_only"],
     deps = [
         ":zerocheck",
-        "@zorch//zorch/pcs/jagged:region",
         "//sp1_zorch/shard_prover",
-        "@zorch//zorch/poly:poly",
+        "@zorch//zorch/pcs/jagged:region",
+        "@zorch//zorch/poly",
         requirement("absl_py"),
         requirement("frx"),
         requirement("frx_cuda12_plugin"),
@@ -117,8 +117,8 @@ py_binary(
         "//sp1_zorch/logup_gkr",
         "//sp1_zorch/shard_prover",
         "//sp1_zorch/shard_prover:replay",
-        "@zorch//zorch/poly:poly",
         "@zorch//zorch:transcript",
+        "@zorch//zorch/poly",
         requirement("absl_py"),
         requirement("frx"),
         requirement("frx_cuda12_plugin"),
@@ -151,6 +151,7 @@ py_binary(
         requirement("frx_cuda12_pjrt"),
     ],
 )
+
 py_test(
     name = "verify_zerocheck_test",
     size = "medium",
@@ -164,8 +165,8 @@ py_test(
         "//sp1_zorch/logup_gkr",
         "//sp1_zorch/shard_prover",
         "//sp1_zorch/shard_prover:replay",
-        "@zorch//zorch/poly:poly",
         "@zorch//zorch:transcript",
+        "@zorch//zorch/poly",
         requirement("absl_py"),
         requirement("frx"),
         requirement("numpy"),
@@ -179,7 +180,7 @@ py_test(
     srcs = ["_round_composite_test.py"],
     deps = [
         ":zerocheck",
-        "@zorch//zorch/poly:poly",
+        "@zorch//zorch/poly",
         "@zorch//zorch/sumcheck",
         requirement("absl_py"),
         requirement("frx"),
@@ -194,8 +195,8 @@ py_test(
     srcs = ["prover_test.py"],
     deps = [
         ":zerocheck",
-        "@zorch//zorch/pcs/jagged:region",
         "//sp1_zorch/logup_gkr",
+        "@zorch//zorch/pcs/jagged:region",
         "@zorch//zorch/testkit:transcript",
         requirement("absl_py"),
         requirement("frx"),
@@ -213,8 +214,8 @@ py_test(
     srcs = ["verifier_test.py"],
     deps = [
         ":zerocheck",
-        "@zorch//zorch/pcs/jagged:region",
         "//sp1_zorch/logup_gkr",
+        "@zorch//zorch/pcs/jagged:region",
         "@zorch//zorch/testkit:transcript",
         requirement("absl_py"),
         requirement("frx"),
