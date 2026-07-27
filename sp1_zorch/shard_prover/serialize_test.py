@@ -7,6 +7,7 @@ KoalaBear serializes as canonical u32, never Montgomery raw; extension
 fields flatten to their base-field limbs.
 """
 
+from typing import Any
 import struct
 
 import frx.numpy as fnp
@@ -294,7 +295,7 @@ class EncodeOpenedValuesTest(absltest.TestCase):
         self.assertEqual(out, expected)
 
 
-def _opening(base: int):
+def _opening(base: int) -> Any:
     """A 2-query, width-3, depth-2 vmapped SMCS batch opening whose values are
     distinct offsets of ``base`` so each wire chunk is recognizable."""
     rows = fnp.arange(base, base + 6, dtype=F).reshape(2, 3)
@@ -534,6 +535,7 @@ class ChipOpenedValuesTest(absltest.TestCase):
         self.assertLen(values, 2)
 
         alpha, lookup = values
+        assert alpha.preprocessed_evals is not None
         self.assertEqual(alpha.main_evals.tolist(), [31, 32])
         self.assertEqual(alpha.preprocessed_evals.tolist(), [33])
         self.assertEqual(alpha.degree, 3)
@@ -604,7 +606,7 @@ class EncodeShardProofTest(absltest.TestCase):
             encode_shard_proof(
                 # Only `public_values` is read here; the vk and chip metadata
                 # reach the wire through their own encoders.
-                ShardClaim(None, public_values, fnp.zeros(0, dtype=F)),
+                ShardClaim(None, public_values, fnp.zeros(0, dtype=F)),  # type: ignore[arg-type]
                 ShardWitness(main_region, prep_region),
                 ShardProof(commitment, gkr, zerocheck, jagged),
                 _evaluation(),

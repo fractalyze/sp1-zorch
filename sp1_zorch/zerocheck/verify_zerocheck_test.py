@@ -9,6 +9,7 @@ two pieces that run before/after that replay: the GKR-output cache roundtrip
 
 from __future__ import annotations
 
+from frx import Array
 import pathlib
 
 import frx.numpy as fnp
@@ -33,19 +34,19 @@ EF = koalabearx4_mont
 
 # Inlined zorch.testkit.random_field.rand_ext_field — its bazel target is not
 # visible outside the zorch workspace at the current pin.
-def _rand_ef(seed: int, shape) -> fnp.ndarray:
+def _rand_ef(seed: int, shape: tuple[int, ...]) -> fnp.ndarray:
     ints = np.random.default_rng(seed).integers(
         0, 1 << 30, size=tuple(shape) + (4,), dtype=np.int64
     )
     return fnp.array(ints, dtype=BF).view(EF).reshape(shape)
 
 
-def _u32(a) -> np.ndarray:
+def _u32(a: Array) -> np.ndarray:
     return to_u32(a).reshape(-1)
 
 
 class GkrCacheRoundtripTest(absltest.TestCase):
-    def test_cache_preserves_outputs_and_transcript_stream(self):
+    def test_cache_preserves_outputs_and_transcript_stream(self) -> None:
         # A transcript mid-stream: absorbed values and a consumed sample leave
         # non-trivial buffer positions, the state a naive cache would drop.
         t = fresh_transcript()
@@ -81,7 +82,7 @@ class GkrCacheRoundtripTest(absltest.TestCase):
 
 
 class ParsePhase3Test(absltest.TestCase):
-    def test_prep_and_main_blocks(self):
+    def test_prep_and_main_blocks(self) -> None:
         text = (
             "chip Add:\n"
             "  prep_len=0\n"
@@ -108,7 +109,7 @@ class ParsePhase3Test(absltest.TestCase):
         np.testing.assert_array_equal(_u32(parsed["Byte"]["prep"]), _ef(9, 13))
         np.testing.assert_array_equal(_u32(parsed["Byte"]["main"]), _ef(13, 17))
 
-    def test_unrecognized_line_fails_loudly(self):
+    def test_unrecognized_line_fails_loudly(self) -> None:
         path = pathlib.Path(self.create_tempdir().full_path) / "phase3.txt"
         path.write_text(
             "chip Add:\n"
@@ -120,7 +121,7 @@ class ParsePhase3Test(absltest.TestCase):
         with self.assertRaisesRegex(ValueError, "eq="):
             _parse_phase3(path)
 
-    def test_count_mismatch_fails_loudly(self):
+    def test_count_mismatch_fails_loudly(self) -> None:
         path = pathlib.Path(self.create_tempdir().full_path) / "phase3.txt"
         path.write_text(
             "chip Add:\n"

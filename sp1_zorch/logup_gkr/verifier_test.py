@@ -12,6 +12,9 @@ without it the tamper would only surface downstream.
 
 from __future__ import annotations
 
+from frx import Array
+from sp1_zorch.logup_gkr.prover import LogupGkrProof
+from zorch.transcript import Transcript
 from dataclasses import replace
 
 import frx
@@ -62,7 +65,9 @@ def _gkr_chips() -> list[GkrChip]:
     ]
 
 
-def _prove(*, pow_bits: int = 0, witness=None):
+def _prove(
+    *, pow_bits: int = 0, witness: Array | None = None
+) -> tuple[Transcript, LogupGkrProof]:
     region = JaggedRegion.from_chips(
         [_main(_CHIP_HEIGHTS["A"]), _main(_CHIP_HEIGHTS["B"], offset=100)],
         log_stacking_height=3,
@@ -81,7 +86,9 @@ def _prove(*, pow_bits: int = 0, witness=None):
     )
 
 
-def _verify(proof, *, pow_bits: int = 0):
+def _verify(
+    proof: LogupGkrProof, *, pow_bits: int = 0
+) -> tuple[Transcript, Array, Array]:
     # public_values=None: these tests pin the GKR-replay mechanics (layer
     # chain, leaf check, grind, point copy) on synthetic chips with no
     # public-values bus. The output-layer balance leg is exercised on a real
@@ -101,7 +108,7 @@ def _verify(proof, *, pow_bits: int = 0):
 
 class VerifyLogupGkrTest(absltest.TestCase):
     @classmethod
-    def setUpClass(cls):
+    def setUpClass(cls) -> None:
         cls.prover_transcript, cls.proof = _prove()
 
     def test_accepts_and_matches_the_prover_stream(self) -> None:

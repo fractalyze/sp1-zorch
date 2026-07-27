@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
 import frx.numpy as fnp
@@ -39,6 +40,7 @@ from sp1_zorch.logup_gkr.head import (
 )
 from sp1_zorch.logup_gkr.prover import LogupGkrProof, num_beta_values
 from sp1_zorch.logup_gkr.public_values import eval_public_values
+from sp1_zorch.shard_prover.types import ShardData
 from sp1_zorch.shard_prover.fixture_loader import (
     _parse_ef_list,
     _parse_kv_lines,
@@ -121,7 +123,7 @@ def _check_outputs(proof: LogupGkrProof, state: dict[str, str]) -> bool:
 
 def _check_public_values_leg(
     proof: LogupGkrProof,
-    shard,
+    shard: ShardData,
     preamble: Transcript,
     num_betas: int,
 ) -> bool:
@@ -179,7 +181,7 @@ def _check_rounds(proof: LogupGkrProof, shard_dir: Path) -> bool:
     return ok
 
 
-def main(argv) -> None:
+def main(argv: Sequence[str]) -> None:
     del argv
     shard_dir = Path(_SHARD_DIR.value)
     shard = load_fixture_shard(shard_dir)

@@ -19,6 +19,9 @@ driver and reference, seeding the claims from the columns' MLE openings at
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
+from typing import Any
+from frx import Array
 import re
 from dataclasses import dataclass
 from functools import partial
@@ -51,7 +54,7 @@ from sp1_zorch.zerocheck.jagged import (
 from sp1_zorch.zerocheck.coeffs import gkr_powers, rlc_coeffs
 
 
-def zero_extend(arr, width):
+def zero_extend(arr: Array, width: int) -> Array:
     """Oracle-local zero-extend of the last axis to `width` (zorch#412 removed
     `sumcheck.prover.zero_extend`; the engine keeps a private copy). Byte-equal
     to the old block: the padded rows are exact field zeros."""
@@ -88,20 +91,20 @@ def _eval_fn_empty(trace: fnp.ndarray, public_values: fnp.ndarray) -> fnp.ndarra
 _PV = fnp.zeros((8,), dtype=KB)
 
 
-def _rand(seed: int, shape) -> fnp.ndarray:
+def _rand(seed: int, shape: tuple[int, ...]) -> fnp.ndarray:
     ints = np.random.default_rng(seed).integers(1, 1 << 30, size=shape, dtype=np.int64)
     return fnp.array(ints, dtype=KB)
 
 
-def _rand_ef(seed: int, shape) -> fnp.ndarray:
+def _rand_ef(seed: int, shape: tuple[int, ...]) -> fnp.ndarray:
     return frx.lax.bitcast_convert_type(_rand(seed, (*shape, 4)), EF)
 
 
-def _u32(a) -> np.ndarray:
+def _u32(a: Array) -> np.ndarray:
     return np.asarray(frx.lax.bitcast_convert_type(a, fnp.uint32)).reshape(-1)
 
 
-def _assert_bytes_equal(got, want, label: str = "") -> None:
+def _assert_bytes_equal(got: Array, want: Array, label: str = "") -> None:
     """Montgomery-form ``u32`` comparison — the repo's byte-exact convention
     (no float tolerance applies to field elements)."""
     np.testing.assert_array_equal(_u32(got), _u32(want), err_msg=label)
@@ -129,14 +132,14 @@ class _ScriptedTranscript:
     pos: fnp.ndarray
 
     @classmethod
-    def replaying(cls, challenges) -> "_ScriptedTranscript":
+    def replaying(cls, challenges: Sequence[Array]) -> "_ScriptedTranscript":
         return cls(fnp.asarray(challenges), fnp.asarray(0, fnp.int32))
 
-    def observe(self, values):
+    def observe(self, values: Array) -> "_ScriptedTranscript":
         del values
         return self
 
-    def sample(self, n=1):
+    def sample(self, n: int = 1) -> Any:
         out = frx.lax.dynamic_slice_in_dim(self.challenges, self.pos, n, axis=0)
         return _ScriptedTranscript(self.challenges, self.pos + n), out
 
@@ -147,8 +150,15 @@ def _lift(v: fnp.ndarray, t: fnp.ndarray) -> fnp.ndarray:
 
 
 def _naive_round_polys(
-    eval_fns, traces, num_reals, alphas, lambdas, zeta, challenges, gkr_powers=None
-):
+    eval_fns: Sequence[Callable[..., Array]],
+    traces: Sequence[Array],
+    num_reals: Sequence[int],
+    alphas: Sequence[Array],
+    lambdas: Sequence[Array],
+    zeta: Array,
+    challenges: Sequence[Array],
+    gkr_powers: Sequence[Array],
+) -> list[Array]:
     n = int(zeta.shape[0])
     width = 1 << n
     one = fnp.ones((), KB)
@@ -185,7 +195,9 @@ def _naive_round_polys(
     return polys
 
 
-def _gkr_inputs(beta, traces, zeta):
+def _gkr_inputs(
+    beta: Array, traces: Sequence[Array], zeta: Array
+) -> tuple[list[Array], list[Array]]:
     """Per-chip ``beta**(j+1)`` weights and matching claims — each chip's
     ``sum_j beta**(j+1) * mle_j(zeta)`` over its zero-extended columns."""
     width = 1 << int(zeta.shape[0])
@@ -199,7 +211,7 @@ def _gkr_inputs(beta, traces, zeta):
 
 
 class JaggedZerocheckRoundTest(absltest.TestCase):
-    def _assert_claim_thread(self, msgs, claim) -> None:
+    def _assert_claim_thread(self, msgs: Any, claim: Array) -> None:
         """On the lambda-RLC'd coefficient polys: ``p_r(0) + p_r(1) == claim_r``
         and ``claim_{r+1} = p_r(challenge_r)``."""
         for r in range(msgs.round_poly.shape[0]):
@@ -212,11 +224,11 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
     def _check_against_reference(
         self,
         num_vars: int,
-        num_reals,
+        num_reals: Sequence[int],
         seed: int = 0,
         *,
         constraint_free: frozenset[int] = frozenset(),
-    ):
+    ) -> None:
         nchips = len(num_reals)
         traces = [_witness_trace(seed + i, nr) for i, nr in enumerate(num_reals)]
         eval_fns = [
@@ -330,7 +342,7 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
         want = round_coeffs_from_matrix(interp, y0, claim, (y2, y4))
         _assert_bytes_equal(got, want)
 
-    def _constraint_markers(self, num_vars: int, num_reals):
+    def _constraint_markers(self, num_vars: int, num_reals: Sequence[int]) -> Any:
         nchips = len(num_reals)
         traces = [_witness_trace(i, nr) for i, nr in enumerate(num_reals)]
         alphas = [rlc_coeffs(_rand(99 + i, ()), _K) for i in range(nchips)]
@@ -414,7 +426,7 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
         tail1 = self._constraint_markers(jagged._SHRINK_ROUNDS + 1, num_reals)
         self.assertEqual((len(tail3[0]), len(tail3[1])), (len(tail1[0]), len(tail1[1])))
 
-    def _tail_dot_count(self, num_vars: int, num_reals) -> int:
+    def _tail_dot_count(self, num_vars: int, num_reals: Sequence[int]) -> int:
         """``dot_general`` op count in the lowered prove. The GKR column term
         rides ``constraint_eval``'s ``column_weights``, so the per-chip dots
         are the column dot inside each t-point's composite decomposition
@@ -646,7 +658,9 @@ class TotalCapTracedTest(absltest.TestCase):
     _CLASS = TotalCapClass(area_cap=24)
     _ROW_BLOCK = 2 * eq_widths(_NUM_VARS, 0)[0]
 
-    def _summand(self, alphas, lambdas, beta):
+    def _summand(
+        self, alphas: Sequence[Array], lambdas: Sequence[Array], beta: Array
+    ) -> JaggedZerocheckSummand:
         return JaggedZerocheckSummand(
             eval_fns=[_eval_fn] * self._NCHIPS,
             alphas=alphas,
@@ -656,7 +670,7 @@ class TotalCapTracedTest(absltest.TestCase):
         )
 
     @staticmethod
-    def _pad_rows(trace, height):
+    def _pad_rows(trace: Array, height: int) -> Array:
         """Column-major ``[cols, nr]`` -> ``[cols, height]``, zeros past nr."""
         return fnp.pad(trace, ((0, 0), (0, height - trace.shape[1])))
 

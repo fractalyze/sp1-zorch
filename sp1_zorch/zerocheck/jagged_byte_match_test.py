@@ -23,6 +23,9 @@ prove_test.py`` and copy the directory under ``testdata/``.
 
 from __future__ import annotations
 
+from typing import Any
+from collections.abc import Sequence
+from frx import Array
 import json
 from dataclasses import dataclass
 from functools import partial
@@ -54,12 +57,12 @@ EF = koalabearx4_mont
 _FIXTURE = Path(__file__).parent / "testdata" / "gpu_fibonacci"
 
 
-def _from_u32(u32: np.ndarray, dtype) -> fnp.ndarray:
+def _from_u32(u32: np.ndarray, dtype: Any) -> fnp.ndarray:
     """Raw u32 Mont bitpatterns -> field array (EF collapses a trailing 4)."""
     return frx.lax.bitcast_convert_type(fnp.asarray(u32, dtype=fnp.uint32), dtype)
 
 
-def _load_npy(name: str, dtype) -> fnp.ndarray:
+def _load_npy(name: str, dtype: Any) -> fnp.ndarray:
     return _from_u32(np.load(_FIXTURE / "inputs" / name), dtype)
 
 
@@ -91,7 +94,7 @@ class _ScriptedTranscript:
     pos: fnp.ndarray
 
     @classmethod
-    def replaying(cls, challenges) -> "_ScriptedTranscript":
+    def replaying(cls, challenges: Sequence[Array]) -> "_ScriptedTranscript":
         # The engine squeezes base limbs and reassembles each EF challenge
         # (one extension element = degree base squeezes, the
         # ``sample_challenge`` rule — fractalyze/sp1-zorch#88), so the script
@@ -99,16 +102,16 @@ class _ScriptedTranscript:
         flat = frx.lax.bitcast_convert_type(fnp.asarray(challenges), BF).reshape(-1)
         return cls(flat, fnp.asarray(0, fnp.int32))
 
-    def observe(self, values):
+    def observe(self, values: Array) -> "_ScriptedTranscript":
         del values
         return self
 
-    def sample(self, n=1):
+    def sample(self, n: int = 1) -> Any:
         out = frx.lax.dynamic_slice_in_dim(self.challenges, self.pos, n, axis=0)
         return _ScriptedTranscript(self.challenges, self.pos + n), out
 
 
-def _u32(a) -> np.ndarray:
+def _u32(a: Array) -> np.ndarray:
     return np.asarray(frx.lax.bitcast_convert_type(a, fnp.uint32)).reshape(-1)
 
 
@@ -116,7 +119,7 @@ class JaggedZerocheckByteMatchTest(absltest.TestCase):
     """One shared replay of the fixture; each test byte-compares one output."""
 
     @classmethod
-    def setUpClass(cls):
+    def setUpClass(cls) -> None:
         meta = json.loads((_FIXTURE / "meta.json").read_text())
         chip_names = list(meta["chip_names"])
         num_reals = [int(meta["num_reals"][n]) for n in chip_names]
@@ -197,7 +200,7 @@ class JaggedZerocheckByteMatchTest(absltest.TestCase):
             claims=list(chip_claims),
         )
 
-    def test_round_polys_byte_match_reference(self):
+    def test_round_polys_byte_match_reference(self) -> None:
         expected = self.expected_round_polys.reshape(-1)
         self.assertGreater(int(expected.sum()), 0, "degenerate fixture")
         got = _u32(self.msgs.round_poly)
@@ -212,7 +215,7 @@ class JaggedZerocheckByteMatchTest(absltest.TestCase):
             f"(round ~{mismatch[0] // round_stride if mismatch.size else '-'})",
         )
 
-    def test_final_folded_openings_byte_match_reference(self):
+    def test_final_folded_openings_byte_match_reference(self) -> None:
         """Each chip's final per-column scalars, permuted back to the
         reference's ``[prep, main, eq_final]`` order (the driver folds
         ``[main | prep]`` traces)."""

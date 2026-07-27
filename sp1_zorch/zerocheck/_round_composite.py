@@ -10,6 +10,9 @@ decomposes inline, byte-identical to the plain reduce."""
 from __future__ import annotations
 
 import frx.numpy as fnp
+from frx import Array
+from typing import Any
+
 from zorch._composite import composite
 from zorch.poly.geq import VirtualGeq
 from zorch.poly.eq import eq_factor
@@ -27,21 +30,21 @@ _MARK_ZEROCHECK_ROUNDS = False
 
 
 def _decomp(
-    v0,
-    v2,
-    v4,
-    eq,
-    interp,
-    claim,
-    last,
-    eq_adj,
-    padded_row_adj,
-    nr_live,
-    vgeq_threshold,
-    vgeq_geq_coeff,
-    vgeq_eq_coeff,
-    **_attrs,
-):
+    v0: Array,
+    v2: Array,
+    v4: Array,
+    eq: Array,
+    interp: Array,
+    claim: Array,
+    last: Array,
+    eq_adj: Array,
+    padded_row_adj: Array,
+    nr_live: Array,
+    vgeq_threshold: Array,
+    vgeq_geq_coeff: Array,
+    vgeq_eq_coeff: Array,
+    **_attrs: Any,
+) -> Array:
     """Byte-exact fallback (the emitter replaces this) for a LIVE chip.
     Rebuilds VirtualGeq from its leaves; reproduces `_reduce_and_assemble`
     exactly."""
@@ -61,7 +64,7 @@ def _decomp(
     threshold_half = fnp.maximum((nr_live + 1) // 2 - 1, 0)
     msb_lagrange = eq_adj * eq[threshold_half]
 
-    def corr(y, t_val):
+    def corr(y: Array, t_val: Array) -> Array:
         eq_last = eq_factor(t_val, last)
         vg = vgeq.fix_last_variable(t_val).eval_at(threshold_half)
         val = eq_last * (y * eq_adj - padded_row_adj * vg * msb_lagrange)
@@ -73,8 +76,16 @@ def _decomp(
 
 
 def zerocheck_round_poly(
-    vals, eq, interp, claim, last, eq_adj, padded_row_adj, nr_live, vgeq
-):
+    vals: tuple[Array, Array, Array],
+    eq: Array,
+    interp: Array,
+    claim: Array,
+    last: Array,
+    eq_adj: Array,
+    padded_row_adj: Array,
+    nr_live: Array,
+    vgeq: VirtualGeq,
+) -> Array:
     """Emit the variant=sp1-zerocheck marker around one LIVE chip's round reduce
     (gated: see `_MARK_ZEROCHECK_ROUNDS` -- default runs the inline decomposition,
     byte-identical, until the zkx plugin ships the variant=sp1-zerocheck emitter)."""

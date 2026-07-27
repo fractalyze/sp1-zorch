@@ -1,6 +1,7 @@
 # Copyright 2026 The sp1-zorch Authors. SPDX-License-Identifier: Apache-2.0
 """Fixture loader: synthetic GPU-dump round-trips and rw-chip attachment."""
 
+from sp1_zorch.shard_prover.types import ShardData
 from pathlib import Path
 
 import frx.numpy as fnp
@@ -51,23 +52,23 @@ def _write_dump(root: Path, trace_subdir: str = "gpu_traces") -> dict[str, np.nd
 
 
 class CheckMatchTest(absltest.TestCase):
-    def test_equal_arrays_match(self):
+    def test_equal_arrays_match(self) -> None:
         self.assertTrue(check_match("eq", fnp.ones((2,), F), fnp.ones((2,), F)))
 
-    def test_shape_divergence_is_a_mismatch(self):
+    def test_shape_divergence_is_a_mismatch(self) -> None:
         # (1,) vs (1, 1) broadcast as all-equal; the harness must still
         # report a mismatch.
         self.assertFalse(check_match("shape", fnp.ones((1,), F), fnp.ones((1, 1), F)))
 
 
 class ReadDumpTest(absltest.TestCase):
-    def setUp(self):
+    def setUp(self) -> None:
         super().setUp()
         self.root = Path(self.create_tempdir().full_path)
         self.raws = _write_dump(self.root)
         self.dump = read_dump(self.root)
 
-    def test_main_trace_is_montgomery_u32_view(self):
+    def test_main_trace_is_montgomery_u32_view(self) -> None:
         add = self.dump.traces["Add"]
         self.assertEqual(add.shape, (4, 3))
         self.assertEqual(add.dtype, F)
@@ -75,23 +76,23 @@ class ReadDumpTest(absltest.TestCase):
         self.assertTrue(bool(fnp.all(add == expected)))
         self.assertEqual(self.dump.num_reals, {"Add": 4, "DivRem": 0})
 
-    def test_zero_height_chip_loads_as_empty(self):
+    def test_zero_height_chip_loads_as_empty(self) -> None:
         self.assertEqual(self.dump.traces["DivRem"].shape, (0, 5))
         self.assertEqual(self.dump.traces["DivRem"].dtype, F)
 
-    def test_preprocessed_trace_loaded(self):
+    def test_preprocessed_trace_loaded(self) -> None:
         prog = self.dump.preprocessed["Program"]
         self.assertEqual(prog.shape, (2, 4))
         expected = fnp.array(self.raws["prep/Program"].reshape(2, 4)).view(F)
         self.assertTrue(bool(fnp.all(prog == expected)))
 
-    def test_public_values(self):
+    def test_public_values(self) -> None:
         pv = self.dump.public_values
         self.assertEqual(pv.shape, (7,))
         expected = fnp.array(self.raws["public_values"]).view(F)
         self.assertTrue(bool(fnp.all(pv == expected)))
 
-    def test_vk_canonical_ints(self):
+    def test_vk_canonical_ints(self) -> None:
         vk = self.dump.vk
         self.assertTrue(
             bool(
@@ -106,13 +107,13 @@ class ReadDumpTest(absltest.TestCase):
         self.assertEqual(vk.cum_sum_y.shape, (7,))
         self.assertEqual(vk.enable_untrusted, 0)
 
-    def test_autodetects_trace_subdir(self):
+    def test_autodetects_trace_subdir(self) -> None:
         alt = Path(self.create_tempdir().full_path)
         _write_dump(alt, trace_subdir="traces")
         dump = read_dump(alt)
         self.assertIn("Add", dump.traces)
 
-    def test_tolerates_whitespace_and_blank_lines(self):
+    def test_tolerates_whitespace_and_blank_lines(self) -> None:
         """Whitespace/blank-line tolerance — but malformed non-empty lines
         must still fail loudly so dump-format drift surfaces."""
         alt = Path(self.create_tempdir().full_path)
@@ -128,7 +129,7 @@ class ReadDumpTest(absltest.TestCase):
         )
         self.assertEqual(dump.vk.pc_start.shape, (3,))
 
-    def test_malformed_vk_line_fails_loudly(self):
+    def test_malformed_vk_line_fails_loudly(self) -> None:
         alt = Path(self.create_tempdir().full_path)
         _write_dump(alt)
         (alt / "gpu_vk.txt").write_text(_VK_TEXT + "not a key value line\n")
@@ -140,7 +141,7 @@ class LoadFixtureShardTest(absltest.TestCase):
     """Chips with a manifest-matching width get rw constraints; the rest
     fall back to constraint-less stubs so the shard keeps its chip set."""
 
-    def _shard_with_add_width(self, width: int):
+    def _shard_with_add_width(self, width: int) -> ShardData:
         root = Path(self.create_tempdir().full_path)
         trace_dir = root / "gpu_traces"
         trace_dir.mkdir(parents=True)
@@ -150,28 +151,28 @@ class LoadFixtureShardTest(absltest.TestCase):
         (root / "gpu_vk.txt").write_text(_VK_TEXT)
         return load_fixture_shard(root)
 
-    def test_matching_width_attaches_rw_constraints(self):
+    def test_matching_width_attaches_rw_constraints(self) -> None:
         manifest_width = load_sp1_chips(chip_names=["add"])["add"].num_cols
         shard = self._shard_with_add_width(manifest_width)
         add = shard.main_trace_data.chips["Add"]
         self.assertNotEmpty(add.constraint_names)
         self.assertEqual(add.num_cols, manifest_width)
 
-    def test_width_mismatch_falls_back_to_stub(self):
+    def test_width_mismatch_falls_back_to_stub(self) -> None:
         manifest_width = load_sp1_chips(chip_names=["add"])["add"].num_cols
         shard = self._shard_with_add_width(manifest_width + 1)
         add = shard.main_trace_data.chips["Add"]
         self.assertEmpty(add.constraint_names)
         self.assertEqual(add.num_cols, manifest_width + 1)
 
-    def test_unknown_chip_falls_back_to_stub(self):
+    def test_unknown_chip_falls_back_to_stub(self) -> None:
         manifest_width = load_sp1_chips(chip_names=["add"])["add"].num_cols
         shard = self._shard_with_add_width(manifest_width)
         zzz = shard.main_trace_data.chips["Zzz"]
         self.assertEmpty(zzz.constraint_names)
         self.assertEqual(zzz.num_cols, 4)
 
-    def test_shard_carries_vk_prep_and_ordered_traces(self):
+    def test_shard_carries_vk_prep_and_ordered_traces(self) -> None:
         manifest_width = load_sp1_chips(chip_names=["add"])["add"].num_cols
         shard = self._shard_with_add_width(manifest_width)
         self.assertEqual(shard.vk.enable_untrusted, 0)

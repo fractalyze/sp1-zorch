@@ -34,6 +34,7 @@ Exits non-zero on any gating mismatch.
 from __future__ import annotations
 
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
 import json
@@ -60,7 +61,11 @@ from sp1_zorch.shard_prover.replay import (
     shard_regions,
     to_u32,
 )
+from sp1_zorch.logup_gkr.prover import ChipEvaluation
 from sp1_zorch.shard_prover.prove_shard import ZerocheckProver
+from sp1_zorch.shard_prover.types import ShardData
+from zorch.pcs.jagged.region import JaggedRegion
+from zorch.transcript import Transcript
 from sp1_zorch.zerocheck.jagged import TotalCapClass, pack_flat_arrival
 from sp1_zorch.zerocheck.prover import (
     ZerocheckProof,
@@ -93,7 +98,12 @@ _ZC_CLASS_JSON = flags.DEFINE_string(
 )
 
 
-def _replay_gkr(shard, shard_dir: Path, main_region, prep_region):
+def _replay_gkr(
+    shard: ShardData,
+    shard_dir: Path,
+    main_region: JaggedRegion,
+    prep_region: JaggedRegion | None,
+) -> tuple[Array, dict[str, ChipEvaluation], Transcript]:
     """The full GKR leg of the pipeline, sealed against the dump's post-GKR
     diag before its outputs are trusted as zerocheck inputs."""
     transcript, proof = replay_gkr(
@@ -150,7 +160,9 @@ def _parse_phase3(path: Path) -> dict[str, dict[str, Array]]:
     return chips
 
 
-def _check_opened_values(zc: ZerocheckProof, main_region, shard_dir: Path) -> bool:
+def _check_opened_values(
+    zc: ZerocheckProof, main_region: JaggedRegion, shard_dir: Path
+) -> bool:
     """Each chip's final per-column openings against the dump, main and prep
     separately (the driver folds ``[main | prep]`` traces; the dump labels
     the two ranges)."""
@@ -218,7 +230,7 @@ def _print_mem(label: str) -> None:
     )
 
 
-def main(argv) -> None:
+def main(argv: Sequence[str]) -> None:
     del argv
     shard_dir = Path(_SHARD_DIR.value)
     shard = load_fixture_shard(shard_dir)

@@ -23,7 +23,7 @@ from typing import Mapping, Sequence
 import frx
 import frx.numpy as fnp
 from frx import Array, lax
-from rw_constraints import Chip, Interaction
+from rw_constraints import Chip, Interaction, InteractionInfo, VirtualPairCol
 
 from zorch.pcs.jagged.region import JaggedRegion
 from zorch.logup_gkr.circuit import JaggedGkrLayer, _gather_pad
@@ -38,7 +38,7 @@ class GkrChip:
     interactions: tuple[Interaction, ...]
 
 
-def _by_sp1_index(info) -> int:
+def _by_sp1_index(info: InteractionInfo) -> int:
     return info.sp1_index if info.sp1_index is not None else 0
 
 
@@ -109,7 +109,7 @@ def sp1_col_h(real_h: int) -> int:
 
 
 @partial(frx.jit, static_argnames=("h", "w"))
-def _chip_view_jit(dense: Array, start, *, h: int, w: int) -> Array:
+def _chip_view_jit(dense: Array, start: Array, *, h: int, w: int) -> Array:
     # Static-arg key is just (h, w); start stays traced so cross-shard offset
     # variation doesn't blow the pjit cache.
     return lax.dynamic_slice(dense, (start,), (h * w,)).reshape(w, h).T
@@ -162,7 +162,8 @@ def _chip_mult_fingerprint(
         for vpc in (it.multiplicity, *it.values)
         for (_col, is_prep, _w) in vpc.column_weights
     )
-    total_w = main_w + (prep_trace.shape[1] if uses_prep else 0)
+    prep_w = prep_trace.shape[1] if prep_trace is not None else 0
+    total_w = main_w + (prep_w if uses_prep else 0)
 
     # Static tables over canonical ints. Duplicate columns within a form are
     # summed into one weight (field add is exact, so this matches the per-term
@@ -173,7 +174,7 @@ def _chip_mult_fingerprint(
     mult_sign: list[int] = []  # [num_inter] +1 send / -1 receive
     kinds: list[int] = []  # [num_inter]
 
-    def _add_form(vpc) -> int:
+    def _add_form(vpc: VirtualPairCol) -> int:
         row = [0] * total_w
         for col_idx, is_prep, weight in vpc.column_weights:
             if is_prep:
@@ -269,6 +270,8 @@ def _chip_first_layer(
     )
     prep_trace = None
     if prep_width:
+        # A nonzero prep width is only ever paired with a prep arrival.
+        assert prep_flat is not None
         prep_trace = (
             prep_flat[prep_start : prep_start + prep_width * prep_height]
             .reshape(prep_width, prep_height)
@@ -498,7 +501,11 @@ class GkrCapClass:
         caps = [c.slot_cap for c in classes]
         return cls(
             tuple(max(hs) for hs in zip(*(c.chip_heights for c in classes))),
-            None if any(c is None for c in caps) else max(caps),
+            (
+                None
+                if any(c is None for c in caps)
+                else max(c for c in caps if c is not None)
+            ),
         )
 
     def resolved_slot_cap(

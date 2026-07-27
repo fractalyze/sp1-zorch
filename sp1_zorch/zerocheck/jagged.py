@@ -79,7 +79,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from functools import partial
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import frx
 import frx.numpy as fnp
@@ -120,7 +120,7 @@ def _zero_extend(arr: Array, width: int) -> Array:
     return fnp.concatenate([arr, fnp.zeros((*arr.shape[:-1], pad), arr.dtype)], axis=-1)
 
 
-def _challenge_limbs(dtype) -> int:
+def _challenge_limbs(dtype: Any) -> int:
     """Transcript squeezes per challenge of ``dtype``: an extension field
     takes ``degree`` base squeezes reinterpreted (SP1's ``sample_ext_element``
     convention, fractalyze/sp1-zorch#88); the transcript's own field takes
@@ -268,7 +268,7 @@ class JaggedZerocheckSummand:
     def degree(self) -> int:
         return self.DEGREE
 
-    def extra_ts(self, dtype) -> tuple[Array, ...]:
+    def extra_ts(self, dtype: Any) -> tuple[Array, ...]:
         """SP1's materialized extra points ``{2, 4}`` — degree 4 makes
         d - 2 = 2 extras beyond s(0) (the Gruen seam's invariant); the
         {0, 2, 4} choice is SP1's ``sum_as_poly_in_last_variable``."""
@@ -391,7 +391,15 @@ if TYPE_CHECKING:
     _gruen_summand: type[GruenSummand] = JaggedZerocheckSummand
 
 
-def _summand_values(term, alpha, p0, diff, gkr_powers, nr_live, is_round0):
+def _summand_values(
+    term: Callable[[Array, Array, Array, Array], Array],
+    alpha: Array,
+    p0: Array,
+    diff: Array,
+    gkr_powers: Array,
+    nr_live: Array,
+    is_round0: Array,
+) -> tuple[Array, Array, Array]:
     """Per-t (t=0,2,4) per-row summand values (constraint+column via `term`;
     round-0 drops the constraint at t=0 by zeroing alpha). The marker's
     summand-value operand — `constraint_eval` stays external, eq-unweighted.
@@ -404,7 +412,7 @@ def _summand_values(term, alpha, p0, diff, gkr_powers, nr_live, is_round0):
     num_non_padded = (nr_live + 1) // 2
     t_traces = (p0, p0 + two * diff, p0 + four * diff)
 
-    def one(rows, *, mask_round0):
+    def one(rows: Array, *, mask_round0: bool) -> Array:
         a = fnp.where(is_round0, fnp.zeros_like(alpha), alpha) if mask_round0 else alpha
         # per-row, eq-unweighted; the carry is row-major, so no transpose
         return term(rows, a, gkr_powers, num_non_padded)
@@ -416,7 +424,7 @@ def _summand_values(term, alpha, p0, diff, gkr_powers, nr_live, is_round0):
     )
 
 
-def _zero_chip_poly(interp, claim, ef):
+def _zero_chip_poly(interp: Array, claim: Array, ef: Any) -> Array:
     """A statically-empty chip's round poly: nothing sums, so every computed
     point is zero and only the claim identity survives — the trivial
     claim-identity Gruen poly, no reduce or correction."""
@@ -425,8 +433,16 @@ def _zero_chip_poly(interp, claim, ef):
 
 
 def _reduce_and_assemble(
-    vals, eq, interp, claim, last, eq_adj, padded_row_adj, nr_live, vgeq
-):
+    vals: tuple[Array, Array, Array],
+    eq: Array,
+    interp: Array,
+    claim: Array,
+    last: Array,
+    eq_adj: Array,
+    padded_row_adj: Array,
+    nr_live: Array,
+    vgeq: VirtualGeq,
+) -> Array:
     """A live chip's round poly: eq-weighted reduce of the per-t summand values
     + geq zero-extension correction + Gruen degree-4 assembly. Byte-identical to
     chip_raw_evals+correct+round_coeffs_from_matrix; also the marker's
@@ -444,7 +460,7 @@ def _reduce_and_assemble(
     threshold_half = fnp.maximum((nr_live + 1) // 2 - 1, 0)
     msb_lagrange = eq_adj * eq[threshold_half]
 
-    def corr(y, t_val):
+    def corr(y: Array, t_val: Array) -> Array:
         eq_last = eq_factor(t_val, last)
         vg = vgeq.fix_last_variable(t_val).eval_at(threshold_half)
         val = eq_last * (y * eq_adj - padded_row_adj * vg * msb_lagrange)
@@ -600,7 +616,7 @@ def _prove_total_cap(
     transcript: Transcript,
     claims: Sequence[Array],
     adjs: Sequence[Array],
-    ef,
+    ef: Any,
     ef_limbs: int,
     num_vars: int,
     flat_arrival: Array | None = None,
@@ -716,7 +732,7 @@ def _prove_total_cap(
         live_rows: Array,
         src_off: Array,
         src_stride: Array,
-        fetch,
+        fetch: Callable[[Array], Array],
     ) -> tuple[Array, Array]:
         """Build the packed buffer of static UNFOLDED size ``area_out``
         directly as its stride-2 halves ``(p0h, diffh)`` — the unfolded buffer
@@ -748,7 +764,7 @@ def _prove_total_cap(
         base = src_off[chip] + col_of_seg[seg] * src_stride[chip]
         live = live_rows[chip]
 
-        def at(row):
+        def at(row: Array) -> Array:
             src = fnp.clip(base + row, 0, None)
             return fnp.where(row < live, fetch(src), zero)
 
@@ -839,7 +855,9 @@ def _prove_total_cap(
             axis=1,
         )
 
-    def make_round_step(w_in: int, cap_out: int, shrink_eq: bool):
+    def make_round_step(
+        w_in: int, cap_out: int, shrink_eq: bool
+    ) -> Callable[[Any, Any], tuple[Any, Any]]:
         """One round at static window height ``w_in``, re-packing the fold into
         a flat ``[cap_out]`` buffer. ``shrink_eq`` lets the eq table halve
         (the unrolled shrink prefix); the scan tail keeps every carry shape
@@ -856,7 +874,7 @@ def _prove_total_cap(
             # reduce is untouched.
             return _zero_extend(contracted, max(contracted.shape[0], 2))
 
-        def round_step(carry, xs):
+        def round_step(carry: Any, xs: Any) -> tuple[Any, Any]:
             p0h, diffh, vgeqs, chip_claims, eq_adj, heights, eq_buf, transcript = carry
             last, interp, is_round0 = xs
             # Each chip's element offset / per-column stride on the HALVED flat

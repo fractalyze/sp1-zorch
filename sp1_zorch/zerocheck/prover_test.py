@@ -16,6 +16,8 @@ Reference: whir-zorch ``sp1/shard_prover/prover.py``, its zerocheck (SP1
 
 from __future__ import annotations
 
+from typing import Any
+from frx import Array
 import frx
 import frx.numpy as fnp
 import numpy as np
@@ -57,7 +59,7 @@ class _WitnessChip:
     ``[main | prep]`` — the ``export_order_eval_fn`` rotation is what lines
     them up."""
 
-    def eval_constraints(self, trace, public_values):
+    def eval_constraints(self, trace: Array, public_values: Array) -> Array:
         a, b, c = trace[:, 2], trace[:, 3], trace[:, 4]
         one = fnp.ones((), trace.dtype)
         pv0 = fnp.concatenate([public_values[:1], fnp.zeros((3,), BF)]).view(EF)[0]
@@ -67,24 +69,24 @@ class _WitnessChip:
 class _LookupChip:
     """Constraint-less chip (SP1's Byte / Program / Range shape)."""
 
-    def eval_constraints(self, trace, public_values):
+    def eval_constraints(self, trace: Array, public_values: Array) -> Array:
         return fnp.zeros((trace.shape[0], 0), dtype=trace.dtype)
 
 
-def _rand_bf(seed: int, shape) -> fnp.ndarray:
+def _rand_bf(seed: int, shape: tuple[int, ...]) -> fnp.ndarray:
     ints = np.random.default_rng(seed).integers(1, 1 << 30, size=shape, dtype=np.int64)
     return fnp.array(ints, dtype=BF)
 
 
-def _rand_ef(seed: int, shape) -> fnp.ndarray:
+def _rand_ef(seed: int, shape: tuple[int, ...]) -> fnp.ndarray:
     return _rand_bf(seed, tuple(shape) + (4,)).view(EF).reshape(shape)
 
 
-def _u32(a) -> np.ndarray:
+def _u32(a: Array) -> np.ndarray:
     return np.asarray(frx.lax.bitcast_convert_type(a, fnp.uint32)).reshape(-1)
 
 
-def _assert_bytes_equal(got, want, label: str = "") -> None:
+def _assert_bytes_equal(got: Array, want: Array, label: str = "") -> None:
     np.testing.assert_array_equal(_u32(got), _u32(want), err_msg=label)
 
 
@@ -92,7 +94,7 @@ class ProveZerocheckTest(absltest.TestCase):
     """One stage run vs one hand replay; each test byte-compares one output."""
 
     @classmethod
-    def setUpClass(cls):
+    def setUpClass(cls) -> None:
         # alpha: 3 main cols x 5 real rows (col a == 1), prep 2 cols x 3 rows
         # (shorter than num_real — exercises the prep zero-pad). lookup: one
         # main col x 3 rows, no prep, no constraints.
@@ -115,7 +117,7 @@ class ProveZerocheckTest(absltest.TestCase):
             chip_names=("alpha",),
         )
 
-        chips = {"alpha": _WitnessChip(), "lookup": _LookupChip()}
+        chips: dict[str, Any] = {"alpha": _WitnessChip(), "lookup": _LookupChip()}
         chip_openings = {
             "alpha": ChipEvaluation(
                 main=_rand_ef(4, (3,)), preprocessed=_rand_ef(5, (2,))
@@ -210,24 +212,24 @@ class ProveZerocheckTest(absltest.TestCase):
         cls.zeta = zeta
         cls.want_claims = claims
 
-    def test_round_polys_byte_match_hand_replay(self):
+    def test_round_polys_byte_match_hand_replay(self) -> None:
         _assert_bytes_equal(self.proof.msgs.round_poly, self.want_msgs.round_poly)
 
-    def test_claimed_sum_is_lambda_horner_fold_of_chip_claims(self):
+    def test_claimed_sum_is_lambda_horner_fold_of_chip_claims(self) -> None:
         _assert_bytes_equal(
             self.proof.claimed_sum,
             self.want_claims[0] * self.lambda_ + self.want_claims[1],
         )
 
-    def test_finals_byte_match_hand_replay(self):
+    def test_finals_byte_match_hand_replay(self) -> None:
         self.assertEqual(len(self.proof.finals), len(self.want_finals))
         for i, (got, want) in enumerate(zip(self.proof.finals, self.want_finals)):
             _assert_bytes_equal(got, want, f"chip {i} finals")
 
-    def test_zeta_is_eval_point_tail(self):
+    def test_zeta_is_eval_point_tail(self) -> None:
         _assert_bytes_equal(self.proof.zeta, self.zeta)
 
-    def test_zeta_is_not_the_sumcheck_point(self):
+    def test_zeta_is_not_the_sumcheck_point(self) -> None:
         # verify_zerocheck checks SP1's gpu_z_row.txt -- which is zeta, the
         # eval_point row-tail -- against `proof.zeta`, NOT against the zerocheck
         # sumcheck point (`msgs.challenge`). Both index the row variables, so on
@@ -240,7 +242,7 @@ class ProveZerocheckTest(absltest.TestCase):
         self.assertEqual(zeta.shape, sumcheck_point.shape)
         self.assertFalse(np.array_equal(zeta, sumcheck_point))
 
-    def test_challenges_sampled_in_sp1_order(self):
+    def test_challenges_sampled_in_sp1_order(self) -> None:
         for name, got, want in (
             ("batching_challenge", self.proof.batching_challenge, self.alpha),
             (
@@ -252,12 +254,12 @@ class ProveZerocheckTest(absltest.TestCase):
         ):
             _assert_bytes_equal(got, want, name)
 
-    def test_transcript_streams_converge(self):
+    def test_transcript_streams_converge(self) -> None:
         _, got = sample_challenge(self.got_transcript, EF, 4)
         _, want = sample_challenge(self.want_transcript, EF, 4)
         _assert_bytes_equal(got, want)
 
-    def test_opened_values_are_the_finals_split(self):
+    def test_opened_values_are_the_finals_split(self) -> None:
         opened = self.proof.opened_values
         _assert_bytes_equal(opened["alpha"].main, self.want_finals[0][:3, 0])
         _assert_bytes_equal(opened["alpha"].preprocessed, self.want_finals[0][3:5, 0])

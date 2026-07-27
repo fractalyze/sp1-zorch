@@ -9,13 +9,15 @@ beta-count rule.
 """
 
 import hashlib
+from collections.abc import Sequence
 from dataclasses import fields
 from types import SimpleNamespace
 
 import frx.numpy as fnp
 import numpy as np
 from absl.testing import absltest
-from rw_constraints import Interaction, VirtualPairCol
+from frx import Array
+from rw_constraints import Chip, Interaction, VirtualPairCol
 from zk_dtypes import koalabear_mont as F
 from zk_dtypes import koalabearx4_mont as EF
 
@@ -30,6 +32,7 @@ from sp1_zorch.logup_gkr.head import (
 from sp1_zorch.logup_gkr.prover import (
     ChipEvaluation,
     ChipOpeningsRound,
+    LogupGkrProof,
     extract_sp1_outputs,
     num_beta_values,
     open_traces_capped,
@@ -53,7 +56,7 @@ def _interaction(mult_col: int, val_col: int, *, kind: int = 3) -> Interaction:
     )
 
 
-def _region(*chips, names) -> JaggedRegion:
+def _region(*chips: Array, names: Sequence[str]) -> JaggedRegion:
     return JaggedRegion.from_chips(
         list(chips),
         log_stacking_height=3,
@@ -70,7 +73,13 @@ def _main(height: int, width: int = 2, offset: int = 0) -> fnp.ndarray:
     )
 
 
-def _jagged(row_counts, n0, n1, d0, d1):
+def _jagged(
+    row_counts: Sequence[int],
+    n0: Sequence[int],
+    n1: Sequence[int],
+    d0: Sequence[int],
+    d1: Sequence[int],
+) -> JaggedGkrLayer:
     return JaggedGkrLayer(
         numerator_0=fnp.array(n0, F),
         numerator_1=fnp.array(n1, F),
@@ -81,7 +90,7 @@ def _jagged(row_counts, n0, n1, d0, d1):
 
 
 class NumBetaValuesTest(absltest.TestCase):
-    def _chip(self, name, widths):
+    def _chip(self, name: str, widths: Sequence[int]) -> Chip:
         chip = make_chip_stub(name, 2)
         chip._interaction_info = {
             f"f{i}": SimpleNamespace(kind="send", tuple_width=w)
@@ -145,7 +154,7 @@ _ROLLED_PYRAMID_GOLDEN = (
 )
 
 
-def _proof_digest(proof: object) -> str:
+def _proof_digest(proof: LogupGkrProof) -> str:
     """SHA-256 over the proof's field bytes in a fixed order -- a compact CPU
     regression guard. The full field-level oracle is the SP1 reference byte-match
     (``verify_gkr_prove``, a GPU runnable)."""
@@ -167,7 +176,7 @@ def _proof_digest(proof: object) -> str:
 
 
 class ProveLogupGkrTest(absltest.TestCase):
-    def _prove(self, *, witness=None):
+    def _prove(self, *, witness: Array | None = None) -> LogupGkrProof:
         main_a, main_b = _main(24), _main(4, offset=100)
         gkr_chips = [
             GkrChip("A", (_interaction(0, 1),)),
@@ -305,13 +314,13 @@ class CappedProveTest(absltest.TestCase):
         GkrChip("B", (_interaction(0, 1, kind=5),)),
     ]
 
-    def _shards(self):
+    def _shards(self) -> list[JaggedRegion]:
         return [
             _region(_main(24), _main(4, offset=100), names=("A", "B")),
             _region(_main(6, offset=7), _main(16, offset=50), names=("A", "B")),
         ]
 
-    def _class_of(self, shards):
+    def _class_of(self, shards: Sequence[JaggedRegion]) -> GkrCapClass:
         return GkrCapClass.union(
             *(
                 GkrCapClass.from_heights([int(h) for h in s.chip_heights])
@@ -319,7 +328,9 @@ class CappedProveTest(absltest.TestCase):
             )
         )
 
-    def _assert_proofs_byte_equal(self, got, want) -> None:
+    def _assert_proofs_byte_equal(
+        self, got: LogupGkrProof, want: LogupGkrProof
+    ) -> None:
         self.assertEqual(_proof_digest(got), _proof_digest(want))
         # The digest skips prep openings and the witness; compare directly.
         for name, ev in want.chip_openings.items():

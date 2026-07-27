@@ -24,20 +24,24 @@ accounting (fast iteration on chip-set / unit / schedule questions).
 from __future__ import annotations
 
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
 import frx.numpy as fnp
 from absl import app, flags
+from frx import Array
 from zk_dtypes import koalabear_mont as F
 from zk_dtypes import koalabearx4_mont as EF
 
 from zorch.pcs.jagged.region import JaggedRegion
 from sp1_zorch.logup_gkr.circuit import (
+    GkrChip,
     build_gkr_chips,
     generate_first_layer,
     sp1_col_h,
     sp1_next_row_counts,
 )
+from sp1_zorch.shard_prover.types import ShardData, Traces
 from sp1_zorch.shard_prover.fixture_loader import (
     _parse_ef_list,
     _parse_int_list,
@@ -62,7 +66,9 @@ _LOG_STACKING_HEIGHT = 21
 _MAX_LOG_ROW_COUNT = 22
 
 
-def _round_schedule_check(gkr_chips, traces, shard_dir: Path) -> bool:
+def _round_schedule_check(
+    gkr_chips: Sequence[GkrChip], traces: Traces, shard_dir: Path
+) -> bool:
     """Per-round layer heights in ``gkr_sumcheck_rounds.txt`` vs the schedule.
 
     SP1 bookkeeps the schedule in col_h units, where ``ceil(rc / 4) * 2``
@@ -103,7 +109,7 @@ def _round_schedule_check(gkr_chips, traces, shard_dir: Path) -> bool:
     return ok
 
 
-def _accounting(shard, ref: dict[str, str], shard_dir: Path) -> bool:
+def _accounting(shard: ShardData, ref: dict[str, str], shard_dir: Path) -> bool:
     """Static slot accounting vs the dump, in the dump's col_h units.
 
     Field-math-free, so chip-set / unit / schedule questions iterate in
@@ -121,7 +127,7 @@ def _accounting(shard, ref: dict[str, str], shard_dir: Path) -> bool:
     return ok
 
 
-def main(argv) -> None:
+def main(argv: Sequence[str]) -> None:
     del argv
     shard_dir = Path(_SHARD_DIR.value)
     shard = load_fixture_shard(shard_dir)
@@ -156,7 +162,7 @@ def main(argv) -> None:
         (shard_dir / "gpu_gkr_state.txt").read_text(), skip_unkeyed=True
     )
     alpha = _parse_ef_list(state["alpha"])[0]
-    seeds = []
+    seeds: list[Array] = []
     while f"beta_seed[{len(seeds)}]" in state:
         seeds.append(_parse_ef_list(state[f"beta_seed[{len(seeds)}]"]))
     betas = expand_eq_to_hypercube(fnp.concatenate(seeds), fnp.array(1, dtype=EF))

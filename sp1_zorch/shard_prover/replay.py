@@ -13,6 +13,7 @@ exists to prevent.
 from __future__ import annotations
 
 from pathlib import Path
+from collections.abc import Mapping
 from typing import Any
 
 import frx
@@ -135,7 +136,7 @@ def save_gkr_cache(
     live sponge state) as an npz. Shared by the zerocheck bench and
     ``verify_zerocheck`` so a cache seeded by either tool loads in the other."""
     st = transcript.state
-    data: dict[str, np.ndarray] = {
+    data: dict[str, Any] = {
         "eval_point": to_u32(eval_point),
         "chips": np.array(sorted(openings)),
         "t_input": to_u32(st.input_buffer),
@@ -246,7 +247,9 @@ def seed_gkr_outputs_rolled(
     # chips static via closure; regions/transcript/witness traced -- mirrors how
     # the rolled bench jits the stage, keeping the zorch.sumcheck composite
     # intact for the vendor emitter. Return arrays/pytrees, never the proof.
-    def _rolled(mr, pr, tr, w):
+    def _rolled(
+        mr: JaggedRegion, pr: JaggedRegion | None, tr: Transcript, w: Array
+    ) -> tuple[Transcript, Array, Mapping[str, Any]]:
         t, proof = prove_logup_gkr(
             gkr_chips,
             mr,

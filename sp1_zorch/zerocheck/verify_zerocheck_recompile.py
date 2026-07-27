@@ -31,11 +31,18 @@ import argparse
 import json
 import sys
 import time
+from collections.abc import Mapping
 from pathlib import Path
 
 import frx
 
+from frx import Array
+
+from sp1_zorch.logup_gkr.prover import ChipEvaluation
 from sp1_zorch.shard_prover.fixture_loader import load_fixture_shard
+from sp1_zorch.shard_prover.types import ShardData
+from zorch.pcs.jagged.region import JaggedRegion
+from zorch.transcript import Transcript
 from sp1_zorch.shard_prover.prove_shard import (
     GkrOutputClaim,
     ShardWitness,
@@ -52,7 +59,13 @@ from sp1_zorch.shard_prover.replay import (
 from sp1_zorch.zerocheck.jagged import TotalCapClass
 
 
-def _gkr_inputs(shard, shard_dir: Path, main_region, prep_region, cache_dir: Path):
+def _gkr_inputs(
+    shard: ShardData,
+    shard_dir: Path,
+    main_region: JaggedRegion,
+    prep_region: JaggedRegion | None,
+    cache_dir: Path,
+) -> tuple[Array, Mapping[str, ChipEvaluation], Transcript]:
     cache = cache_dir / f"gkr_cache_{shard_dir.name}.npz"
     if cache.exists():
         print(f"[{shard_dir.name}] loading GKR outputs from {cache}", flush=True)

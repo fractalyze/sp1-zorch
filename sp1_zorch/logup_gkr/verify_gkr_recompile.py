@@ -137,6 +137,8 @@ def main() -> int:
         gc.collect()
 
     final = _zone_sizes()
+    # The two-shard minimum checked above means the loop ran and set this.
+    assert after_first is not None
     new_compiles = {n: final[n] - after_first[n] for n in _ZONES}
     print(
         f"total shards: {len(shard_dirs)}, compiles added after shard 1: "

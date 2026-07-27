@@ -15,6 +15,7 @@ import functools
 import os
 import shutil
 import tempfile
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Optional
 
@@ -112,7 +113,7 @@ def rw_name_to_sp1(rw_name: str) -> str:
     return rw_name.capitalize()
 
 
-def rw_names_for_chips(sp1_names) -> list[str]:
+def rw_names_for_chips(sp1_names: Iterable[str]) -> list[str]:
     """Bulk :func:`sp1_name_to_rw`, order-preserving and de-duplicated."""
     return list(dict.fromkeys(sp1_name_to_rw(n) for n in sp1_names))
 

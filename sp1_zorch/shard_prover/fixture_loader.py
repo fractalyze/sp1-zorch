@@ -14,12 +14,13 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import frx.numpy as fnp
 import numpy as np
 import zk_dtypes
 from frx import Array
+from rw_constraints import Chip
 from zk_dtypes import koalabear_mont
 
 from sp1_zorch.shard_prover.chip_loader import (
@@ -89,7 +90,7 @@ def _parse_ef_list(value: str) -> Array:
     )
 
 
-def check_match(label: str, got, want) -> bool:
+def check_match(label: str, got: Any, want: Any) -> bool:
     """The byte-match runnables' OK/MISMATCH line: compare a value against
     its dump reference and print the verdict (got/want on mismatch)."""
     if isinstance(got, (int, list, tuple)):
@@ -181,7 +182,9 @@ def read_dump(fixture_dir: Path, trace_subdir: Optional[str] = None) -> DumpData
     )
 
 
-def resolve_chips(traces: dict[str, Array], preprocessed: dict[str, Array]):
+def resolve_chips(
+    traces: dict[str, Array], preprocessed: dict[str, Array]
+) -> dict[str, Chip]:
     """rw chip definitions for SP1-named trace matrices.
 
     A chip gets its rw constraints only when the manifest width agrees with

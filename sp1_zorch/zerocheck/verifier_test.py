@@ -15,6 +15,10 @@ openings tamper would only surface downstream).
 
 from __future__ import annotations
 
+from typing import Any
+from sp1_zorch.zerocheck.prover import ZerocheckProof
+from zorch.transcript import Transcript
+from frx import Array
 from dataclasses import replace
 
 import frx
@@ -51,7 +55,7 @@ class _WitnessChip:
     ``[main | prep]`` — the ``export_order_eval_fn`` rotation is what lines
     them up, on the prover and the dual alike."""
 
-    def eval_constraints(self, trace, public_values):
+    def eval_constraints(self, trace: Array, public_values: Array) -> Array:
         a, b, c = trace[:, 2], trace[:, 3], trace[:, 4]
         one = fnp.ones((), trace.dtype)
         pv0 = fnp.concatenate([public_values[:1], fnp.zeros((3,), BF)]).view(EF)[0]
@@ -61,30 +65,30 @@ class _WitnessChip:
 class _LookupChip:
     """Constraint-less chip (SP1's Byte / Program / Range shape)."""
 
-    def eval_constraints(self, trace, public_values):
+    def eval_constraints(self, trace: Array, public_values: Array) -> Array:
         return fnp.zeros((trace.shape[0], 0), dtype=trace.dtype)
 
 
-def _rand_bf(seed: int, shape) -> fnp.ndarray:
+def _rand_bf(seed: int, shape: tuple[int, ...]) -> fnp.ndarray:
     ints = np.random.default_rng(seed).integers(1, 1 << 30, size=shape, dtype=np.int64)
     return fnp.array(ints, dtype=BF)
 
 
-def _rand_ef(seed: int, shape) -> fnp.ndarray:
+def _rand_ef(seed: int, shape: tuple[int, ...]) -> fnp.ndarray:
     return _rand_bf(seed, tuple(shape) + (4,)).view(EF).reshape(shape)
 
 
-def _u32(a) -> np.ndarray:
+def _u32(a: Array) -> np.ndarray:
     return np.asarray(frx.lax.bitcast_convert_type(a, fnp.uint32)).reshape(-1)
 
 
-def _assert_bytes_equal(got, want, label: str = "") -> None:
+def _assert_bytes_equal(got: Array, want: Array, label: str = "") -> None:
     np.testing.assert_array_equal(_u32(got), _u32(want), err_msg=label)
 
 
 class VerifyShardZerocheckTest(absltest.TestCase):
     @classmethod
-    def setUpClass(cls):
+    def setUpClass(cls) -> None:
         # alpha: 3 main cols x 5 real rows (col a == 1), prep 2 cols x 3 rows
         # (shorter than num_real — exercises the prep zero-pad). lookup: one
         # main col x 3 rows, no prep, no constraints.
@@ -139,7 +143,7 @@ class VerifyShardZerocheckTest(absltest.TestCase):
         )
 
     @staticmethod
-    def _pre_stage_transcript():
+    def _pre_stage_transcript() -> Transcript:
         """A sponge with prior absorbs, as the real pipeline's preamble + GKR
         stages leave it. A FRESH cheap sponge squeezes zero challenges, which
         degenerates the stage (beta = lambda = 0 weights every opened value
@@ -149,7 +153,7 @@ class VerifyShardZerocheckTest(absltest.TestCase):
         return cheap_transcript(BF).observe(_rand_bf(9, (4,)))
 
     @classmethod
-    def _verify(cls, proof):
+    def _verify(cls, proof: ZerocheckProof) -> Any:
         return verify_shard_zerocheck(
             cls.chips,
             _CHIP_NAMES,

@@ -8,6 +8,7 @@ sponge in the same state. The value-level anchor against SP1 itself is the
 rsp byte-match (``verify_gkr_prove``).
 """
 
+from collections.abc import Sequence
 import frx.numpy as fnp
 from absl.testing import absltest
 from frx import lax
@@ -28,7 +29,7 @@ from zorch.transcript import sample_challenge
 from zorch.utils.bits import log2_ceil_usize
 
 
-def _ef(values) -> fnp.ndarray:
+def _ef(values: Sequence[Sequence[int]]) -> fnp.ndarray:
     """EF elements from per-limb u32 rows."""
     return lax.bitcast_convert_type(fnp.array(values, fnp.uint32), EF)
 

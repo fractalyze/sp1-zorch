@@ -46,3 +46,27 @@ version = { attr = "sp1_zorch.__version__" }
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["sp1_zorch*"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["sp1_zorch"]
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+
+# Untyped or statically unresolvable third parties. zorch is fully annotated
+# but ships no py.typed, and frx / zk_dtypes / rw-constraints ship none either;
+# jax here is the ZKX fork, whose own .pyi stubs do not parse under mypy, so
+# `jax.Array` collapses to Any. absl stubs only part of its surface.
+# disallow_untyped_defs still enforces our own annotations regardless.
+[[tool.mypy.overrides]]
+module = [
+    "absl.*",
+    "frx.*",
+    "jax.*",
+    "rw_constraints.*",
+    "zk_dtypes.*",
+    "zorch.*",
+]
+ignore_missing_imports = true
