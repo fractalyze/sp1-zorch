@@ -206,25 +206,33 @@ an ELF + stdin) the tool uses `CpuShardProver`: useful as the injection-validity
 
 ### Per-phase comparison (shard17)
 
-| Phase | SP1 GPU | sp1-zorch GPU | ratio | golden |
-|---|---|---|---|---|
-| trace commit | 16.6 ms | 18.2 ms | 1.10× | byte-match |
-| LogUp-GKR | 19.9 ms | 28.7 ms | 1.44× | byte-match |
-| zerocheck | 156.9 ms | **74.8 ms** | **0.48×** | byte-match |
-| jagged eval (PCS open) | 41.1 ms | **40.8 ms** | **0.99×** | byte-match |
-| full chain | 234.8 ms | **167.8 ms** | **0.71×** | `sp1_verify_shard` ACCEPTED |
+| Phase | SP1 GPU | sp1-zorch GPU | spread | ratio | golden |
+|---|---|---|---|---|---|
+| trace commit | 16.6 ms | 18.5 ms | 18.4–18.7 | 1.11× | byte-match |
+| LogUp-GKR | 19.9 ms | 32.9 ms | 30.0–37.1 | 1.65× | byte-match |
+| zerocheck | 156.9 ms | **53.3 ms** | 51.8–56.1 | **0.34×** | byte-match |
+| jagged eval (PCS open) | 41.1 ms | **41.0 ms** | 39.7–53.2 | **1.00×** | byte-match |
+| full chain | 234.8 ms | **158.2 ms** | 148.4–180.5 | **0.67×** | `sp1_verify_shard` ACCEPTED |
 
-The two wall-clock columns are warm, byte-matched runs of the two tools above:
-the sp1-zorch column is the converged warm steady state (passes 3–5 of the
-`--runs=5` command, on an idle RTX 5090, published `frx` wheels — no locally
-built plugin — with the shard-invariant class routes on GKR, zerocheck, and
-the jagged open; all four phases byte-match and `--ffi_verify` reports
-`sp1_verify_shard: ACCEPTED`); the SP1 column is the SP1 GPU NoExec run.
-zerocheck (0.48×) runs at over twice SP1's speed — the jagged-packed shared
-round buffer with the shrink prefix and in-kernel folds — the PCS open is at
-parity (0.99×; ~4 ms of its warm time is the class route's zone-split
-dispatch, the price of the shard-invariant compile), and the full chain lands
-at 0.71×, with LogUp-GKR (1.44×) the one remaining gap.
+The SP1 column is the SP1 GPU NoExec run. The sp1-zorch column is the median
+of the six converged warm passes — passes 3–5 of two separate `--runs=5`
+invocations — with the observed min–max beside it, on an RTX 5090, published
+`frx` wheels (no locally built plugin), shard-invariant class routes on GKR,
+zerocheck and the jagged open. Every phase byte-matches on every pass and
+`--ffi_verify` reports `sp1_verify_shard: ACCEPTED`.
+
+**Read the spread before quoting a ratio.** Two phases are stable to well
+under a millisecond across runs and two are not. Zerocheck is the solid result
+— roughly a third of SP1's time, reproduced across both runs with a 4 ms
+spread — earned by the jagged-packed shared round buffer with the shrink
+prefix and in-kernel folds. The PCS open sits at parity, and its one outlying
+53.2 ms pass is the first converged pass of a run, not a steady-state number.
+
+LogUp-GKR is the remaining gap and also the noisiest line: 30.0 ms and 37.1 ms
+both appear among converged passes, a 21% swing with nothing changed. Its
+eager host-dispatch orchestration is what varies, so a single pass is not
+evidence about it in either direction — take several, and treat the chain
+total (which inherits that variance) the same way.
 
 ### Measure shipped code
 
