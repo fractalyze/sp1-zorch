@@ -15,11 +15,7 @@ the statement on ``ShardClaim``, mirroring the prover's split.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
-from functools import partial
-from typing import TYPE_CHECKING
 
-import frx
 import frx.numpy as fnp
 from frx import Array
 from rw_constraints import Chip
@@ -31,7 +27,7 @@ from zorch.pcs.jagged.verifier import (
     verify_jagged_eval_msg,
 )
 from sp1_zorch.logup_gkr.circuit import GkrChip
-from sp1_zorch.logup_gkr.prover import ChipEvaluation, LogupGkrProof
+from sp1_zorch.logup_gkr.prover import LogupGkrProof
 from sp1_zorch.logup_gkr.verifier import verify_logup_gkr
 from sp1_zorch.shard_prover.prove_shard import (
     CommitmentRoots,
@@ -44,7 +40,7 @@ from sp1_zorch.shard_prover.prove_shard import (
     absorb_preamble,
     JaggedPcsProof,
 )
-from sp1_zorch.shard_prover.types import ChipShape, MachineVerifyingKey
+from sp1_zorch.shard_prover.types import ChipShape
 from sp1_zorch.zerocheck.prover import ZerocheckProof
 from sp1_zorch.zerocheck.verifier import verify_shard_zerocheck
 from zorch.coding.reed_solomon import BitReversedReedSolomon

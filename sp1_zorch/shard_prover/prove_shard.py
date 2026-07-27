@@ -14,7 +14,7 @@ statement on ``ShardClaim``, and the trace on ``ShardWitness``.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from functools import partial
 from typing import Any
 
@@ -55,13 +55,10 @@ from sp1_zorch.zerocheck.prover import (
 )
 from zorch.coding.reed_solomon import BitReversedReedSolomon
 from zorch.poly.eq import expand_eq_to_hypercube
-from zorch.round import ProverRound
 from zorch.stage import (
     ProveResult,
     ProverStage,
     TrivialClaim,
-    VerifierStage,
-    VerifyResult,
 )
 from zorch.transcript import GrindingTranscript, Transcript
 from zorch.utils.bits import log2_ceil_usize
@@ -844,5 +841,3 @@ class ShardProver(ProverStage[ShardClaim, ShardWitness, TrivialClaim, ShardProof
             ),
             opening.transcript,
         )
-
-

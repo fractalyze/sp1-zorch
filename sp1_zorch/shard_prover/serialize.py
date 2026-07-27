@@ -29,15 +29,13 @@ if TYPE_CHECKING:
     from zorch.pcs.jagged.prover import JaggedEvalMsg
 
     from zorch.pcs.jagged.open import Opening, StackedOpenProof
-    from sp1_zorch.logup_gkr.prover import LogupGkrProof
+    from zorch.pcs.jagged.region import JaggedRegion
     from sp1_zorch.shard_prover.prove_shard import (
-        JaggedPcsProof,
         ShardClaim,
         ShardProof,
         ShardWitness,
         TraceEvaluationClaim,
     )
-    from sp1_zorch.zerocheck.prover import ZerocheckProof
 
 
 def _u64(v: int) -> bytes:

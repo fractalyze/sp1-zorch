@@ -39,6 +39,18 @@ GPU-plugin gotcha (frx **silently falls back to CPU** without the cuda plugin
 deps), test `size`/`timeout` conventions, and the per-stage SP1 baseline live in
 [`docs/development.md`](docs/development.md).
 
+Two things that cost a session each:
+
+- **Never run a second bazel command in a worktree that has a long one in
+  flight.** Bazel's output base is a hash of the workspace path, so *different*
+  worktrees are safely concurrent — but the same one shares a server and the
+  second command interrupts the first. A `bazel run … --help` will kill a
+  running benchmark. If you truly need same-worktree concurrency, pass an
+  explicit `--output_base=…`.
+- **`bazel test //sp1_zorch/...` does not exercise `py_binary` targets.**
+  `verify_prove_shard` is one, so the suite goes green while the byte-match
+  harness is broken. After changing anything it constructs, run it.
+
 ## SP1 byte-match
 
 The commit/open/verify path byte-matches the SP1 reference prover. Reference

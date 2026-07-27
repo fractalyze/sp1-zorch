@@ -190,8 +190,8 @@ py_test(
     timeout = "eternal",
     srcs = ["verify_shard_test.py"],
     deps = [
-        ":shard_testkit",
         ":shard_prover",
+        ":shard_testkit",
         ":verify_shard",
         "@zorch//zorch/testkit:transcript",
         requirement("absl_py"),
