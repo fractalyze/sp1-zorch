@@ -11,7 +11,7 @@ assembly with the trace payload arriving by device handoff instead of
 ``np.fromfile``, so it never leaves the GPU between trace-gen and prove
 (fractalyze/sp1-zorch#200).
 
-Raw-Montgomery ``uint32`` is bit-identical to ``koalabear_mont``, so ingest
+Raw-Montgomery ``uint32`` is bit-identical to ``F``, so ingest
 is a dtype *view* on every array — never a conversion or copy, and never a
 device-to-host transfer.
 """
@@ -21,7 +21,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from frx import Array
-from zk_dtypes import koalabear_mont
+from zk_dtypes import koalabear_mont as F
 from zorch.pcs.jagged.region import JaggedRegion
 
 from sp1_zorch.shard_prover.chip_loader import rw_name_to_sp1
@@ -79,7 +79,7 @@ def regions_from_producer(
     traces: dict[str, Array] = {}
     reals: dict[str, int] = {}
     for sp1_name, rw_name in sorted((rw_name_to_sp1(n), n) for n in chips):
-        trace = chips[rw_name].view(koalabear_mont)
+        trace = chips[rw_name].view(F)
         num_real = int(num_reals[rw_name])
         if num_real != trace.shape[0]:
             raise ValueError(
@@ -94,7 +94,7 @@ def regions_from_producer(
         preprocessed_traces=prep,
         main_trace_data=MainTraceData(
             traces=Traces.from_arrays(traces, reals),
-            public_values=public_values.view(koalabear_mont),
+            public_values=public_values.view(F),
             chips=resolve_chips(traces, prep),
         ),
     )

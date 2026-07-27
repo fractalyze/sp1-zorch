@@ -19,7 +19,7 @@ import frx.numpy as fnp
 import numpy as np
 from frx import Array
 from rw_constraints import Interaction, VirtualPairCol
-from zk_dtypes import koalabear_mont as BF
+from zk_dtypes import koalabear_mont as F
 
 from zorch.hash.compression import Compression, CompressionParams
 from zorch.hash.poseidon2.poseidon2 import Poseidon2
@@ -54,7 +54,7 @@ _NUM_BETAS = 3
 
 def rand_bf(seed: int, shape: tuple[int, ...]) -> fnp.ndarray:
     ints = np.random.default_rng(seed).integers(1, 1 << 30, size=shape, dtype=np.int64)
-    return fnp.array(ints, dtype=BF)
+    return fnp.array(ints, dtype=F)
 
 
 class _WitnessChip:
@@ -95,7 +95,7 @@ def small_shard_fixture() -> ShardFixture:
         [
             fnp.concatenate(
                 [
-                    fnp.ones((CHIP_HEIGHT, 1), dtype=BF),
+                    fnp.ones((CHIP_HEIGHT, 1), dtype=F),
                     rand_bf(1, (CHIP_HEIGHT, 1)),
                 ],
                 axis=1,
@@ -161,7 +161,7 @@ def small_shard_fixture() -> ShardFixture:
 
     claim = ShardClaim(vk, public_values, chip_metadata)
     witness = ShardWitness(main_region, None)
-    proved = prover.prove(claim, witness, cheap_transcript(BF))
+    proved = prover.prove(claim, witness, cheap_transcript(F))
 
     return ShardFixture(
         smcs=smcs,

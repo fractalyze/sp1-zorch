@@ -53,7 +53,7 @@ def _vec_prefix(length: int) -> bytes:
 
 
 def _field_bytes(arr: Array) -> bytes:
-    """Canonical LE bytes for any BF/EF field array (any shape)."""
+    """Canonical LE bytes for any base- or extension-field array (any shape)."""
     a = fnp.atleast_1d(arr)
     if a.dtype.itemsize > 4:
         a = lax.bitcast_convert_type(a, efinfo(a.dtype).base_field_dtype)

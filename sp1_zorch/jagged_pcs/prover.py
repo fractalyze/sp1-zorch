@@ -16,7 +16,7 @@ from typing import Any
 import frx
 import frx.numpy as fnp
 from frx import Array
-from zk_dtypes import koalabearx4_mont
+from zk_dtypes import koalabearx4_mont as EF
 
 from zorch.coding.reed_solomon import BitReversedReedSolomon
 from zorch.commit.smcs import SingleMatrixCommitmentScheme
@@ -206,7 +206,7 @@ class JaggedPcsProver(
         zc_point = claim.evaluation.point
         # The jagged eval runs in the extension field — the upstream sumcheck
         # points are EF challenge lists (one extension sample per variable).
-        ef = koalabearx4_mont
+        ef = EF
 
         # Per-round (row/column counts, real per-column claims) in [prep, main]
         # order — each chip's opened-values field at the zerocheck point is its

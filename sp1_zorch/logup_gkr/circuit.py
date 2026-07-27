@@ -11,7 +11,7 @@ rw-constraints ``VirtualPairCol`` decompositions, the per-interaction slot
 schedule (``sp1_col_h``) with fold-neutral trailing padding, the power-of-two
 interaction padding, and the fixed-depth transition schedule
 (``sp1_next_row_counts``) driving zorch's jagged fold. Numerator slots stay
-in the main trace's BF dtype; denominators are EF.
+in the main trace's base field; denominators are in the extension field.
 """
 
 from __future__ import annotations
@@ -211,7 +211,7 @@ def _chip_mult_fingerprint(
     )
     w_all = fnp.asarray(weight_rows, dtype=bf_dtype)  # [forms, total_w]
     c_all = fnp.asarray(constants, dtype=bf_dtype)  # [forms]
-    forms = c_all[:, None] + w_all @ trace_cat.T  # [forms, height], BF
+    forms = c_all[:, None] + w_all @ trace_cat.T  # [forms, height], base field
 
     # Multiplicity per interaction; receives negate (× field -1 == negation).
     mult = (

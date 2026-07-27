@@ -21,7 +21,7 @@ import numpy as np
 import zk_dtypes
 from frx import Array
 from rw_constraints import Chip
-from zk_dtypes import koalabear_mont
+from zk_dtypes import koalabear_mont as F
 
 from sp1_zorch.shard_prover.chip_loader import (
     load_sp1_chips,
@@ -83,11 +83,7 @@ def _parse_ef_list(value: str) -> Array:
     """All ``BinomialExtensionField { value: [...] }`` blobs in a dump value,
     as one EF array (canonical limbs Mont-encoded)."""
     rows = [[int(t) for t in m.group(1).split(",")] for m in _EF_RE.finditer(value)]
-    return (
-        fnp.array(rows, dtype=koalabear_mont)
-        .reshape(-1)
-        .view(zk_dtypes.koalabearx4_mont)
-    )
+    return fnp.array(rows, dtype=F).reshape(-1).view(zk_dtypes.koalabearx4_mont)
 
 
 def check_match(label: str, got: Any, want: Any) -> bool:
@@ -121,10 +117,10 @@ def _load_trace_dir(trace_dir: Path) -> tuple[dict[str, Array], dict[str, int]]:
         num_reals[name] = height
         bin_path = trace_dir / f"{name}.bin"
         if height == 0 or not bin_path.exists():
-            traces[name] = fnp.zeros((0, width), dtype=koalabear_mont)
+            traces[name] = fnp.zeros((0, width), dtype=F)
         else:
             raw = np.fromfile(bin_path, dtype=np.uint32)
-            traces[name] = fnp.array(raw.reshape(height, width)).view(koalabear_mont)
+            traces[name] = fnp.array(raw.reshape(height, width)).view(F)
     return traces, num_reals
 
 
@@ -137,7 +133,7 @@ def _load_vk(vk_path: Path) -> MachineVerifyingKey:
     }
 
     def _arr(key: str) -> Array:
-        return fnp.array(vals[key], dtype=fnp.uint32).astype(koalabear_mont)
+        return fnp.array(vals[key], dtype=fnp.uint32).astype(F)
 
     return MachineVerifyingKey(
         preprocessed_commit=_arr("preprocessed_commit"),
@@ -171,7 +167,7 @@ def read_dump(fixture_dir: Path, trace_subdir: Optional[str] = None) -> DumpData
         preprocessed = {}
 
     pv_raw = np.fromfile(trace_dir / "public_values.bin", dtype=np.uint32)
-    public_values = fnp.array(pv_raw).view(koalabear_mont)
+    public_values = fnp.array(pv_raw).view(F)
 
     return DumpData(
         traces=traces,

@@ -8,7 +8,8 @@ import frx
 import frx.numpy as fnp
 import numpy as np
 from absl.testing import absltest
-from zk_dtypes import koalabear_mont, koalabearx4_mont
+from zk_dtypes import koalabear_mont as F
+from zk_dtypes import koalabearx4_mont as EF
 
 from zorch.poly.geq import VirtualGeq
 from zorch.sumcheck.gruen import interp_matrix
@@ -21,14 +22,14 @@ from sp1_zorch.zerocheck.jagged import (
     _summand_values,
 )
 
-BF, EF = koalabear_mont, koalabearx4_mont
+F, EF = F, EF
 
 # Witness chip: columns [a, b, c] with a == 1 on every real row, so both
 # constraints vanish there while C(0_row) = [1, 0] keeps the padded-row
 # correction live (adj = alpha_0 != 0) — mirrors jagged_test.py's fixture.
 _NUM_COLS = 3
 _K = 2
-_PV = fnp.zeros((8,), dtype=BF)
+_PV = fnp.zeros((8,), dtype=F)
 
 
 def _eval_fn(trace: fnp.ndarray, public_values: fnp.ndarray) -> fnp.ndarray:
@@ -40,11 +41,11 @@ def _eval_fn(trace: fnp.ndarray, public_values: fnp.ndarray) -> fnp.ndarray:
 
 def _rand(seed: int, shape: tuple[int, ...]) -> fnp.ndarray:
     ints = np.random.default_rng(seed).integers(1, 1 << 30, size=shape, dtype=np.int64)
-    return fnp.array(ints, dtype=BF)
+    return fnp.array(ints, dtype=F)
 
 
 def _witness_trace(seed: int, nr: int) -> fnp.ndarray:
-    ones = fnp.ones((1, nr), dtype=BF)
+    ones = fnp.ones((1, nr), dtype=F)
     return fnp.concatenate([ones, _rand(seed, (2, nr))], axis=0)
 
 
@@ -86,9 +87,9 @@ class MarkerByteTransparencyTest(absltest.TestCase):
         claim = _rand(9, ())
         last = _rand(11, ())
         eq_adj = _rand(13, ())
-        padded_row_adj = _eval_fn(fnp.zeros((1, _NUM_COLS), dtype=BF), _PV)[0] @ alpha
-        vgeq = VirtualGeq(nr_live, fnp.ones((), BF), fnp.zeros((), BF))
-        interp = interp_matrix((fnp.array(2, BF), fnp.array(4, BF)), last)
+        padded_row_adj = _eval_fn(fnp.zeros((1, _NUM_COLS), dtype=F), _PV)[0] @ alpha
+        vgeq = VirtualGeq(nr_live, fnp.ones((), F), fnp.zeros((), F))
+        interp = interp_matrix((fnp.array(2, F), fnp.array(4, F)), last)
         is_round0 = fnp.array(False)
 
         term, alpha0 = summand._term_fns[0], summand.alphas[0]

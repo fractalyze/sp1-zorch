@@ -15,7 +15,8 @@ import pathlib
 import frx.numpy as fnp
 import numpy as np
 from absl.testing import absltest
-from zk_dtypes import koalabear_mont, koalabearx4_mont
+from zk_dtypes import koalabear_mont as F
+from zk_dtypes import koalabearx4_mont as EF
 
 from zorch.transcript import sample_challenge
 
@@ -28,9 +29,6 @@ from sp1_zorch.shard_prover.replay import (
 )
 from sp1_zorch.zerocheck.verify_zerocheck import _parse_phase3
 
-BF = koalabear_mont
-EF = koalabearx4_mont
-
 
 # Inlined zorch.testkit.random_field.rand_ext_field — its bazel target is not
 # visible outside the zorch workspace at the current pin.
@@ -38,7 +36,7 @@ def _rand_ef(seed: int, shape: tuple[int, ...]) -> fnp.ndarray:
     ints = np.random.default_rng(seed).integers(
         0, 1 << 30, size=tuple(shape) + (4,), dtype=np.int64
     )
-    return fnp.array(ints, dtype=BF).view(EF).reshape(shape)
+    return fnp.array(ints, dtype=F).view(EF).reshape(shape)
 
 
 def _u32(a: Array) -> np.ndarray:
@@ -50,7 +48,7 @@ class GkrCacheRoundtripTest(absltest.TestCase):
         # A transcript mid-stream: absorbed values and a consumed sample leave
         # non-trivial buffer positions, the state a naive cache would drop.
         t = fresh_transcript()
-        t = t.observe(fnp.arange(1, 6, dtype=fnp.uint32).view(BF))
+        t = t.observe(fnp.arange(1, 6, dtype=fnp.uint32).view(F))
         t, _ = t.sample(3)
 
         eval_point = _rand_ef(1, (5,))
@@ -75,7 +73,7 @@ class GkrCacheRoundtripTest(absltest.TestCase):
 
         # The streams must stay interchangeable through both absorb and
         # squeeze: observe fresh data on each and demand the same challenge.
-        probe = fnp.arange(7, 10, dtype=fnp.uint32).view(BF)
+        probe = fnp.arange(7, 10, dtype=fnp.uint32).view(F)
         _, want = sample_challenge(t.observe(probe), EF, 4)
         _, got = sample_challenge(t2.observe(probe), EF, 4)
         np.testing.assert_array_equal(_u32(got), _u32(want))
@@ -101,7 +99,7 @@ class ParsePhase3Test(absltest.TestCase):
 
         def _ef(lo: int, hi: int) -> np.ndarray:
             # The dump carries canonical limbs; the parser Mont-encodes them.
-            return _u32(fnp.arange(lo, hi, dtype=fnp.int32).astype(BF).view(EF))
+            return _u32(fnp.arange(lo, hi, dtype=fnp.int32).astype(F).view(EF))
 
         self.assertEqual(sorted(parsed), ["Add", "Byte"])
         np.testing.assert_array_equal(_u32(parsed["Add"]["main"]), _ef(1, 9))

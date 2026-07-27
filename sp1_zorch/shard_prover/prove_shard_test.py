@@ -21,7 +21,8 @@ import frx.numpy as fnp
 import numpy as np
 from absl.testing import absltest
 from rw_constraints import Interaction, VirtualPairCol
-from zk_dtypes import koalabear_mont, koalabearx4_mont
+from zk_dtypes import koalabear_mont as F
+from zk_dtypes import koalabearx4_mont as EF
 
 from zorch.hash.compression import Compression, CompressionParams
 from zorch.hash.poseidon2.poseidon2 import Poseidon2
@@ -71,9 +72,6 @@ from sp1_zorch.zerocheck.prover import prove_shard_zerocheck
 from zorch.utils.bits import log2_ceil_usize
 
 
-BF = koalabear_mont
-EF = koalabearx4_mont
-
 _MAX_LOG_ROW_COUNT = 5
 _NUM_ROW_VARIABLES = _MAX_LOG_ROW_COUNT - 1
 _NUM_BETAS = 3
@@ -88,7 +86,7 @@ class _WitnessChip:
     def eval_constraints(self, trace: Array, public_values: Array) -> Array:
         a, b, c = trace[:, 0], trace[:, 1], trace[:, 2]
         one = fnp.ones((), trace.dtype)
-        pv0 = fnp.concatenate([public_values[:1], fnp.zeros((3,), BF)]).view(EF)[0]
+        pv0 = fnp.concatenate([public_values[:1], fnp.zeros((3,), F)]).view(EF)[0]
         return fnp.stack([(a - one) * (c - one), (a - one) * (b + pv0)], axis=-1)
 
 
@@ -110,7 +108,7 @@ def _interaction(mult_col: int, val_col: int, *, kind: int = 3) -> Interaction:
 
 def _rand_bf(seed: int, shape: tuple[int, ...]) -> fnp.ndarray:
     ints = np.random.default_rng(seed).integers(1, 1 << 30, size=shape, dtype=np.int64)
-    return fnp.array(ints, dtype=BF)
+    return fnp.array(ints, dtype=F)
 
 
 def _u32(a: Array) -> np.ndarray:
@@ -164,11 +162,11 @@ class ProveShardChainTest(absltest.TestCase):
         # num_real — exercises the prep zero-pad). lookup: 2 main cols x 4
         # rows, no prep, no constraints, receive interaction.
         alpha_main = fnp.concatenate(
-            [fnp.ones((6, 1), dtype=BF), _rand_bf(1, (6, 2))], axis=1
+            [fnp.ones((6, 1), dtype=F), _rand_bf(1, (6, 2))], axis=1
         )
         alpha_prep = _rand_bf(2, (3, 2))
         lookup_main = fnp.concatenate(
-            [fnp.ones((4, 1), dtype=BF), _rand_bf(3, (4, 1))], axis=1
+            [fnp.ones((4, 1), dtype=F), _rand_bf(3, (4, 1))], axis=1
         )
 
         names = ("alpha", "lookup")
@@ -208,10 +206,10 @@ class ProveShardChainTest(absltest.TestCase):
 
         # Hand-threaded reference: the replay-style stage sequence.
         bound, _ = commit_region(main_region, smcs, log_blowup=_LOG_BLOWUP)
-        t = vk.observe_into(cheap_transcript(BF))
+        t = vk.observe_into(cheap_transcript(F))
         t = t.observe(public_values)
         t = t.observe(bound)
-        t = t.observe(chip_metadata.preamble_stream(dtype=BF))
+        t = t.observe(chip_metadata.preamble_stream(dtype=F))
         t, gkr_proof = prove_logup_gkr(
             gkr_chips,
             ShardWitness(main_region, prep_region),
@@ -280,7 +278,7 @@ class ProveShardChainTest(absltest.TestCase):
         # transcript at that seam, and each role's products are asserted on
         # below. Same order and threading, so the stream is the composite's.
         commitment, commit_data = prover.opening.commit(witness)
-        transcript, roots = bind_commitment(cheap_transcript(BF), claim, commitment)
+        transcript, roots = bind_commitment(cheap_transcript(F), claim, commitment)
         gkr = prover.gkr.prove(claim, witness, transcript)
         zc = prover.zerocheck.prove(
             ZerocheckClaim(public_values, gkr.reduced_claim, claim.chip_metadata),
@@ -387,7 +385,7 @@ class ProveShardChainTest(absltest.TestCase):
             return prover.prove(claim, witness, transcript).transcript
 
         lowered = frx.jit(run).lower(
-            self.main_region.dense, self.public_values, cheap_transcript(BF)
+            self.main_region.dense, self.public_values, cheap_transcript(F)
         )
         self.assertIn("func", lowered.as_text())
 
@@ -436,7 +434,7 @@ class ProveShardChainTest(absltest.TestCase):
             return self.prover.prove(self.claim, witness, transcript).transcript
 
         witness = ShardWitness(self.main_region, self.prep_region)
-        lowered = frx.jit(run, donate_argnums=0).lower(witness, cheap_transcript(BF))
+        lowered = frx.jit(run, donate_argnums=0).lower(witness, cheap_transcript(F))
         self.assertIn("func", lowered.as_text())
 
     def test_gkr_reduced_claim_flattens_to_array_leaves_only(self) -> None:
@@ -514,17 +512,17 @@ class PreambleAbsorbTest(absltest.TestCase):
         )
         public_values = _rand_bf(24, (8,))
         commitment = _rand_bf(25, (8,))
-        metadata = ChipMetadata(("ab", "c"), (6, 4)).preamble_stream(dtype=BF)
+        metadata = ChipMetadata(("ab", "c"), (6, 4)).preamble_stream(dtype=F)
 
         got_t = absorb_preamble(
-            cheap_transcript(BF),
+            cheap_transcript(F),
             vk=vk,
             public_values=public_values,
             commitment=commitment,
             chip_metadata=metadata,
         )
 
-        want_t = vk.observe_into(cheap_transcript(BF))
+        want_t = vk.observe_into(cheap_transcript(F))
         want_t = want_t.observe(public_values)
         want_t = want_t.observe(commitment)
         want_t = want_t.observe(metadata)
@@ -539,8 +537,8 @@ class PreambleChipMetadataTest(absltest.TestCase):
     bug would cancel out."""
 
     def test_flat_layout(self) -> None:
-        got = ChipMetadata(("ab", "c"), (6, 4)).preamble_stream(dtype=BF)
-        want = fnp.array([2, 6, 2, ord("a"), ord("b"), 4, 1, ord("c")], dtype=BF)
+        got = ChipMetadata(("ab", "c"), (6, 4)).preamble_stream(dtype=F)
+        want = fnp.array([2, 6, 2, ord("a"), ord("b"), 4, 1, ord("c")], dtype=F)
         _assert_bytes_equal(got, want, "chip metadata")
 
     def test_unpaired_names_and_counts_rejected(self) -> None:
@@ -602,7 +600,7 @@ class LogupGkrProverCapClassTest(absltest.TestCase):
             _, want = prove_logup_gkr(
                 gkr_chips,
                 ShardWitness(main_region, None),
-                cheap_transcript(BF),
+                cheap_transcript(F),
                 num_betas=_NUM_BETAS,
                 num_row_variables=_NUM_ROW_VARIABLES,
             )
@@ -618,7 +616,7 @@ class LogupGkrProverCapClassTest(absltest.TestCase):
                     ChipMetadata(("alpha",), (rows,)),
                 ),
                 ShardWitness(main_region, None),
-                cheap_transcript(BF),
+                cheap_transcript(F),
             )
             got = result.reduction_proof
 
@@ -673,7 +671,7 @@ class ZerocheckProverTotalCapTest(absltest.TestCase):
             main_region = JaggedRegion.from_chips(
                 [
                     fnp.concatenate(
-                        [fnp.ones((rows, 1), dtype=BF), _rand_bf(seed, (rows, 1))],
+                        [fnp.ones((rows, 1), dtype=F), _rand_bf(seed, (rows, 1))],
                         axis=1,
                     )
                 ],
@@ -701,12 +699,10 @@ class ZerocheckProverTotalCapTest(absltest.TestCase):
                 public_values,
                 gkr_eval_point,
                 gkr_chip_openings,
-                cheap_transcript(BF),
+                cheap_transcript(F),
                 max_log_row_count=_MAX_LOG_ROW_COUNT,
             )
-            got = total.prove(
-                zc_claim, zc_witness, cheap_transcript(BF)
-            ).reduction_proof
+            got = total.prove(zc_claim, zc_witness, cheap_transcript(F)).reduction_proof
 
             label = f"rows {rows}"
             _assert_bytes_equal(got.msgs.round_poly, want.msgs.round_poly, label)
@@ -791,8 +787,8 @@ class JaggedPcsProverClassTest(absltest.TestCase):
                     SmcsCommitments(main=commit_data.smcs_commitment),
                 ),
             )
-            got_r = stage.prove(open_claim, open_witness, cheap_transcript(BF))
-            want_r = eager.prove(open_claim, open_witness, cheap_transcript(BF))
+            got_r = stage.prove(open_claim, open_witness, cheap_transcript(F))
+            want_r = eager.prove(open_claim, open_witness, cheap_transcript(F))
             got, got_t = got_r.reduction_proof, got_r.transcript
             want, want_t = want_r.reduction_proof, want_r.transcript
 

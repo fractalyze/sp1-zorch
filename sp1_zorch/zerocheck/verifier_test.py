@@ -25,7 +25,8 @@ import frx
 import frx.numpy as fnp
 import numpy as np
 from absl.testing import absltest
-from zk_dtypes import koalabear_mont, koalabearx4_mont
+from zk_dtypes import koalabear_mont as F
+from zk_dtypes import koalabearx4_mont as EF
 
 from zorch.testkit.transcript import cheap_transcript
 
@@ -34,9 +35,6 @@ from sp1_zorch.logup_gkr.prover import ChipEvaluation, _open_chip
 from sp1_zorch.zerocheck.prover import prove_shard_zerocheck
 from sp1_zorch.zerocheck.verifier import verify_shard_zerocheck
 
-
-BF = koalabear_mont
-EF = koalabearx4_mont
 
 _MAX_LOG_ROW_COUNT = 3
 _CHIP_NAMES = ("alpha", "lookup")
@@ -58,7 +56,7 @@ class _WitnessChip:
     def eval_constraints(self, trace: Array, public_values: Array) -> Array:
         a, b, c = trace[:, 2], trace[:, 3], trace[:, 4]
         one = fnp.ones((), trace.dtype)
-        pv0 = fnp.concatenate([public_values[:1], fnp.zeros((3,), BF)]).view(EF)[0]
+        pv0 = fnp.concatenate([public_values[:1], fnp.zeros((3,), F)]).view(EF)[0]
         return fnp.stack([(a - one) * (c - one), (a - one) * (b + pv0)], axis=-1)
 
 
@@ -71,7 +69,7 @@ class _LookupChip:
 
 def _rand_bf(seed: int, shape: tuple[int, ...]) -> fnp.ndarray:
     ints = np.random.default_rng(seed).integers(1, 1 << 30, size=shape, dtype=np.int64)
-    return fnp.array(ints, dtype=BF)
+    return fnp.array(ints, dtype=F)
 
 
 def _rand_ef(seed: int, shape: tuple[int, ...]) -> fnp.ndarray:
@@ -93,7 +91,7 @@ class VerifyShardZerocheckTest(absltest.TestCase):
         # (shorter than num_real — exercises the prep zero-pad). lookup: one
         # main col x 3 rows, no prep, no constraints.
         alpha_main = fnp.concatenate(
-            [fnp.ones((5, 1), dtype=BF), _rand_bf(1, (5, 2))], axis=1
+            [fnp.ones((5, 1), dtype=F), _rand_bf(1, (5, 2))], axis=1
         )
         alpha_prep = _rand_bf(2, (3, 2))
         lookup_main = _rand_bf(3, (3, 1))
@@ -150,7 +148,7 @@ class VerifyShardZerocheckTest(absltest.TestCase):
         and every chip but the last out of the oracle check) — tampers would
         be accepted not because the dual is loose but because the statement
         stops depending on the tampered values."""
-        return cheap_transcript(BF).observe(_rand_bf(9, (4,)))
+        return cheap_transcript(F).observe(_rand_bf(9, (4,)))
 
     @classmethod
     def _verify(cls, proof: ZerocheckProof) -> Any:

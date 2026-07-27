@@ -35,7 +35,8 @@ import frx
 import frx.numpy as fnp
 import numpy as np
 from absl.testing import absltest
-from zk_dtypes import koalabear_mont, koalabearx4_mont
+from zk_dtypes import koalabear_mont as F
+from zk_dtypes import koalabearx4_mont as EF
 
 from zorch.poly.eq import eval_eq
 
@@ -50,9 +51,6 @@ from sp1_zorch.zerocheck.jagged import (
 from sp1_zorch.zerocheck.coeffs import rlc_coeffs
 from sp1_zorch.zerocheck.prover import chip_traces
 
-
-BF = koalabear_mont
-EF = koalabearx4_mont
 
 _FIXTURE = Path(__file__).parent / "testdata" / "gpu_fibonacci"
 
@@ -99,7 +97,7 @@ class _ScriptedTranscript:
         # (one extension element = degree base squeezes, the
         # ``sample_challenge`` rule — fractalyze/sp1-zorch#88), so the script
         # stores flat base limbs.
-        flat = frx.lax.bitcast_convert_type(fnp.asarray(challenges), BF).reshape(-1)
+        flat = frx.lax.bitcast_convert_type(fnp.asarray(challenges), F).reshape(-1)
         return cls(flat, fnp.asarray(0, fnp.int32))
 
     def observe(self, values: Array) -> "_ScriptedTranscript":
@@ -129,10 +127,10 @@ class JaggedZerocheckByteMatchTest(absltest.TestCase):
         alpha = _load_npy("batching_challenge.npy", EF)
         beta = _load_npy("gkr_opening_batch_challenge.npy", EF)
         chip_claims = _load_npy("chip_claims.npy", EF)
-        public_values = _load_npy("public_values.npy", BF)
+        public_values = _load_npy("public_values.npy", F)
 
-        main_region = _load_region("main_region.json", _load_npy("main_dense.npy", BF))
-        prep_region = _load_region("prep_region.json", _load_npy("prep_dense.npy", BF))
+        main_region = _load_region("main_region.json", _load_npy("main_dense.npy", F))
+        prep_region = _load_region("prep_region.json", _load_npy("prep_dense.npy", F))
         assert tuple(chip_names) == tuple(main_region.chip_names)
 
         traces = chip_traces(chip_names, num_reals, main_region, prep_region)
@@ -149,7 +147,7 @@ class JaggedZerocheckByteMatchTest(absltest.TestCase):
         pv = fnp.concatenate(
             [
                 public_values,
-                fnp.zeros((PROOF_MAX_NUM_PVS - public_values.shape[0],), dtype=BF),
+                fnp.zeros((PROOF_MAX_NUM_PVS - public_values.shape[0],), dtype=F),
             ]
         )
         # The chip's 2-ary ``eval_constraints`` is the eval_fn; the padded

@@ -22,7 +22,8 @@ import frx
 import frx.numpy as fnp
 import numpy as np
 from absl.testing import absltest
-from zk_dtypes import koalabear_mont, koalabearx4_mont
+from zk_dtypes import koalabear_mont as F
+from zk_dtypes import koalabearx4_mont as EF
 
 from zorch.testkit.transcript import cheap_transcript
 from zorch.transcript import sample_challenge
@@ -40,9 +41,6 @@ from sp1_zorch.zerocheck.prover import (
     split_opened_values,
 )
 
-
-BF = koalabear_mont
-EF = koalabearx4_mont
 
 _MAX_LOG_ROW_COUNT = 3
 
@@ -62,7 +60,7 @@ class _WitnessChip:
     def eval_constraints(self, trace: Array, public_values: Array) -> Array:
         a, b, c = trace[:, 2], trace[:, 3], trace[:, 4]
         one = fnp.ones((), trace.dtype)
-        pv0 = fnp.concatenate([public_values[:1], fnp.zeros((3,), BF)]).view(EF)[0]
+        pv0 = fnp.concatenate([public_values[:1], fnp.zeros((3,), F)]).view(EF)[0]
         return fnp.stack([(a - one) * (c - one), (a - one) * (b + pv0)], axis=-1)
 
 
@@ -75,7 +73,7 @@ class _LookupChip:
 
 def _rand_bf(seed: int, shape: tuple[int, ...]) -> fnp.ndarray:
     ints = np.random.default_rng(seed).integers(1, 1 << 30, size=shape, dtype=np.int64)
-    return fnp.array(ints, dtype=BF)
+    return fnp.array(ints, dtype=F)
 
 
 def _rand_ef(seed: int, shape: tuple[int, ...]) -> fnp.ndarray:
@@ -99,7 +97,7 @@ class ProveZerocheckTest(absltest.TestCase):
         # (shorter than num_real — exercises the prep zero-pad). lookup: one
         # main col x 3 rows, no prep, no constraints.
         alpha_main = fnp.concatenate(
-            [fnp.ones((5, 1), dtype=BF), _rand_bf(1, (5, 2))], axis=1
+            [fnp.ones((5, 1), dtype=F), _rand_bf(1, (5, 2))], axis=1
         )
         alpha_prep = _rand_bf(2, (3, 2))
         lookup_main = _rand_bf(3, (3, 1))
@@ -128,7 +126,7 @@ class ProveZerocheckTest(absltest.TestCase):
         # Longer than max_log_row_count so the zeta slice is observable.
         eval_point = _rand_ef(8, (5,))
 
-        transcript = cheap_transcript(BF)
+        transcript = cheap_transcript(F)
         cls.got_transcript, cls.proof = prove_shard_zerocheck(
             chips,
             main_region,
@@ -160,7 +158,7 @@ class ProveZerocheckTest(absltest.TestCase):
         alpha_trace = fnp.concatenate(
             [
                 alpha_main.T,
-                fnp.concatenate([alpha_prep.T, fnp.zeros((2, 2), dtype=BF)], axis=1),
+                fnp.concatenate([alpha_prep.T, fnp.zeros((2, 2), dtype=F)], axis=1),
             ],
             axis=0,
         )
@@ -200,13 +198,13 @@ class ProveZerocheckTest(absltest.TestCase):
         # [main | prep], so alpha's prep is rows 3:5 of its column stack.
         alpha_vals = want_finals[0][:, 0]
         lookup_vals = want_finals[1][:, 0]
-        t = t.observe(fnp.array(2, BF))
-        t = t.observe(fnp.array(2, BF))
+        t = t.observe(fnp.array(2, F))
+        t = t.observe(fnp.array(2, F))
         t = t.observe(alpha_vals[3:5])
-        t = t.observe(fnp.array(3, BF))
+        t = t.observe(fnp.array(3, F))
         t = t.observe(alpha_vals[:3])
-        t = t.observe(fnp.array(0, BF))
-        t = t.observe(fnp.array(1, BF))
+        t = t.observe(fnp.array(0, F))
+        t = t.observe(fnp.array(1, F))
         t = t.observe(lookup_vals[:1])
         cls.want_finals, cls.want_transcript, cls.want_msgs = want_finals, t, want_msgs
         cls.zeta = zeta
@@ -279,7 +277,7 @@ class OpenedValuesRoundGuardTest(absltest.TestCase):
             "stowaway": ChipEvaluation(main=fnp.zeros((1,), EF), preprocessed=None),
         }
         with self.assertRaisesRegex(ValueError, "cover exactly"):
-            OpenedValuesRound(opened, ("alpha",))(None, cheap_transcript(BF))
+            OpenedValuesRound(opened, ("alpha",))(None, cheap_transcript(F))
 
 
 class SplitOpenedValuesTest(absltest.TestCase):
@@ -291,7 +289,7 @@ class SplitOpenedValuesTest(absltest.TestCase):
     def test_splits_main_then_prep(self) -> None:
         # "alpha": 2 main cols + 1 prep col; "lookup": 1 main col, no prep.
         main_region = JaggedRegion(
-            dense=fnp.zeros(8, dtype=BF),
+            dense=fnp.zeros(8, dtype=F),
             chip_starts=(0, 6, 8),
             row_counts=(3, 2, 4, 1),
             column_counts=(2, 1, 1, 1),
@@ -299,7 +297,7 @@ class SplitOpenedValuesTest(absltest.TestCase):
             chip_names=("alpha", "lookup"),
         )
         prep_region = JaggedRegion(
-            dense=fnp.zeros(3, dtype=BF),
+            dense=fnp.zeros(3, dtype=F),
             chip_starts=(0, 3),
             row_counts=(3, 4, 1),
             column_counts=(1, 1, 1),
@@ -322,7 +320,7 @@ class SplitOpenedValuesTest(absltest.TestCase):
 
     def test_no_prep_region_means_no_preprocessed_anywhere(self) -> None:
         main_region = JaggedRegion(
-            dense=fnp.zeros(8, dtype=BF),
+            dense=fnp.zeros(8, dtype=F),
             chip_starts=(0, 8),
             row_counts=(4, 4, 1),
             column_counts=(2, 1, 1),

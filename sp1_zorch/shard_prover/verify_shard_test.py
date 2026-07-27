@@ -21,7 +21,7 @@ import frx
 import frx.numpy as fnp
 import numpy as np
 from absl.testing import absltest
-from zk_dtypes import koalabear_mont
+from zk_dtypes import koalabear_mont as F
 
 from zorch.testkit.transcript import cheap_transcript
 
@@ -38,8 +38,6 @@ from sp1_zorch.shard_prover.shard_testkit import (
     MAX_LOG_ROW_COUNT,
     small_shard_fixture,
 )
-
-BF = koalabear_mont
 
 
 def _u32(a: Array) -> np.ndarray:
@@ -63,11 +61,11 @@ class VerifyShardChainTest(absltest.TestCase):
         cls.gkr_proof = proof.gkr
         cls.zc_proof = proof.zerocheck
         cls.je_proof = proof.jagged
-        verified = fx.verifier.verify(fx.claim, proof, cheap_transcript(BF))
+        verified = fx.verifier.verify(fx.claim, proof, cheap_transcript(F))
         cls.dual_transcript, cls.dual_ok = verified.transcript, verified.ok
         # The same roles again, kept apart, so a test can assert on one
         # Stage's reduced claim or drive one dual directly.
-        t, cls.roots = bind_commitment(cheap_transcript(BF), fx.claim, proof.commitment)
+        t, cls.roots = bind_commitment(cheap_transcript(F), fx.claim, proof.commitment)
         gkr = fx.verifier.gkr.verify(fx.claim, proof.gkr, t)
         cls.gkr_reduced = gkr.reduced_claim
         cls.zc_claim = ZerocheckClaim(
@@ -86,7 +84,7 @@ class VerifyShardChainTest(absltest.TestCase):
         what a name-level symmetry check would miss."""
         fx = self.fx
         commitment, _ = fx.prover.opening.commit(fx.witness)
-        t, _ = bind_commitment(cheap_transcript(BF), fx.claim, commitment)
+        t, _ = bind_commitment(cheap_transcript(F), fx.claim, commitment)
         p_gkr = fx.prover.gkr.prove(fx.claim, fx.witness, t)
         p_zc = fx.prover.zerocheck.prove(
             ZerocheckClaim(
@@ -147,7 +145,7 @@ class VerifyShardChainTest(absltest.TestCase):
         ok = self.fx.verifier.verify(
             self.fx.claim,
             replace(self.fx.proof, gkr=bad_proof),
-            cheap_transcript(BF),
+            cheap_transcript(F),
         ).ok
         self.assertFalse(bool(ok))
 
@@ -176,7 +174,7 @@ class VerifyShardChainTest(absltest.TestCase):
             replace(
                 self.fx.proof, zerocheck=replace(self.zc_proof, claimed_sum=bad_sum)
             ),
-            cheap_transcript(BF),
+            cheap_transcript(F),
         ).ok
         self.assertFalse(bool(ok))
 
@@ -191,7 +189,7 @@ class VerifyShardChainTest(absltest.TestCase):
         ok = self.fx.verifier.verify(
             self.fx.claim,
             replace(self.fx.proof, jagged=replace(self.je_proof, eval=bad_eval)),
-            cheap_transcript(BF),
+            cheap_transcript(F),
         ).ok
         self.assertFalse(bool(ok))
 

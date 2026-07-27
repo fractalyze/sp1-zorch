@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Optional
 
 from rw_constraints import Chip, ConstraintRegistry, bundled_constraints_dir
-from zk_dtypes import koalabear_mont
+from zk_dtypes import koalabear_mont as F
 
 # SP1 PascalCase -> rw snake_case, ONLY where ``name.lower()`` is wrong.
 # Mirrors riscv-witness tools/sp1/sp1_shard_prover trace_loader NAME_MAP.
@@ -162,10 +162,10 @@ def load_sp1_chips(
 ) -> dict[str, Chip]:
     """Load rw chip definitions with SP1's field dtype bound.
 
-    Constraint / boundary / filler functions get ``koalabear_mont``;
+    Constraint / boundary / filler functions get ``F``;
     interactions keep the registry's ``fnp.uint32`` default (bitwise ops).
     """
-    chips = _registry().load(target, version, constraint_field_dtype=koalabear_mont)
+    chips = _registry().load(target, version, constraint_field_dtype=F)
     if chip_names is not None:
         chips = {k: v for k, v in chips.items() if k in chip_names}
     return chips

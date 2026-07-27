@@ -31,7 +31,7 @@ import frx.numpy as fnp
 import numpy as np
 
 from absl.testing import absltest
-from zk_dtypes import koalabear_mont as KB
+from zk_dtypes import koalabear_mont as F
 from zk_dtypes import koalabearx4_mont as EF
 
 from zorch.poly.eq import expand_eq_to_hypercube
@@ -88,12 +88,12 @@ def _eval_fn_empty(trace: fnp.ndarray, public_values: fnp.ndarray) -> fnp.ndarra
 # The eval_fns above ignore the statement (no constraint declares a pv_arg),
 # but it still rides as a declared `constraint_eval` operand — so the summand
 # and the reference thread a (dummy) pv through the 2-ary signature.
-_PV = fnp.zeros((8,), dtype=KB)
+_PV = fnp.zeros((8,), dtype=F)
 
 
 def _rand(seed: int, shape: tuple[int, ...]) -> fnp.ndarray:
     ints = np.random.default_rng(seed).integers(1, 1 << 30, size=shape, dtype=np.int64)
-    return fnp.array(ints, dtype=KB)
+    return fnp.array(ints, dtype=F)
 
 
 def _rand_ef(seed: int, shape: tuple[int, ...]) -> fnp.ndarray:
@@ -112,8 +112,8 @@ def _assert_bytes_equal(got: Array, want: Array, label: str = "") -> None:
 
 def _witness_trace(seed: int, nr: int) -> fnp.ndarray:
     if nr == 0:
-        return fnp.zeros((_NUM_COLS, 0), dtype=KB)
-    ones = fnp.ones((1, nr), dtype=KB)
+        return fnp.zeros((_NUM_COLS, 0), dtype=F)
+    ones = fnp.ones((1, nr), dtype=F)
     return fnp.concatenate([ones, _rand(seed, (2, nr))], axis=0)
 
 
@@ -161,16 +161,16 @@ def _naive_round_polys(
 ) -> list[Array]:
     n = int(zeta.shape[0])
     width = 1 << n
-    one = fnp.ones((), KB)
-    inv_vand = compute_inv_vandermonde(DEGREE, KB)
+    one = fnp.ones((), F)
+    inv_vand = compute_inv_vandermonde(DEGREE, F)
 
     cols = [zero_extend(t, width) for t in traces]
     geqs = [
-        fnp.concatenate([fnp.zeros(nr, dtype=KB), fnp.ones(width - nr, dtype=KB)])
+        fnp.concatenate([fnp.zeros(nr, dtype=F), fnp.ones(width - nr, dtype=F)])
         for nr in num_reals
     ]
     adjs = [
-        f(fnp.zeros((1, _NUM_COLS), dtype=KB), _PV)[0] @ a
+        f(fnp.zeros((1, _NUM_COLS), dtype=F), _PV)[0] @ a
         for f, a in zip(eval_fns, alphas)
     ]
     e = expand_eq_to_hypercube(zeta, one)
@@ -179,7 +179,7 @@ def _naive_round_polys(
     for r in challenges:
         evals = []
         for t in range(DEGREE + 1):
-            tv = fnp.array(t, KB)
+            tv = fnp.array(t, F)
             et = _lift(e, tv)
             tot = fnp.zeros_like(et)
             for i in range(len(cols)):
@@ -205,7 +205,7 @@ def _gkr_inputs(
     for _ in range(_NUM_COLS - 1):
         pows.append(pows[-1] * beta)
     gkr = fnp.stack(pows)
-    e = expand_eq_to_hypercube(zeta, fnp.ones((), KB))
+    e = expand_eq_to_hypercube(zeta, fnp.ones((), F))
     claims = [gkr @ (zero_extend(t, width) @ e) for t in traces]
     return [gkr] * len(traces), claims
 
@@ -322,9 +322,9 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
         claim = _rand(9, ())
         last = _rand(11, ())
         eq_adj = _rand(13, ())
-        padded_row_adj = _eval_fn(fnp.zeros((1, _NUM_COLS), dtype=KB), _PV)[0] @ alpha
-        vgeq = VirtualGeq(nr_live, fnp.ones((), KB), fnp.zeros((), KB))
-        interp = interp_matrix((fnp.array(2, KB), fnp.array(4, KB)), last)
+        padded_row_adj = _eval_fn(fnp.zeros((1, _NUM_COLS), dtype=F), _PV)[0] @ alpha
+        vgeq = VirtualGeq(nr_live, fnp.ones((), F), fnp.zeros((), F))
+        interp = interp_matrix((fnp.array(2, F), fnp.array(4, F)), last)
         is_round0 = fnp.array(False)
 
         term, alpha0 = summand._term_fns[0], summand.alphas[0]
@@ -514,11 +514,11 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
             traces,
             num_reals,
             zeta,
-            cheap_transcript(KB),
+            cheap_transcript(F),
             claims=claims,
         )
 
-        claim = fnp.zeros((), KB)
+        claim = fnp.zeros((), F)
         for i in range(nchips):
             claim = claim + lambdas[i] * claims[i]
         self._assert_claim_thread(msgs, claim)
@@ -544,12 +544,12 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
             traces,
             num_reals,
             zeta,
-            cheap_transcript(KB),
+            cheap_transcript(F),
             claims=claims,
         )
 
         # The claim thread starts at the lambda-RLC of the GKR claims.
-        claim = fnp.zeros((), KB)
+        claim = fnp.zeros((), F)
         for i in range(nchips):
             claim = claim + lambdas[i] * claims[i]
         self._assert_claim_thread(msgs, claim)
@@ -591,12 +591,12 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
             traces,
             [nr],
             zeta,
-            cheap_transcript(KB),
+            cheap_transcript(F),
             claims=claims,
         )
 
         self.assertEqual(msgs.challenge.dtype, EF)
-        t = cheap_transcript(KB)
+        t = cheap_transcript(F)
         for r in range(num_vars):
             t = t.observe(msgs.round_poly[r])
             t, want = sample_challenge(t, EF, 4)
@@ -618,8 +618,8 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
                 [trace],
                 [5],
                 _rand(7, (3,)),
-                cheap_transcript(KB),
-                claims=[fnp.zeros((), KB)],
+                cheap_transcript(F),
+                claims=[fnp.zeros((), F)],
             )
 
     def test_validation_rejects_short_claims(self) -> None:
@@ -635,8 +635,8 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
                 [_witness_trace(0, 4)],
                 [4],
                 _rand(7, (3,)),
-                cheap_transcript(KB),
-                claims=[fnp.zeros((), KB)] * 2,
+                cheap_transcript(F),
+                claims=[fnp.zeros((), F)] * 2,
             )
 
 
