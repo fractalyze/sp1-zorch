@@ -8,8 +8,8 @@ SP1's reference-dump terms onto them.
 ## Stage / Round
 
 - **Stage** — one claim reduction, as a `ProverStage` / `VerifierStage` pair.
-  There are three, composed by `ShardProver` / `ShardVerifier`; each runs its
-  own inner Rounds. The table below is the roster.
+  There are three, composed by `ShardProver` / `ShardVerifier`; the table
+  below is the roster.
 - **Round** — the genuine inner rounds a Stage scans (per-variable sumcheck,
   GKR layers): `JaggedGkrLayerRound`, `OpenedValuesRound`, …
 - **Seams** — what crosses between Stages is a *claim*, not a shared carry:
@@ -34,10 +34,11 @@ forces the halves apart, because the commitment must bind the transcript
 before LogUp-GKR draws a challenge and the open cannot run until zerocheck
 produces the point to open at.
 
-`JaggedCommitData` spans that gap: the scheme's own prover data (the digest
-trees and the round SMCS commitments), held as a local in `ShardProver.prove`
-and handed to the open through its witness. It rides no claim, because a claim
-is what both roles derive and the verifier never sees a digest tree.
+`JaggedCommitData` spans that gap, held as a local in `ShardProver.prove` and
+handed to the open through its witness. It is not prover-only state — the open
+passes its SMCS commitments through to the wire, and each digest tree's top
+layer is serialized as that round's raw root — but it is not claim data
+either, since the verifier never reconstructs a digest tree.
 
 Between the halves both roles call one shared `bind_commitment`, which absorbs
 SP1's preamble stream and names the roots the opening is checked against, so an
