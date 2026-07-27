@@ -398,10 +398,13 @@ def _prove_from_first_layer(
         )
 
     capacity = slot_cap + slot_cap % 2
+    transition_widths = capped_pyramid_widths(
+        slot_cap, num_segments, num_row_variables - 1
+    )
     schedules = list(
         zip(
             sp1_schedule_counts(first.row_counts, num_row_variables - 1),
-            capped_pyramid_widths(slot_cap, num_segments, num_row_variables - 1),
+            transition_widths,
             strict=True,
         )
     )
@@ -409,18 +412,35 @@ def _prove_from_first_layer(
     output = extract_sp1_outputs(layers[-1])
     transcript, carry = bind_circuit_output(transcript, output)
 
-    caps = RoundWidthCaps(
-        elements=_row_cap(capacity),
-        eq_row=1 << num_row_variables,
-        interaction=max(4, num_segments),
-    )
+    # One cap per layer, sized to THAT layer's capped width. A single
+    # pyramid-wide cap would run every layer at the first layer's width, so
+    # the pyramid's geometric shrink would buy nothing at prove time: the
+    # floor layer holds a few hundred live elements and would still fold,
+    # pad and reduce over the whole 2^21-rounded first-layer buffer. Total
+    # round work is then depth x cap instead of ~2 x cap.
+    #
+    # The width is the compile key (`_jagged_round_zone` takes `caps`
+    # statically), so this trades one executable for one per distinct width.
+    # `_row_cap` quantizes -- stacking-height multiples above 2^21, powers of
+    # two below -- so the deep layers collapse onto a handful of shared
+    # classes rather than one per level.
+    layer_widths = [capacity, *transition_widths]
+    layer_caps = [
+        RoundWidthCaps(
+            elements=_row_cap(w),
+            eq_row=1 << num_row_variables,
+            interaction=max(4, num_segments),
+        )
+        for w in layer_widths[: len(layers)]
+    ]
     # Each layer proves through the whole-layer jit zone (one executable per
-    # layer): the caps pre-lay in zorch's `_jagged_round_via_zone` keys the
-    # compile per nrv class, so shards share every layer program and XLA fuses
-    # the inter-round glue instead of the host dispatching per round.
+    # width class): the caps pre-lay in zorch's `_jagged_round_via_zone` keys
+    # the compile per (nrv, cap), so shards of a class share every layer
+    # program and XLA fuses the inter-round glue instead of the host
+    # dispatching per round. Popped in lockstep with `layers` (floor first).
     (_, _, eval_point), transcript, round_proofs = prove_rounds(
         (
-            JaggedGkrLayerRound(layers.pop(), EF_CHALLENGES, caps=caps)
+            JaggedGkrLayerRound(layers.pop(), EF_CHALLENGES, caps=layer_caps.pop())
             for _ in range(len(layers))
         ),
         carry,
