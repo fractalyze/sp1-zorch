@@ -5,16 +5,24 @@ duplex transcript, and `ShardVerifier` is its dual — one verifier role per
 prover role. This page names the levels the proof is built from, then maps
 SP1's reference-dump terms onto them.
 
-## Stage / Round
+## What this repo adds to Stage / Round
 
-- **Stage** — one claim reduction, as a `ProverStage` / `VerifierStage` pair.
-  There are three, composed by `ShardProver` / `ShardVerifier`; the table
-  below is the roster.
-- **Round** — the genuine inner rounds a Stage scans (per-variable sumcheck,
-  GKR layers): `JaggedGkrLayerRound`, `OpenedValuesRound`, …
-- **Seams** — what crosses between Stages is a *claim*, not a shared carry:
-  `GkrOutputClaim` then `TraceEvaluationClaim`, each one Stage's reduced claim
-  and the next one's source claim, so both roles derive the same thing.
+Stage and Round are zorch's, defined in
+`fractalyze/zorch:docs/composition/stage-composition.md` — a Stage is one
+claim reduction as a `ProverStage` / `VerifierStage` pair, a Round is one step
+of a recurrence a Stage scans. Read that for the vocabulary; this page covers
+only what is SP1's.
+
+The bullets below and the table are the SP1 instantiation. They deliberately
+do not restate zorch's definitions: that copy drifted once already, when the
+`ProveChain` / `Bridge` vocabulary was retired upstream and lived on here.
+
+- **The three Stages** — `LogupGkrProver`, `ZerocheckProver` and the jagged
+  opening, composed by `ShardProver` / `ShardVerifier`. The table below is the
+  roster; their inner Rounds are named in its Round-composition column.
+- **Seams** — the claims that cross between them are `GkrOutputClaim` then
+  `TraceEvaluationClaim`, each one Stage's reduced claim and the next one's
+  source claim, so both roles derive the same thing.
 - **Statement vs configuration** — a claim carries what varies per shard, the
   roles carry what does not, and the two trace dimensions fall on either side
   of that line. `ChipMetadata` (which chips, and each one's real row count)

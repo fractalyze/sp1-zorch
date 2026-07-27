@@ -385,7 +385,7 @@ class JaggedZerocheckSummand:
 DEGREE = JaggedZerocheckSummand.DEGREE
 
 if TYPE_CHECKING:
-    # Seam conformance pin (zorch docs/conventions.md "Seam conformance
+    # Seam conformance pin (zorch docs/reference/conventions.md "Seam conformance
     # pins"): any type-checker pass over this module fails if the summand
     # drifts off the GruenSummand vocabulary the Gruen assembly reads.
     _gruen_summand: type[GruenSummand] = JaggedZerocheckSummand

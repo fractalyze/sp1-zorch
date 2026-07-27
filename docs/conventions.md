@@ -3,7 +3,8 @@
 > Code, symbols, file paths, and comments are English.
 
 sp1-zorch follows the team playbook and inherits zorch's conventions
-(`fractalyze/zorch:docs/conventions.md` — `@jit`, naming, type annotations).
+(`fractalyze/zorch:docs/reference/conventions.md` — `@jit`, naming, type
+annotations).
 This file records the rules that bite hardest in an SP1 *consumer* repo:
 how commits are worded, how comments are scoped, how we cite the SP1 reference
 we mirror, and how protocol verifiers are named apart from the byte-match
