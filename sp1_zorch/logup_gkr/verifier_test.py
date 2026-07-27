@@ -13,6 +13,7 @@ without it the tamper would only surface downstream.
 from __future__ import annotations
 
 from frx import Array
+from sp1_zorch.shard_prover.types import ShardWitness
 from sp1_zorch.logup_gkr.prover import LogupGkrProof
 from zorch.transcript import Transcript
 from dataclasses import replace
@@ -76,8 +77,7 @@ def _prove(
     )
     return prove_logup_gkr(
         _gkr_chips(),
-        region,
-        None,
+        ShardWitness(region, None),
         cheap_transcript(F),
         num_betas=_NUM_BETAS,
         num_row_variables=_NUM_ROW_VARIABLES,

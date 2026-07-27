@@ -29,6 +29,7 @@ from sp1_zorch.logup_gkr.head import (
     HeadChallengesRound,
     OutputBindRound,
 )
+from sp1_zorch.shard_prover.types import ShardWitness
 from sp1_zorch.logup_gkr.prover import (
     ChipEvaluation,
     ChipOpeningsRound,
@@ -186,8 +187,7 @@ class ProveLogupGkrTest(absltest.TestCase):
         transcript = cheap_transcript(F)
         transcript, proof = prove_logup_gkr(
             gkr_chips,
-            region,
-            None,
+            ShardWitness(region, None),
             transcript,
             num_betas=3,
             num_row_variables=4,
@@ -258,8 +258,7 @@ class ProveLogupGkrTest(absltest.TestCase):
         region = _region(_main(8), names=("A",))
         _, proof = prove_logup_gkr(
             gkr_chips,
-            region,
-            None,
+            ShardWitness(region, None),
             cheap_transcript(F),
             num_betas=3,
             num_row_variables=3,
@@ -275,8 +274,7 @@ class ProveLogupGkrTest(absltest.TestCase):
         with self.assertRaises(ValueError):
             prove_logup_gkr(
                 gkr_chips,
-                region,
-                None,
+                ShardWitness(region, None),
                 cheap_transcript(F),
                 num_betas=3,
                 num_row_variables=3,
@@ -347,16 +345,14 @@ class CappedProveTest(absltest.TestCase):
         for shard in shards:
             _, exact = prove_logup_gkr(
                 self._CHIPS,
-                shard,
-                None,
+                ShardWitness(shard, None),
                 cheap_transcript(F),
                 num_betas=3,
                 num_row_variables=4,
             )
             capped_t, capped = prove_logup_gkr(
                 self._CHIPS,
-                shard,
-                None,
+                ShardWitness(shard, None),
                 cheap_transcript(F),
                 num_betas=3,
                 num_row_variables=4,
@@ -366,8 +362,7 @@ class CappedProveTest(absltest.TestCase):
             # The advanced transcripts agree too: same next challenge.
             exact_t, _ = prove_logup_gkr(
                 self._CHIPS,
-                shard,
-                None,
+                ShardWitness(shard, None),
                 cheap_transcript(F),
                 num_betas=3,
                 num_row_variables=4,
@@ -398,16 +393,14 @@ class CappedProveTest(absltest.TestCase):
         for shard in shards:
             _, exact = prove_logup_gkr(
                 self._CHIPS,
-                shard,
-                None,
+                ShardWitness(shard, None),
                 cheap_transcript(F),
                 num_betas=3,
                 num_row_variables=4,
             )
             _, capped = prove_logup_gkr(
                 self._CHIPS,
-                shard,
-                None,
+                ShardWitness(shard, None),
                 cheap_transcript(F),
                 num_betas=3,
                 num_row_variables=4,
@@ -422,8 +415,7 @@ class CappedProveTest(absltest.TestCase):
         with self.assertRaisesRegex(ValueError, "slot_cap"):
             prove_logup_gkr(
                 self._CHIPS,
-                shards[0],
-                None,
+                ShardWitness(shards[0], None),
                 cheap_transcript(F),
                 num_betas=3,
                 num_row_variables=4,
@@ -437,8 +429,7 @@ class CappedProveTest(absltest.TestCase):
         for shard in shards:
             prove_logup_gkr(
                 self._CHIPS,
-                shard,
-                None,
+                ShardWitness(shard, None),
                 cheap_transcript(F),
                 num_betas=3,
                 num_row_variables=4,
@@ -462,16 +453,14 @@ class CappedProveTest(absltest.TestCase):
         prep_region = _region(prep, names=("A",))
         _, exact = prove_logup_gkr(
             chips,
-            shard,
-            prep_region,
+            ShardWitness(shard, prep_region),
             cheap_transcript(F),
             num_betas=3,
             num_row_variables=3,
         )
         _, capped = prove_logup_gkr(
             chips,
-            shard,
-            prep_region,
+            ShardWitness(shard, prep_region),
             cheap_transcript(F),
             num_betas=3,
             num_row_variables=3,

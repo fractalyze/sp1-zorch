@@ -29,7 +29,7 @@ from frx import Array, lax
 from rw_constraints import Chip
 from zk_dtypes import efinfo
 
-from zorch.pcs.jagged.region import JaggedRegion
+from sp1_zorch.shard_prover.types import ShardWitness
 from sp1_zorch.logup_gkr.circuit import (
     GkrCapClass,
     GkrChip,
@@ -492,8 +492,7 @@ def _head_zone(
 
 def prove_logup_gkr(
     gkr_chips: Sequence[GkrChip],
-    main_region: JaggedRegion,
-    prep_region: JaggedRegion | None,
+    witness: ShardWitness,
     transcript: Transcript,
     *,
     num_betas: int,
@@ -522,18 +521,20 @@ def prove_logup_gkr(
         transcript,
         pow_bits=pow_bits,
         pow_witness=pow_witness,
-        bf_dtype=main_region.dense.dtype,
+        bf_dtype=witness.main_region.dense.dtype,
     )
     if cap_class is None:
-        cap_class = GkrCapClass.from_heights([int(h) for h in main_region.chip_heights])
+        cap_class = GkrCapClass.from_heights(
+            [int(h) for h in witness.main_region.chip_heights]
+        )
     main_flat, prep_flat, heights = pack_gkr_arrival(
-        main_region, prep_region, cap_class
+        witness.main_region, witness.prep_region, cap_class
     )
-    chip_names, main_widths, _ = region_statics(main_region)
-    prep_names, prep_widths, prep_heights = region_statics(prep_region)
+    chip_names, main_widths, _ = region_statics(witness.main_region)
+    prep_names, prep_widths, prep_heights = region_statics(witness.prep_region)
 
     cap_class.check_slot_cap(
-        [int(h) for h in main_region.chip_heights], gkr_chips, chip_names
+        [int(h) for h in witness.main_region.chip_heights], gkr_chips, chip_names
     )
 
     transcript, alpha, betas = _head_zone(transcript, num_betas=num_betas)

@@ -12,13 +12,16 @@ downstream byte-match stages compare bytes directly.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from functools import partial
+from typing import TYPE_CHECKING, Any
 
+import frx
 import frx.numpy as fnp
 from frx import Array
 
 if TYPE_CHECKING:
     from rw_constraints import Chip
+    from zorch.pcs.jagged.region import JaggedRegion
     from zorch.transcript import Transcript
 
 # SP1 v1: every shard's public-values vector is padded to this length on both
@@ -134,3 +137,66 @@ class ShardData:
     vk: MachineVerifyingKey
     preprocessed_traces: dict[str, Array]
     main_trace_data: MainTraceData
+
+
+@dataclass(frozen=True)
+class ChipMetadata:
+    """Which chips this shard holds and how many real rows each one has, in
+    SP1's chip order.
+
+    The claim-side half of the trace dimensions: row counts change shard to
+    shard, so the statement has to give them, while column counts are fixed by
+    each chip's AIR and stay role configuration (`ChipWidths`). Held as values
+    rather than as the absorb stream they encode — `preamble_stream` derives
+    that — so both roles read the same statement instead of a blob only the
+    transcript can consume.
+    """
+
+    chip_names: tuple[str, ...]
+    num_reals: tuple[int, ...]
+
+    def __post_init__(self) -> None:
+        # Two parallel tuples, so the pairing is an invariant rather than a
+        # shape. Checked here because a mismatch is otherwise inert until
+        # something zips them, and the likeliest way to get one is passing a
+        # region's `row_counts` (its `chip_heights` plus two stacking entries)
+        # where its `chip_heights` belong.
+        if len(self.chip_names) != len(self.num_reals):
+            raise ValueError(
+                f"{len(self.chip_names)} chip names but "
+                f"{len(self.num_reals)} row counts"
+            )
+
+    def by_chip(self) -> dict[str, int]:
+        return dict(zip(self.chip_names, self.num_reals, strict=True))
+
+    def preamble_stream(self, *, dtype: Any) -> Array:
+        """The preamble's chip-metadata stream as one flat array: chip count,
+        then per chip (num_real, name length, name bytes). One flat absorb
+        matches SP1's per-value observes byte-for-byte while skipping hundreds
+        of single-element transcript calls."""
+        metadata: list[int] = [len(self.chip_names)]
+        for name, num_real in zip(self.chip_names, self.num_reals, strict=True):
+            metadata.append(int(num_real))
+            metadata.append(len(name))
+            metadata.extend(name.encode("ascii"))
+        return fnp.array(metadata, dtype)
+
+
+@partial(
+    frx.tree_util.register_dataclass,
+    data_fields=["main_region", "prep_region"],
+    meta_fields=[],
+)
+@dataclass(frozen=True)
+class ShardWitness:
+    """The trace that makes a `ShardClaim` true: the shard's own rows, plus
+    the preprocessed rows when the shard has them.
+
+    A pytree, so the whole witness crosses a ``@jit`` boundary as one donated
+    argument. Its leaves are exactly the regions' dense buffers — a `None`
+    prep region is an empty subtree and contributes none.
+    """
+
+    main_region: JaggedRegion
+    prep_region: JaggedRegion | None = None

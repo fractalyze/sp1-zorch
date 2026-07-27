@@ -213,8 +213,7 @@ class ProveShardChainTest(absltest.TestCase):
         t = t.observe(chip_metadata.preamble_stream(dtype=BF))
         t, gkr_proof = prove_logup_gkr(
             gkr_chips,
-            main_region,
-            prep_region,
+            ShardWitness(main_region, prep_region),
             t,
             num_betas=_NUM_BETAS,
             num_row_variables=_NUM_ROW_VARIABLES,
@@ -601,8 +600,7 @@ class LogupGkrProverCapClassTest(absltest.TestCase):
             public_values = _rand_bf(seed + 1, (8,))
             _, want = prove_logup_gkr(
                 gkr_chips,
-                main_region,
-                None,
+                ShardWitness(main_region, None),
                 cheap_transcript(BF),
                 num_betas=_NUM_BETAS,
                 num_row_variables=_NUM_ROW_VARIABLES,

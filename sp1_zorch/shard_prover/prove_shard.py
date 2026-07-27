@@ -24,7 +24,6 @@ from frx import Array
 from rw_constraints import Chip
 from zk_dtypes import koalabearx4_mont
 
-from zorch.pcs.jagged.region import JaggedRegion
 from zorch.commit.smcs import SingleMatrixCommitmentScheme
 from zorch.pcs.jagged.commit import commit_region
 from zorch.pcs.jagged.open import (
@@ -46,7 +45,11 @@ from sp1_zorch.logup_gkr.prover import (
     LogupGkrProof,
     prove_logup_gkr,
 )
-from sp1_zorch.shard_prover.types import MachineVerifyingKey
+from sp1_zorch.shard_prover.types import (
+    ChipMetadata,
+    MachineVerifyingKey,
+    ShardWitness,
+)
 from sp1_zorch.zerocheck.jagged import TotalCapClass, pack_flat_arrival
 from sp1_zorch.zerocheck.prover import (
     ZerocheckProof,
@@ -69,50 +72,6 @@ from zorch.utils.bits import log2_ceil_usize
 # subtree). Lets the witness cross a @jit boundary as one donatable
 # argument.
 @dataclass(frozen=True)
-class ChipMetadata:
-    """Which chips this shard holds and how many real rows each one has, in
-    SP1's chip order.
-
-    The claim-side half of the trace dimensions: row counts change shard to
-    shard, so the statement has to give them, while column counts are fixed by
-    each chip's AIR and stay role configuration (`ChipWidths`). Held as values
-    rather than as the absorb stream they encode — `preamble_stream` derives
-    that — so both roles read the same statement instead of a blob only the
-    transcript can consume.
-    """
-
-    chip_names: tuple[str, ...]
-    num_reals: tuple[int, ...]
-
-    def __post_init__(self) -> None:
-        # Two parallel tuples, so the pairing is an invariant rather than a
-        # shape. Checked here because a mismatch is otherwise inert until
-        # something zips them, and the likeliest way to get one is passing a
-        # region's `row_counts` (its `chip_heights` plus two stacking entries)
-        # where its `chip_heights` belong.
-        if len(self.chip_names) != len(self.num_reals):
-            raise ValueError(
-                f"{len(self.chip_names)} chip names but "
-                f"{len(self.num_reals)} row counts"
-            )
-
-    def by_chip(self) -> dict[str, int]:
-        return dict(zip(self.chip_names, self.num_reals, strict=True))
-
-    def preamble_stream(self, *, dtype: Any) -> Array:
-        """The preamble's chip-metadata stream as one flat array: chip count,
-        then per chip (num_real, name length, name bytes). One flat absorb
-        matches SP1's per-value observes byte-for-byte while skipping hundreds
-        of single-element transcript calls."""
-        metadata: list[int] = [len(self.chip_names)]
-        for name, num_real in zip(self.chip_names, self.num_reals, strict=True):
-            metadata.append(int(num_real))
-            metadata.append(len(name))
-            metadata.extend(name.encode("ascii"))
-        return fnp.array(metadata, dtype)
-
-
-@dataclass(frozen=True)
 class ShardClaim:
     """Some trace of this shape is a valid execution of the shard.
 
@@ -127,25 +86,6 @@ class ShardClaim:
     vk: MachineVerifyingKey
     public_values: Array
     chip_metadata: ChipMetadata
-
-
-@partial(
-    frx.tree_util.register_dataclass,
-    data_fields=["main_region", "prep_region"],
-    meta_fields=[],
-)
-@dataclass(frozen=True)
-class ShardWitness:
-    """The trace that makes a `ShardClaim` true: the shard's own rows, plus
-    the preprocessed rows when the shard has them.
-
-    A pytree, so the whole witness crosses a ``@jit`` boundary as one donated
-    argument. Its leaves are exactly the regions' dense buffers — a `None`
-    prep region is an empty subtree and contributes none.
-    """
-
-    main_region: JaggedRegion
-    prep_region: JaggedRegion | None = None
 
 
 @dataclass(frozen=True)
@@ -402,8 +342,7 @@ class LogupGkrProver(
         }, "claim's chip metadata does not match the witness's main region"
         transcript, proof = prove_logup_gkr(
             self._gkr_chips,
-            witness.main_region,
-            witness.prep_region,
+            witness,
             transcript,
             num_betas=self._num_betas,
             num_row_variables=self._num_row_variables,

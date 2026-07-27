@@ -25,6 +25,7 @@ from zk_dtypes import koalabearx4_mont as EF
 
 from zorch.pcs.jagged.region import JaggedRegion
 from sp1_zorch.logup_gkr.circuit import GkrCapClass, build_gkr_chips
+from sp1_zorch.shard_prover.types import ShardWitness
 from sp1_zorch.logup_gkr.prover import (
     ChipEvaluation,
     LogupGkrProof,
@@ -209,8 +210,7 @@ def replay_gkr(
         gkr_chips = build_gkr_chips(shard.main_trace_data.chips, order)
     return prove_logup_gkr(
         gkr_chips,
-        main_region,
-        prep_region,
+        ShardWitness(main_region, prep_region),
         preamble,
         num_betas=num_beta_values(shard.main_trace_data.chips),
         num_row_variables=MAX_LOG_ROW_COUNT - 1,
@@ -254,8 +254,7 @@ def seed_gkr_outputs_rolled(
     ) -> tuple[Transcript, Array, Mapping[str, Any]]:
         t, proof = prove_logup_gkr(
             gkr_chips,
-            mr,
-            pr,
+            ShardWitness(mr, pr),
             tr,
             num_betas=num_betas,
             num_row_variables=num_row_variables,
