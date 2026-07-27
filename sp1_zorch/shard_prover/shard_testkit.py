@@ -30,12 +30,14 @@ from zorch.pcs.jagged.region import JaggedRegion
 from zorch.commit.smcs import SingleMatrixCommitmentScheme
 from sp1_zorch.logup_gkr.circuit import GkrChip
 from sp1_zorch.poseidon2.koalabear16 import koalabear16_params
-from sp1_zorch.shard_prover.prove_shard import (
+from sp1_zorch.shard_prover.types import (
     ChipMetadata,
+    ShardWitness,
+)
+from sp1_zorch.shard_prover.prove_shard import (
     ShardClaim,
     ShardProof,
     ShardProver,
-    ShardWitness,
 )
 from sp1_zorch.shard_prover.types import (
     ChipWidths,

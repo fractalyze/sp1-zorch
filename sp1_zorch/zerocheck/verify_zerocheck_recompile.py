@@ -43,10 +43,12 @@ from sp1_zorch.shard_prover.fixture_loader import load_fixture_shard
 from sp1_zorch.shard_prover.types import ShardData
 from zorch.pcs.jagged.region import JaggedRegion
 from zorch.transcript import Transcript
-from sp1_zorch.shard_prover.prove_shard import (
+from sp1_zorch.shard_prover.types import (
     ChipMetadata,
-    GkrOutputClaim,
     ShardWitness,
+)
+from sp1_zorch.shard_prover.prove_shard import (
+    GkrOutputClaim,
     ZerocheckClaim,
     ZerocheckProver,
 )

@@ -81,6 +81,7 @@ py_library(
     visibility = ["//visibility:public"],
     deps = [
         ":shard_prover",
+        "//sp1_zorch/jagged_pcs",
         "//sp1_zorch/logup_gkr",
         "//sp1_zorch/zerocheck",
         "@zorch//zorch:round",

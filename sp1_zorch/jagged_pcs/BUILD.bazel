@@ -1,0 +1,28 @@
+load("@rules_python//python:defs.bzl", "py_library")
+load("@sp1_zorch_pip//:requirements.bzl", "requirement")
+
+# The jagged PCS roles: commit the shard's trace regions, and open them at the
+# point zerocheck reduces to. Kept out of zorch because the body reads SP1
+# shard structure (chip names, the preprocessed/main split).
+py_library(
+    name = "jagged_pcs",
+    srcs = [
+        "__init__.py",
+        "prover.py",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//sp1_zorch/shard_prover",
+        "@zorch//zorch:stage",
+        "@zorch//zorch:transcript",
+        "@zorch//zorch/coding:reed_solomon",
+        "@zorch//zorch/commit:smcs",
+        "@zorch//zorch/pcs/jagged:commit",
+        "@zorch//zorch/pcs/jagged:open",
+        "@zorch//zorch/pcs/jagged:prover",
+        "@zorch//zorch/poly",
+        "@zorch//zorch/utils:bits",
+        requirement("frx"),
+        requirement("zk_dtypes"),
+    ],
+)

@@ -87,17 +87,19 @@ from sp1_zorch.shard_prover.fixture_loader import (
     check_match,
     load_fixture_shard,
 )
-from sp1_zorch.shard_prover.prove_shard import (
+from sp1_zorch.shard_prover.types import (
+    ChipMetadata,
     JaggedCommitData,
+    JaggedOpeningClaim,
+    JaggedOpeningWitness,
+    ShardWitness,
+)
+from sp1_zorch.shard_prover.prove_shard import (
     ShardClaim,
     ShardProof,
     ShardProver,
-    ShardWitness,
     ZerocheckClaim,
-    JaggedOpeningClaim,
-    JaggedOpeningWitness,
     bind_commitment,
-    ChipMetadata,
 )
 from sp1_zorch.shard_prover.replay import (
     MAX_LOG_ROW_COUNT,

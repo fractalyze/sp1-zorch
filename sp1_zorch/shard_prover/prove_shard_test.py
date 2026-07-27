@@ -43,25 +43,26 @@ from sp1_zorch.logup_gkr.prover import (
 )
 from sp1_zorch.poseidon2.koalabear16 import koalabear16_params
 
-from sp1_zorch.shard_prover.prove_shard import (
+from sp1_zorch.jagged_pcs.prover import JaggedPcsProver, _jagged_eval_jit
+from sp1_zorch.shard_prover.types import (
     BoundRoots,
+    ChipMetadata,
     JaggedCommitData,
     JaggedOpeningClaim,
-    JaggedPcsProver,
-    SmcsCommitments,
-    LogupGkrProver,
     JaggedOpeningWitness,
+    ShardWitness,
+    SmcsCommitments,
+    TraceEvaluationClaim,
+)
+from sp1_zorch.shard_prover.prove_shard import (
+    LogupGkrProver,
     absorb_preamble,
     bind_commitment,
     ShardClaim,
     ShardProver,
-    ShardWitness,
     GkrOutputClaim,
     ZerocheckClaim,
     ZerocheckProver,
-    TraceEvaluationClaim,
-    _jagged_eval_jit,
-    ChipMetadata,
 )
 from sp1_zorch.shard_prover.replay import JitPermutation
 from sp1_zorch.shard_prover.types import MachineVerifyingKey

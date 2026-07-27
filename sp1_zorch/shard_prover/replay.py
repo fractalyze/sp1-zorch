@@ -34,9 +34,11 @@ from sp1_zorch.logup_gkr.prover import (
 )
 from sp1_zorch.poseidon2.koalabear16 import koalabear16_params
 from sp1_zorch.shard_prover.fixture_loader import _parse_int_list, _parse_kv_lines
+from sp1_zorch.shard_prover.types import (
+    ChipMetadata,
+)
 from sp1_zorch.shard_prover.prove_shard import (
     absorb_preamble,
-    ChipMetadata,
 )
 from sp1_zorch.shard_prover.types import ShardData
 from zorch.hash.poseidon2.poseidon2 import Poseidon2

@@ -30,12 +30,14 @@ if TYPE_CHECKING:
     from zorch.pcs.jagged.open import Opening, StackedOpenProof
     from zorch.pcs.jagged.region import JaggedRegion
     from sp1_zorch.logup_gkr.prover import LogupGkrProof
-    from sp1_zorch.shard_prover.prove_shard import (
-        ShardClaim,
-        ShardProof,
+    from sp1_zorch.shard_prover.types import (
         ShardWitness,
         TraceEvaluationClaim,
     )
+from sp1_zorch.shard_prover.prove_shard import (
+    ShardClaim,
+    ShardProof,
+)
 
 
 def _u64(v: int) -> bytes:

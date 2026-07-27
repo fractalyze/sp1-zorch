@@ -24,14 +24,16 @@ from zorch.pcs.jagged.prover import JaggedEvalMsg
 
 from zorch.pcs.jagged.open import StackedOpenProof
 from sp1_zorch.logup_gkr.prover import ChipEvaluation, LogupGkrProof
-from sp1_zorch.shard_prover.prove_shard import (
+from sp1_zorch.jagged_pcs.prover import JaggedPcsProof
+from sp1_zorch.shard_prover.types import (
     ChipMetadata,
-    JaggedPcsProof,
+    ShardWitness,
     SmcsCommitments,
+    TraceEvaluationClaim,
+)
+from sp1_zorch.shard_prover.prove_shard import (
     ShardClaim,
     ShardProof,
-    ShardWitness,
-    TraceEvaluationClaim,
 )
 from sp1_zorch.shard_prover.serialize import (
     _encode_basefold_proof,

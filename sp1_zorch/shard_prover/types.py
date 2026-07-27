@@ -11,6 +11,7 @@ downstream byte-match stages compare bytes directly.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import partial
 from typing import TYPE_CHECKING, Any
@@ -21,6 +22,8 @@ from frx import Array
 
 if TYPE_CHECKING:
     from rw_constraints import Chip
+
+    from sp1_zorch.logup_gkr.prover import ChipEvaluation
     from zorch.pcs.jagged.region import JaggedRegion
     from zorch.transcript import Transcript
 
@@ -200,3 +203,109 @@ class ShardWitness:
 
     main_region: JaggedRegion
     prep_region: JaggedRegion | None = None
+
+
+@dataclass(frozen=True)
+class TraceEvaluationClaim:
+    """The trace evaluates to `opened_values` at `point`.
+
+    Zerocheck reduces to this and the jagged opening discharges it: once the
+    constraint sum is checked, all that remains is that the values it was
+    computed over really are the committed trace's.
+    """
+
+    point: Array
+    opened_values: Mapping[str, ChipEvaluation]
+
+
+@dataclass(frozen=True, kw_only=True)
+class BoundRoots:
+    """The structure-bound Merkle roots an opening is checked against.
+
+    Both roles derive these — the verifier from the vk and the proof's
+    commitment — so they are claim data. The raw `SmcsCommitments` the prover
+    also holds are the same two arrays before structure binding, so only a
+    distinct type stops the two being passed to each other's slot; the fields
+    are keyword-only for the same reason.
+    """
+
+    preprocessed: Array
+    main: Array
+
+    def in_round_order(self, has_preprocessed: bool) -> list[Array]:
+        """The roots the opening binds against, in SP1's round order."""
+        return [self.preprocessed, self.main] if has_preprocessed else [self.main]
+
+
+@dataclass(frozen=True, kw_only=True)
+class SmcsCommitments:
+    """Per-round SMCS commitments before structure binding — the wire's
+    ``original_commitments``.
+
+    Prover output the verifier cannot derive, so this is proof data, not claim
+    data. `preprocessed` is absent when the shard commits no preprocessed
+    region, which is why the arity varies where `BoundRoots` is fixed: SP1's
+    verifier always carries the vk's preprocessed commitment even when the
+    prover has no preprocessed region to commit.
+    """
+
+    preprocessed: Array | None = None
+    main: Array
+
+    def in_round_order(self) -> list[Array]:
+        return (
+            [self.preprocessed, self.main]
+            if self.preprocessed is not None
+            else [self.main]
+        )
+
+
+@dataclass(frozen=True)
+class JaggedOpeningClaim:
+    """The trace committed under `roots` evaluates to
+    `evaluation.opened_values` at `evaluation.point`.
+
+    `TraceEvaluationClaim` asserts this of *the* trace; binding it to `roots`
+    is what ties the assertion to the one the prover actually committed to, so
+    discharging this claim leaves nothing to prove.
+    """
+
+    evaluation: TraceEvaluationClaim
+    roots: BoundRoots
+    chip_metadata: ChipMetadata
+
+
+@dataclass(frozen=True)
+class JaggedCommitData:
+    """What the jagged PCS's commit half hands to its open half, per round in
+    [prep, main] order.
+
+    Fiat-Shamir splits the halves across the whole shard proof — the
+    commitment must bind the transcript before LogUp-GKR draws a challenge,
+    and the open cannot run until zerocheck produces the point to open at — so
+    this bridges that gap. It is not prover-only state: the open draws the
+    wire's ``original_commitments`` straight from `commitments`, and each
+    tree's top layer is serialized as that round's raw root. Only the lower
+    layers stay prover-side, to answer the query openings.
+
+    Committing binds in three steps, and which level goes where is why two of
+    them are kept here and the third is not:
+
+    - raw Merkle root, ``digest_layers[-1][0]`` — on the wire as that round's
+      raw root;
+    - shape-bound, `commitments` — the wire's ``original_commitments``;
+    - structure-bound — what the transcript absorbs and `BoundRoots.main` is
+      checked against, so it rides `ShardProof` rather than this type.
+    """
+
+    digest_layers: tuple[list[Array], ...]
+    commitments: SmcsCommitments
+
+
+@dataclass(frozen=True)
+class JaggedOpeningWitness:
+    """What discharging a `JaggedOpeningClaim` takes: the trace itself, and
+    the prover data the PCS kept from committing it."""
+
+    trace: ShardWitness
+    commit_data: JaggedCommitData

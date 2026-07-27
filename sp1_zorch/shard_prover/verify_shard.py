@@ -29,15 +29,17 @@ from zorch.pcs.jagged.verifier import (
 from sp1_zorch.logup_gkr.circuit import GkrChip
 from sp1_zorch.logup_gkr.prover import LogupGkrProof
 from sp1_zorch.logup_gkr.verifier import verify_logup_gkr
+from sp1_zorch.jagged_pcs.prover import JaggedPcsProof
+from sp1_zorch.shard_prover.types import (
+    JaggedOpeningClaim,
+    TraceEvaluationClaim,
+)
 from sp1_zorch.shard_prover.prove_shard import (
     GkrOutputClaim,
-    JaggedOpeningClaim,
     ShardClaim,
     ShardProof,
-    TraceEvaluationClaim,
     ZerocheckClaim,
     bind_commitment,
-    JaggedPcsProof,
 )
 from sp1_zorch.shard_prover.types import ChipWidths
 from sp1_zorch.zerocheck.prover import ZerocheckProof
