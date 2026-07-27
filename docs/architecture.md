@@ -52,7 +52,7 @@ pinned by `shard_prover:prove_shard_test`.
 |---|---|---|---|---|
 | LogUp-GKR (`LogupGkrProver`) | A chain of layer Rounds (output layer → input layer), each layer a chain of per-variable sumcheck rounds | Per-layer running claim, ending in trace-column openings at the final evaluation point | `sp1_zorch/logup_gkr` | `logup_gkr:verify_first_layer`, `logup_gkr:verify_gkr_prove` |
 | Zerocheck (`ZerocheckProver`) | One jagged multi-chip sumcheck: 22 homogeneous per-variable rounds over `eq * (constraint RLC + GKR column term)`, then the per-chip opened values absorbed into the transcript | In: every chip's constraint zero-sum + its GKR opening claim; out: one claim at the sumcheck point + the opened values there (the evaluation Stage's per-column claims) | `sp1_zorch/zerocheck` | `zerocheck:verify_zerocheck` |
-| Jagged opening (`JaggedPcsProver.prove`) | Outer/inner sumcheck reducing the committed trace to `D(z_final)`, then the stacked BaseFold open of `D` at that point | In: the zerocheck point + per-column claims off its source claim; out: the evaluation proof (jagged eval + stacked BaseFold PCS) | `zorch/pcs/jagged` | `shard_prover:verify_prove_shard` |
+| Jagged opening (`JaggedPcsProver.prove`) | Outer/inner sumcheck reducing the committed trace to `D(z_final)`, then the stacked BaseFold open of `D` at that point | In: the zerocheck point + per-column claims off its source claim; out: the evaluation proof (jagged eval + stacked BaseFold PCS) | `sp1_zorch/jagged_pcs`, over zorch's `zorch/pcs/jagged` primitives | `shard_prover:verify_prove_shard` |
 
 Each runnable above gates one Stage's math; `shard_prover:verify_prove_shard`
 gates the *composition* — it runs the assembled `ShardProver` over a dump and
