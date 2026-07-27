@@ -88,9 +88,13 @@ class ChipEvaluation:
 
 @dataclass(frozen=True)
 class LogupGkrProof:
-    """The LogUp-GKR stage's proof: grind witness, circuit output, one round
-    proof per layer (output to input), the final evaluation point, and the
-    per-chip trace openings at it.
+    """Reduces the shard's LogUp bus-balance statement to a `GkrOutputClaim`.
+
+    A verifier replays the layer chain from output to input — grind witness,
+    circuit output, one round proof per layer — and arrives at the evaluation
+    point and per-chip openings the next Stage takes as its hypothesis. What
+    it proves is that those openings are the trace's; what it leaves open is
+    everything about the constraints.
 
     Each layer's sumcheck point rides on its ``JaggedLayerProof.point``
     (zorch retains it at prove time); the shard wire serializes it per layer

@@ -275,8 +275,12 @@ class JaggedOpeningWitness:
 
 @dataclass(frozen=True)
 class ShardProof:
-    """The wire sections: the trace commitment, then one reduction proof per
-    Stage."""
+    """What a verifier needs to check a `ShardClaim` without the trace.
+
+    The commitment fixes which trace is being talked about; the three
+    reduction proofs then carry the verifier along the same chain the prover
+    walked, one section per Stage, ending at the trivial claim.
+    """
 
     commitment: Array
     gkr: LogupGkrProof
@@ -581,9 +585,12 @@ class ZerocheckProver(
 
 @dataclass(frozen=True)
 class JaggedPcsProof:
-    """The jagged evaluation proof: the outer/inner sumcheck reducing the
-    committed trace to ``D(z_final)``, then the stacked BaseFold open of ``D``
-    at that point."""
+    """Discharges a `JaggedOpeningClaim`, leaving nothing to prove.
+
+    Two legs: the outer/inner sumcheck reducing the committed trace to a
+    single value ``D(z_final)``, then the stacked BaseFold open showing that
+    value really is the commitment's, at that point.
+    """
 
     eval: JaggedEvalMsg
     open: StackedOpenProof
