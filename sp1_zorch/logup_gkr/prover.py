@@ -101,7 +101,7 @@ class LogupGkrProof:
     (``point_and_eval``).
     """
 
-    witness: Array
+    pow_witness: Array
     circuit_output: LogUpGkrOutput
     round_proofs: list[JaggedLayerProof]
     eval_point: Array
@@ -308,7 +308,7 @@ def resolve_witness_and_grind(
     transcript: GrindingTranscript,
     *,
     pow_bits: int,
-    witness: Array | None,
+    pow_witness: Array | None,
     bf_dtype: Any,
 ) -> tuple[Transcript, Array]:
     """Apply the witness-default policy and run the grind, returning the
@@ -326,7 +326,7 @@ def resolve_witness_and_grind(
         # Fail closed at the stage boundary: a negative bit count is nonsense,
         # and the branch below would otherwise treat it as the zero-bit replay.
         raise ValueError("pow_bits must be non-negative")
-    if pow_bits > 0 and witness is None:
+    if pow_bits > 0 and pow_witness is None:
         # Grind for the witness -- the "search" half this function's name
         # promises, now built. zorch's windowed grinder enumerates canonical
         # witnesses 0, 1, 2, ... for the lowest whose ``check_witness`` gate has
@@ -338,20 +338,20 @@ def resolve_witness_and_grind(
         # byte-identical to the recorded-witness replay path (and to the FRI
         # open-phase grind already built the same way in ``jagged/open.py``:
         # ``t.grind(pow_bits)``).
-        _, witness = transcript.grind(pow_bits)
-    elif witness is None:
+        _, pow_witness = transcript.grind(pow_bits)
+    elif pow_witness is None:
         # pow_bits == 0 with no witness: a dummy zero just advances the stream.
         # A *passed* witness at pow_bits == 0 is a recorded-witness replay -- the
         # zero-bit GrindRound gate observes it (the transcript's `message`)
         # without host-reading the verdict, so the stage stays jit-traceable AND
         # the transcript matches the judged pow_bits > 0 path. Zeroing it here
         # would diverge that transcript, so keep the caller's witness.
-        witness = fnp.zeros((), dtype=bf_dtype)
+        pow_witness = fnp.zeros((), dtype=bf_dtype)
     # The head schedule (grind, challenges, output binding) runs as the
     # shared glue Rounds -- the byte-match harness and the shard benchmark
     # thread the same definitions, so the three cannot drift.
-    _, transcript, _ = GrindRound(witness, pow_bits=pow_bits)(None, transcript)
-    return transcript, witness
+    _, transcript, _ = GrindRound(pow_witness, pow_bits=pow_bits)(None, transcript)
+    return transcript, pow_witness
 
 
 # Right-size the fixed-width round buffer (xla#179) to a shared compile class.
@@ -395,7 +395,7 @@ def _prove_from_first_layer(
     class_counts: tuple[int, ...],
     slot_cap: int,
     transcript: Transcript,
-    witness: Array,
+    pow_witness: Array,
     *,
     num_row_variables: int,
     open_fn: Callable[
@@ -469,7 +469,7 @@ def _prove_from_first_layer(
 
     transcript, chip_openings = open_fn(eval_point, transcript)
     proof = LogupGkrProof(
-        witness=witness,
+        pow_witness=pow_witness,
         circuit_output=output,
         round_proofs=round_proofs,
         eval_point=eval_point,
@@ -500,7 +500,7 @@ def prove_logup_gkr(
     num_row_variables: int,
     cap_class: GkrCapClass | None = None,
     pow_bits: int = 0,
-    witness: Array | None = None,
+    pow_witness: Array | None = None,
 ) -> tuple[Transcript, LogupGkrProof]:
     """Run the LogUp-GKR stage on a transcript positioned after the shard
     preamble — the single source for the stage (``LogupGkrStage``:
@@ -518,10 +518,10 @@ def prove_logup_gkr(
     no-ops in the sumcheck (the virtual-mass correction subtracts exactly
     their eq weight), and zeros the open folds into its correction factors.
     """
-    transcript, witness = resolve_witness_and_grind(
+    transcript, pow_witness = resolve_witness_and_grind(
         transcript,
         pow_bits=pow_bits,
-        witness=witness,
+        pow_witness=pow_witness,
         bf_dtype=main_region.dense.dtype,
     )
     if cap_class is None:
@@ -556,7 +556,7 @@ def prove_logup_gkr(
         cap_class.slot_counts(gkr_chips, chip_names),
         cap_class.resolved_slot_cap(gkr_chips, chip_names),
         transcript,
-        witness,
+        pow_witness,
         num_row_variables=num_row_variables,
         open_fn=lambda eval_point, t: open_traces_capped(
             main_flat,

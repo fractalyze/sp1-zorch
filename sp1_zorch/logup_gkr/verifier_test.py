@@ -66,7 +66,7 @@ def _gkr_chips() -> list[GkrChip]:
 
 
 def _prove(
-    *, pow_bits: int = 0, witness: Array | None = None
+    *, pow_bits: int = 0, pow_witness: Array | None = None
 ) -> tuple[Transcript, LogupGkrProof]:
     region = JaggedRegion.from_chips(
         [_main(_CHIP_HEIGHTS["A"]), _main(_CHIP_HEIGHTS["B"], offset=100)],
@@ -82,7 +82,7 @@ def _prove(
         num_betas=_NUM_BETAS,
         num_row_variables=_NUM_ROW_VARIABLES,
         pow_bits=pow_bits,
-        witness=witness,
+        pow_witness=pow_witness,
     )
 
 
@@ -162,10 +162,10 @@ class VerifyLogupGkrTest(absltest.TestCase):
             if not bool(cheap_transcript(F).check_witness(1, w)[1])
         )
 
-        _, proof = _prove(pow_bits=1, witness=passing)
+        _, proof = _prove(pow_bits=1, pow_witness=passing)
         _, _, ok = _verify(proof, pow_bits=1)
         self.assertTrue(bool(ok))
-        _, _, ok = _verify(replace(proof, witness=failing), pow_bits=1)
+        _, _, ok = _verify(replace(proof, pow_witness=failing), pow_bits=1)
         self.assertFalse(bool(ok))
 
     def test_wrong_layer_count_raises(self) -> None:

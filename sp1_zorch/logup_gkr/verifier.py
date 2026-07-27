@@ -188,7 +188,7 @@ def verify_logup_gkr(
     # Grind gate. The prover's GrindRound judges host-side and raises; the
     # dual needs the verdict as a traced leg of ok, so it calls the same
     # one-definition predicate directly.
-    transcript, ok_pow = transcript.check_witness(pow_bits, proof.witness)
+    transcript, ok_pow = transcript.check_witness(pow_bits, proof.pow_witness)
 
     _, transcript, head = HeadChallengesRound(num_betas)(None, transcript)
     carry, transcript, _ = OutputBindRound(proof.circuit_output)(None, transcript)

@@ -373,14 +373,14 @@ class LogupGkrProver(
         num_betas: int,
         num_row_variables: int,
         pow_bits: int = 0,
-        witness: Array | None = None,
+        pow_witness: Array | None = None,
         gkr_cap_class: GkrCapClass | None = None,
     ) -> None:
         self._gkr_chips = tuple(gkr_chips)
         self._num_betas = num_betas
         self._num_row_variables = num_row_variables
         self._pow_bits = pow_bits
-        self._witness = witness
+        self._pow_witness = pow_witness
         self._gkr_cap_class = gkr_cap_class
 
     def prove(
@@ -408,7 +408,7 @@ class LogupGkrProver(
             num_betas=self._num_betas,
             num_row_variables=self._num_row_variables,
             pow_bits=self._pow_bits,
-            witness=self._witness,
+            pow_witness=self._pow_witness,
             cap_class=self._gkr_cap_class,
         )
         return ProveResult(
@@ -904,7 +904,7 @@ class ShardProver(ProverStage[ShardClaim, ShardWitness, TrivialClaim, ShardProof
         open_num_queries: int,
         open_pow_bits: int = 0,
         pow_bits: int = 0,
-        witness: Array | None = None,
+        pow_witness: Array | None = None,
         jit: bool = True,
         zerocheck_total_cap_class: TotalCapClass | None = None,
         gkr_cap_class: GkrCapClass | None = None,
@@ -914,7 +914,7 @@ class ShardProver(ProverStage[ShardClaim, ShardWitness, TrivialClaim, ShardProof
             num_betas=num_betas,
             num_row_variables=num_row_variables,
             pow_bits=pow_bits,
-            witness=witness,
+            pow_witness=pow_witness,
             gkr_cap_class=gkr_cap_class,
         )
         self.zerocheck = ZerocheckProver(

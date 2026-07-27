@@ -353,7 +353,7 @@ class ProveShardChainTest(absltest.TestCase):
     def test_gkr_message_matches(self) -> None:
         got = self.msgs[1]
         _assert_bytes_equal(got.eval_point, self.want_gkr.eval_point, "eval_point")
-        _assert_bytes_equal(got.witness, self.want_gkr.witness, "witness")
+        _assert_bytes_equal(got.pow_witness, self.want_gkr.pow_witness, "pow_witness")
         for name, want in self.want_gkr.chip_openings.items():
             _assert_bytes_equal(got.chip_openings[name].main, want.main, name)
             if want.preprocessed is not None:

@@ -152,7 +152,7 @@ def _gkr_proof() -> LogupGkrProof:
         denominator_1=fnp.array(10, dtype=F),
     )
     return LogupGkrProof(
-        witness=fnp.array(15, dtype=F),
+        pow_witness=fnp.array(15, dtype=F),
         circuit_output=LogUpGkrOutput(
             numerator=fnp.array([1, 2], dtype=F),
             denominator=fnp.array([3, 4], dtype=F),

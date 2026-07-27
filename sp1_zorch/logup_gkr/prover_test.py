@@ -176,7 +176,7 @@ def _proof_digest(proof: LogupGkrProof) -> str:
 
 
 class ProveLogupGkrTest(absltest.TestCase):
-    def _prove(self, *, witness: Array | None = None) -> LogupGkrProof:
+    def _prove(self, *, pow_witness: Array | None = None) -> LogupGkrProof:
         main_a, main_b = _main(24), _main(4, offset=100)
         gkr_chips = [
             GkrChip("A", (_interaction(0, 1),)),
@@ -191,7 +191,7 @@ class ProveLogupGkrTest(absltest.TestCase):
             transcript,
             num_betas=3,
             num_row_variables=4,
-            witness=witness,
+            pow_witness=pow_witness,
         )
         return proof
 
@@ -211,7 +211,7 @@ class ProveLogupGkrTest(absltest.TestCase):
         proof = self._prove()
 
         transcript = cheap_transcript(F)
-        _, transcript, _ = GrindRound(proof.witness)(None, transcript)
+        _, transcript, _ = GrindRound(proof.pow_witness)(None, transcript)
         _, transcript, _ = HeadChallengesRound(3)(None, transcript)
         carry, transcript, _ = OutputBindRound(proof.circuit_output)(None, transcript)
 
@@ -265,7 +265,7 @@ class ProveLogupGkrTest(absltest.TestCase):
             num_row_variables=3,
             pow_bits=8,
         )
-        self.assertIsNotNone(proof.witness)
+        self.assertIsNotNone(proof.pow_witness)
 
     def test_negative_pow_bits_rejected(self) -> None:
         # Fail closed at the stage boundary -- a negative bit count would
@@ -291,12 +291,12 @@ class ProveLogupGkrTest(absltest.TestCase):
         # so it must reach the sponge. Zeroing a passed witness diverged that
         # replay from the judged pow_bits > 0 path.
         zero = self._prove()
-        self.assertTrue(bool(fnp.all(zero.witness == fnp.zeros((), F))))
+        self.assertTrue(bool(fnp.all(zero.pow_witness == fnp.zeros((), F))))
 
         passed = fnp.ones((), F)
-        proof = self._prove(witness=passed)
+        proof = self._prove(pow_witness=passed)
         # Kept, not discarded: the proof carries exactly the witness observed.
-        self.assertTrue(bool(fnp.all(proof.witness == passed)))
+        self.assertTrue(bool(fnp.all(proof.pow_witness == passed)))
         # And observing it perturbs the post-grind sponge, so the head
         # challenges -- and the eval_point they drive -- diverge from the
         # zero-witness run.
@@ -339,7 +339,7 @@ class CappedProveTest(absltest.TestCase):
                 self.assertIsNone(got_prep)
             else:
                 self.assertTrue(bool(fnp.all(got_prep == ev.preprocessed)))
-        self.assertTrue(bool(fnp.all(got.witness == want.witness)))
+        self.assertTrue(bool(fnp.all(got.pow_witness == want.pow_witness)))
 
     def test_capped_prove_matches_exact_across_one_class(self) -> None:
         shards = self._shards()
@@ -519,33 +519,33 @@ class LiveGrindTest(absltest.TestCase):
         # Small pow_bits: fast to grind, still exercises the real search + gate.
         pow_bits = 6
         orig = cheap_transcript(F)
-        # witness=None -> must grind. resolve runs GrindRound(pow_bits) internally,
+        # pow_witness=None -> must grind. resolve runs GrindRound(pow_bits) internally,
         # which raises unless the witness passes the pow_bits gate; returning at
         # all proves the search found a gate-passing witness.
-        t_grind, witness = resolve_witness_and_grind(
-            orig, pow_bits=pow_bits, witness=None, bf_dtype=F
+        t_grind, found = resolve_witness_and_grind(
+            orig, pow_bits=pow_bits, pow_witness=None, bf_dtype=F
         )
-        self.assertIsNotNone(witness)
+        self.assertIsNotNone(found)
         # Replaying the found witness (the recorded-dump path) must reproduce the
         # exact post-grind stream: same resolved witness, same next challenge.
         t_replay, w_replay = resolve_witness_and_grind(
-            orig, pow_bits=pow_bits, witness=witness, bf_dtype=F
+            orig, pow_bits=pow_bits, pow_witness=found, bf_dtype=F
         )
-        self.assertTrue(bool(fnp.all(w_replay == witness)))
+        self.assertTrue(bool(fnp.all(w_replay == found)))
         _, c_grind = t_grind.sample(1)
         _, c_replay = t_replay.sample(1)
         self.assertTrue(bool(fnp.all(c_grind == c_replay)))
 
     def test_zero_pow_bits_defaults_to_zero_witness(self) -> None:
         _, witness = resolve_witness_and_grind(
-            cheap_transcript(F), pow_bits=0, witness=None, bf_dtype=F
+            cheap_transcript(F), pow_bits=0, pow_witness=None, bf_dtype=F
         )
         self.assertTrue(bool(fnp.all(witness == fnp.zeros((), witness.dtype))))
 
     def test_negative_pow_bits_rejected(self) -> None:
         with self.assertRaises(ValueError):
             resolve_witness_and_grind(
-                cheap_transcript(F), pow_bits=-1, witness=None, bf_dtype=F
+                cheap_transcript(F), pow_bits=-1, pow_witness=None, bf_dtype=F
             )
 
 

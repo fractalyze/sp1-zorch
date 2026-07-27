@@ -215,7 +215,7 @@ def replay_gkr(
         num_betas=num_beta_values(shard.main_trace_data.chips),
         num_row_variables=MAX_LOG_ROW_COUNT - 1,
         pow_bits=pow_bits,
-        witness=fnp.array(int(state["witness"]), F),
+        pow_witness=fnp.array(int(state["witness"]), F),
         cap_class=cap_class,
     )
 
@@ -260,7 +260,7 @@ def seed_gkr_outputs_rolled(
             num_betas=num_betas,
             num_row_variables=num_row_variables,
             pow_bits=0,
-            witness=w,
+            pow_witness=w,
         )
         return t, proof.eval_point, proof.chip_openings
 

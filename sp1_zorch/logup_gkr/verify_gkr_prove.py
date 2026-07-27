@@ -87,7 +87,7 @@ def _replay_challenges_to_z1(
     which challenge first diverged when a later anchor mismatches. Runs
     after the prove since the z1 leg absorbs the circuit output."""
     # pow_bits=0: advance the recorded witness's stream without re-judging it.
-    _, transcript, _ = GrindRound(proof.witness)(None, transcript)
+    _, transcript, _ = GrindRound(proof.pow_witness)(None, transcript)
     ok = check_match(
         "post_grind_diag", clone_diag(transcript), int(state["witness_diag"])
     )
@@ -137,7 +137,7 @@ def _check_public_values_leg(
     circuit's cumulative sum ``sum(num/den)`` cancels the interaction digest.
     A from-scratch re-prove of an unbalanced witness changes that sum and
     fails the equality; a valid shard balances exactly."""
-    _, transcript, _ = GrindRound(proof.witness)(None, preamble)
+    _, transcript, _ = GrindRound(proof.pow_witness)(None, preamble)
     _, transcript, head = HeadChallengesRound(num_betas)(None, transcript)
     public_values = shard.main_trace_data.public_values
     accumulator, digest = eval_public_values(

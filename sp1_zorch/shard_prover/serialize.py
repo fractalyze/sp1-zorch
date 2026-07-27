@@ -107,7 +107,7 @@ def _encode_partial_sumcheck_proof(
 
 def _encode_logup_gkr_proof(proof: LogupGkrProof, max_log_row_count: int) -> bytes:
     """Encode ``LogupGkrProof<F, EF>`` (rust field order: circuit_output,
-    round_proofs, logup_evaluations, witness).
+    round_proofs, logup_evaluations, witness — the last is `pow_witness` here).
 
     ``proof`` is ``sp1_zorch.logup_gkr.prover.LogupGkrProof``; the wire's
     per-layer ``point_and_eval`` reads each round proof's ``point``, retained
@@ -151,7 +151,7 @@ def _encode_logup_gkr_proof(proof: LogupGkrProof, max_log_row_count: int) -> byt
         else:
             parts.append(b"\x00")
 
-    parts.append(_field_bytes(proof.witness))
+    parts.append(_field_bytes(proof.pow_witness))
     return b"".join(parts)
 
 

@@ -54,17 +54,17 @@ class GrindRound:
     of this round the proof records.
     """
 
-    def __init__(self, witness: Array, *, pow_bits: int = 0) -> None:
-        self._witness = witness
+    def __init__(self, pow_witness: Array, *, pow_bits: int = 0) -> None:
+        self._pow_witness = pow_witness
         self._pow_bits = pow_bits
 
     def __call__(
         self, carry: Any, transcript: GrindingTranscript
     ) -> tuple[Any, GrindingTranscript, Array]:
-        transcript, ok = transcript.check_witness(self._pow_bits, self._witness)
+        transcript, ok = transcript.check_witness(self._pow_bits, self._pow_witness)
         if self._pow_bits > 0 and not bool(ok):
             raise ValueError(f"witness fails the {self._pow_bits}-bit proof of work")
-        return carry, transcript, self._witness
+        return carry, transcript, self._pow_witness
 
 
 @dataclass(frozen=True)

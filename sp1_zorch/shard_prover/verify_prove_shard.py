@@ -528,7 +528,7 @@ def _verify_shard(
         pow_bits=_GKR_POW_BITS.value,
         open_num_queries=_OPEN_NUM_QUERIES.value,
         open_pow_bits=_OPEN_POW_BITS.value,
-        witness=witness,
+        pow_witness=witness,
         jit=True,
         zerocheck_total_cap_class=tc_class,
         gkr_cap_class=gkr_class,
