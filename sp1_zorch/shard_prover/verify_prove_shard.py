@@ -27,12 +27,11 @@ via the ``sp1_verify_shard`` FFI (``SP1_JAX_FFI_LIB`` must point at
 fractalyze/sp1-zorch#21.
 
 Each downstream Stage's internals are gated by its own runnable
-(``logup_gkr:verify_gkr_prove``, ``zerocheck:verify_zerocheck``, plus the eval
-Stage's ``jagged:prover_test`` / ``jagged:open_test``); the trace commit's
-byte-match is this tool at ``--max_phase=1`` and its structure is unit-tested in
-``commit:trace_commit_test``. This tool checks the composition, not each Stage's
-math. The chain wiring itself is unit-tested against a synthetic reference in
-``prove_shard_test``.
+(``logup_gkr:verify_gkr_prove`` and ``zerocheck:verify_zerocheck`` here, the
+jagged eval's own tests in zorch under ``zorch/pcs/jagged``); the trace commit's
+byte-match is this tool at ``--max_phase=1``, and ``prove_shard_test`` pins both
+its structure and the chain wiring against a synthetic reference. This tool
+checks the composition, not any one Stage's math.
 
 Real-block data (~1.5 GB/shard) plus the GPU trace commit keep this a
 runnable, not a unit test. Needs a CUDA GPU.

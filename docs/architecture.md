@@ -43,7 +43,8 @@ Between the halves both roles call one shared `bind_commitment`, which absorbs
 SP1's preamble stream and names the roots the opening is checked against, so an
 ordering edit cannot land in one Fiat-Shamir stream and not the other. The
 commit half is byte-matched by `shard_prover:verify_prove_shard --max_phase=1`
-and unit-tested for structure in `commit:trace_commit_test`.
+and its structure — digest trees kept, the trace-sized mle dropped — is
+pinned by `shard_prover:prove_shard_test`.
 
 ## Stages
 
