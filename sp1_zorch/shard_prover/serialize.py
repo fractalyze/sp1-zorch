@@ -14,7 +14,8 @@ their base-field limbs before conversion.
 from __future__ import annotations
 
 import struct
-from typing import TYPE_CHECKING
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any
 
 import frx.numpy as fnp
 import numpy as np
@@ -24,14 +25,19 @@ from zk_dtypes import efinfo
 from sp1_zorch.shard_prover.types import ChipOpenedValues, MachineVerifyingKey
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
-
     from zorch.pcs.jagged.prover import JaggedEvalMsg
 
     from zorch.pcs.jagged.open import Opening, StackedOpenProof
+    from zorch.pcs.jagged.region import JaggedRegion
     from sp1_zorch.logup_gkr.prover import LogupGkrProof
-    from sp1_zorch.shard_prover.prove_shard import ShardBridge, JaggedPcsProof
-    from sp1_zorch.zerocheck.prover import ZerocheckProof
+    from sp1_zorch.shard_prover.types import (
+        ShardWitness,
+        TraceEvaluationClaim,
+    )
+from sp1_zorch.shard_prover.prove_shard import (
+    ShardClaim,
+    ShardProof,
+)
 
 
 def _u64(v: int) -> bytes:
@@ -47,7 +53,7 @@ def _vec_prefix(length: int) -> bytes:
 
 
 def _field_bytes(arr: Array) -> bytes:
-    """Canonical LE bytes for any BF/EF field array (any shape)."""
+    """Canonical LE bytes for any base- or extension-field array (any shape)."""
     a = fnp.atleast_1d(arr)
     if a.dtype.itemsize > 4:
         a = lax.bitcast_convert_type(a, efinfo(a.dtype).base_field_dtype)
@@ -101,9 +107,9 @@ def _encode_partial_sumcheck_proof(
     return b"".join(parts)
 
 
-def _encode_logup_gkr_proof(proof, max_log_row_count: int) -> bytes:
+def _encode_logup_gkr_proof(proof: LogupGkrProof, max_log_row_count: int) -> bytes:
     """Encode ``LogupGkrProof<F, EF>`` (rust field order: circuit_output,
-    round_proofs, logup_evaluations, witness).
+    round_proofs, logup_evaluations, witness — the last is `pow_witness` here).
 
     ``proof`` is ``sp1_zorch.logup_gkr.prover.LogupGkrProof``; the wire's
     per-layer ``point_and_eval`` reads each round proof's ``point``, retained
@@ -147,11 +153,11 @@ def _encode_logup_gkr_proof(proof, max_log_row_count: int) -> bytes:
         else:
             parts.append(b"\x00")
 
-    parts.append(_field_bytes(proof.witness))
+    parts.append(_field_bytes(proof.pow_witness))
     return b"".join(parts)
 
 
-def _encode_digest(arr) -> bytes:
+def _encode_digest(arr: Any) -> bytes:
     """Encode ``GC::Digest = [F; 8]`` = 8 × canonical u32."""
     if hasattr(arr, "dtype"):
         return _field_bytes(arr)[:32]
@@ -184,7 +190,9 @@ def _encode_chip_opened_values(cov: ChipOpenedValues, max_log_row_count: int) ->
 
 
 def _encode_shard_opened_values(
-    chip_opened_values, chip_names, max_log_row_count: int
+    chip_opened_values: Sequence[ChipOpenedValues],
+    chip_names: Sequence[str],
+    max_log_row_count: int,
 ) -> bytes:
     """Encode ``ShardOpenedValues<F, EF> = {chips: BTreeMap<String,
     ChipOpenedValues>}`` — ascending chip-name order."""
@@ -343,22 +351,18 @@ def encode_vk(vk: MachineVerifyingKey) -> bytes:
     )
 
 
-def chip_opened_values(bridge: ShardBridge) -> list[ChipOpenedValues]:
-    """Convert the bridge's zerocheck opened values to the wire's per-chip
-    shape. The split off the final folded traces is the zerocheck stage's
-    (``zerocheck.prover.split_opened_values`` — one view shared with the
-    transcript absorbs and the jagged-eval claims); ``degree`` is the chip's
-    live row count — the height whose bits the wire spells out.
+def chip_opened_values(
+    evaluation: TraceEvaluationClaim, main: JaggedRegion
+) -> list[ChipOpenedValues]:
+    """Convert the zerocheck reduced claim's opened values to the wire's
+    per-chip shape. The split off the final folded traces is the zerocheck
+    stage's (``zerocheck.prover.split_opened_values`` — one view shared with
+    the transcript absorbs and the jagged-eval claims); ``degree`` is the
+    chip's live row count — the height whose bits the wire spells out.
     """
-    if bridge.zc_opened_values is None:
-        raise ValueError(
-            "the bridge holds no zerocheck opened values; run the chain "
-            "through ZerocheckStage before assembling the wire"
-        )
-    main = bridge.main_region
     values = []
     for i, name in enumerate(main.chip_names):
-        ev = bridge.zc_opened_values[name]
+        ev = evaluation.opened_values[name]
         values.append(
             ChipOpenedValues(
                 preprocessed_evals=ev.preprocessed,
@@ -370,25 +374,29 @@ def chip_opened_values(bridge: ShardBridge) -> list[ChipOpenedValues]:
 
 
 def encode_shard_proof(
-    bridge: ShardBridge,
-    commitment: Array,
-    gkr_proof: LogupGkrProof,
-    zerocheck_proof: ZerocheckProof,
-    jagged_proof: JaggedPcsProof,
+    claim: ShardClaim,
+    witness: ShardWitness,
+    proof: ShardProof,
+    evaluation: TraceEvaluationClaim,
+    commit_digest_layers: tuple[list[Array], ...],
     *,
     max_log_row_count: int,
 ) -> bytes:
     """Encode ``ShardProof<SP1GlobalContext, SP1PcsProofInner>`` to bincode.
 
-    ``bridge`` is the prove_shard chain's final bridge (committed regions +
-    stacked witnesses); the remaining arguments are the chain's messages in
-    stage order. Serde field order: public values, main commitment,
-    LogUp-GKR proof, zerocheck partial sumcheck, shard opened values,
-    evaluation proof.
+    Takes the shard statement and its proof, plus the two prover-only products
+    the wire needs but no claim carries: the zerocheck reduced claim's opened
+    values and the commit-time digest trees. The per-round SMCS commitments
+    ride the jagged proof, since the verifier cannot derive them. Serde field order: public values,
+    main commitment, LogUp-GKR proof, zerocheck partial sumcheck, shard opened
+    values, evaluation proof.
     """
-    parts = [_encode_point(bridge.public_values)]
+    gkr_proof = proof.gkr
+    zerocheck_proof = proof.zerocheck
+    jagged_proof = proof.jagged
+    parts = [_encode_point(claim.public_values)]
 
-    parts.append(_field_bytes(commitment))
+    parts.append(_field_bytes(proof.commitment))
 
     parts.append(_encode_logup_gkr_proof(gkr_proof, max_log_row_count))
 
@@ -405,25 +413,25 @@ def encode_shard_proof(
 
     parts.append(
         _encode_shard_opened_values(
-            chip_opened_values(bridge),
-            list(bridge.main_region.chip_names),
+            chip_opened_values(evaluation, witness.main_region),
+            list(witness.main_region.chip_names),
             max_log_row_count,
         )
     )
 
-    # Committed-round order is [prep, main] — the order TraceCommitStage
-    # wrote the bridge's StackedRounds in.
+    # Committed-round order is [prep, main] — the order the PCS commit half
+    # wrote its StackedRounds in.
     regions = [
         region
-        for region in (bridge.prep_region, bridge.main_region)
+        for region in (witness.prep_region, witness.main_region)
         if region is not None
     ]
     component_raw_roots = [
-        digest_layers[-1][0] for digest_layers in bridge.commit_digest_layers
+        digest_layers[-1][0] for digest_layers in commit_digest_layers
     ]
-    # original_commitments = the SMCS commitment (pre-structure-binding), retained
-    # off the commit stage in the same [prep, main] order as commit_digest_layers.
-    component_commitments = list(bridge.commit_commitments)
+    # smcs_commitments = the SMCS commitment (pre-structure-binding), retained
+    # off the PCS commit in the same [prep, main] order as commit_digest_layers.
+    component_commitments = jagged_proof.smcs_commitments.in_round_order()
     row_column_counts = [
         list(zip(region.row_counts, region.column_counts, strict=True))
         for region in regions

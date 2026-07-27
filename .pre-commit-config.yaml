@@ -18,10 +18,29 @@ repos:
       - id: requirements-txt-fixer
         exclude: requirements_lock_.*\.txt
 
+  - repo: https://github.com/psf/black
+    rev: 24.1.1
+    hooks:
+      - id: black
+        args: ["-l", "88"]
+
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.4.10
     hooks:
       - id: ruff
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v2.1.0
+    hooks:
+      - id: mypy
+        # Enforces the full-annotation convention (disallow_untyped_defs lives
+        # in pyproject). Checks the whole sp1_zorch/ tree rather than just the
+        # changed files, so cross-module inference stays consistent. numpy is
+        # capped below 2.4: its 2.4 stubs use `type X = ...`, which mypy
+        # rejects under our python_version = 3.11 and which aborts the run
+        # before any of our own code is checked.
+        pass_filenames: false
+        additional_dependencies: ["numpy<2.4"]
 
   - repo: https://github.com/keith/pre-commit-buildifier
     rev: 8.0.1

@@ -32,7 +32,11 @@ import frx.numpy as fnp
 from frx import Array
 
 from sp1_zorch.logup_gkr.circuit import GkrChip, generate_interaction_vals_batch
-from sp1_zorch.logup_gkr.head import EF_LIMBS, HeadChallengesRound, OutputBindRound
+from sp1_zorch.logup_gkr.head import (
+    EF_CHALLENGES,
+    bind_circuit_output,
+    sample_head_challenges,
+)
 from sp1_zorch.logup_gkr.prover import (
     ChipEvaluation,
     ChipOpeningsRound,
@@ -42,7 +46,7 @@ from sp1_zorch.logup_gkr.public_values import eval_public_values
 from zorch.logup_gkr.jagged_verifier import JaggedGkrLayerRound
 from zorch.poly.geq import VirtualGeq
 from zorch.poly.multilinear import eval_mle
-from zorch.round import VerifyChain
+from zorch.round import verify_rounds
 from zorch.transcript import GrindingTranscript
 from zorch.utils.bits import log2_ceil_usize
 
@@ -69,9 +73,7 @@ def virtual_padding_geq(threshold: Array | int, point: Array) -> Array:
     return geq.eval_at(0)
 
 
-def padding_geqs(
-    heights: Iterable[int], trace_point: Array
-) -> dict[int, Array]:
+def padding_geqs(heights: Iterable[int], trace_point: Array) -> dict[int, Array]:
     """The ``index >= height`` indicator masses at ``trace_point``, one per
     distinct height — the padded-row corrections of the GKR leaf check and
     the zerocheck oracle check.
@@ -121,9 +123,7 @@ def _leaf_evaluations(
         # columns (the padding row's worth) together.
         main = fnp.stack([opening.main, fnp.zeros_like(opening.main)])
         prep = (
-            fnp.stack(
-                [opening.preprocessed, fnp.zeros_like(opening.preprocessed)]
-            )
+            fnp.stack([opening.preprocessed, fnp.zeros_like(opening.preprocessed)])
             if opening.preprocessed is not None
             else None
         )
@@ -185,13 +185,13 @@ def verify_logup_gkr(
             f"circuit output must have {expected_output} entries, got "
             f"{proof.circuit_output.numerator.shape[0]}"
         )
-    # Grind gate. The prover's GrindRound judges host-side and raises; the
+    # Grind gate. The prover's `absorb_grind` judges host-side and raises; the
     # dual needs the verdict as a traced leg of ok, so it calls the same
     # one-definition predicate directly.
-    transcript, ok_pow = transcript.check_witness(pow_bits, proof.witness)
+    transcript, ok_pow = transcript.check_witness(pow_bits, proof.pow_witness)
 
-    _, transcript, head = HeadChallengesRound(num_betas)(None, transcript)
-    carry, transcript, _ = OutputBindRound(proof.circuit_output)(None, transcript)
+    transcript, head = sample_head_challenges(transcript, num_betas)
+    transcript, carry = bind_circuit_output(transcript, proof.circuit_output)
 
     # SP1 rejects a zero output denominator before walking the layers: the
     # bus-balance fractions divide by it, and a zero would let an adversary
@@ -199,9 +199,11 @@ def verify_logup_gkr(
     denominator = proof.circuit_output.denominator
     ok_denominator = fnp.all(denominator != fnp.zeros((), denominator.dtype))
 
-    chain = VerifyChain([JaggedGkrLayerRound(EF_LIMBS) for _ in proof.round_proofs])
-    (num_eval, den_eval, eval_point), transcript, ok_layers = chain(
-        carry, proof.round_proofs, transcript
+    (num_eval, den_eval, eval_point), transcript, ok_layers = verify_rounds(
+        [JaggedGkrLayerRound(EF_CHALLENGES) for _ in proof.round_proofs],
+        carry,
+        proof.round_proofs,
+        transcript,
     )
     # The wire carries the point for non-verifier consumers; pin the copy so
     # a stale serialization cannot drift past the dual. Shape-strict: a

@@ -3,12 +3,25 @@
 > Code, symbols, file paths, and comments are English.
 
 sp1-zorch follows the team playbook and inherits zorch's conventions
-(`fractalyze/zorch:docs/conventions.md` — `@jit`, naming, type annotations).
+(`fractalyze/zorch:docs/reference/conventions.md` — `@jit`, naming, type
+annotations).
 This file records the rules that bite hardest in an SP1 *consumer* repo:
-how comments are scoped, how we cite the SP1 reference we mirror, and how
-protocol verifiers are named apart from the byte-match harnesses. The
+how commits are worded, how comments are scoped, how we cite the SP1 reference
+we mirror, and how protocol verifiers are named apart from the byte-match
+harnesses. The
 repo-level "SP1-specific only" rule lives in [`../CLAUDE.md`](../CLAUDE.md);
 test `size`/`timeout` and fixture conventions live in [`development.md`](development.md).
+
+## Commit messages
+
+[Conventional Commits](https://www.conventionalcommits.org): a valid type, a
+lowercase summary with no trailing period, a header of at most 80 characters,
+and a body on everything but `docs`. The scope is the package the change lives
+in — `logup_gkr`, `poseidon2`, `shard_prover`, `zerocheck` — plus `release` for
+the version in `sp1_zorch/__init__.py`; it must be the deepest directory
+containing every touched file, so a change spanning several packages takes
+none. `.fractal-commit-lint.toml` is the source of truth, and the same linter
+runs in CI over every commit in a pull request and over the PR title.
 
 ## Comments & documentation
 
@@ -34,6 +47,27 @@ drift). This mirrors zorch's rule — keep them consistent.
 
 [`sp1_zorch/logup_gkr/prover.py`](../sp1_zorch/logup_gkr/prover.py)'s `_prove`
 is the worked shape.
+
+### Claims, witnesses and proofs state their role, not their fields
+
+The field list already says what a type holds. The docstring says what it is
+*for*, and for the three protocol families that means one sentence each:
+
+| Type | Opens with |
+| --- | --- |
+| `*Claim` | the proposition it asserts, as something that could be false |
+| `*Witness` | what it is a witness for |
+| `*Proof` | which claim it discharges, and into what |
+
+Together they make a Stage's contract readable straight off the types: a Stage
+reduces the claim on its left to the claim on its right, and its proof is what
+carries a verifier across. You can only check that reading if each end says
+which of the three it is.
+
+`ShardClaim` and `LogupGkrProof` are the worked shape. Provenance ("both roles
+derive it"), retention rationale, pytree registration and jit notes are all
+real and all belong in a second paragraph — a first line that opens with a
+field enumeration is the failure mode this rule exists to catch.
 
 ## External zkVM references
 

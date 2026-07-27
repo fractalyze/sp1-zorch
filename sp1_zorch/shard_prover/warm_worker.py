@@ -19,6 +19,8 @@ subprocess per shard from ``warm_shard_cache --warm``.
 import concurrent.futures
 import os
 import sys
+from collections.abc import Callable
+from typing import Any
 
 import frx  # establish the frx jax fork before anything imports `jax`
 import jax
@@ -34,7 +36,8 @@ _stats = {"compiled": 0}
 # Default 2: concurrent on-device autotune scratch is the binding resource
 # (~13.5 GiB per 400M-area zone against the worker's pool cap).
 _pool = concurrent.futures.ThreadPoolExecutor(
-    max_workers=int(os.environ.get("WARM_COMPILE_THREADS", "2")))
+    max_workers=int(os.environ.get("WARM_COMPILE_THREADS", "2"))
+)
 _futures: list = []
 
 # Deviceless warm: WARM_TARGET_CONFIG points at a GpuTargetConfigProto textproto
@@ -43,21 +46,21 @@ _futures: list = []
 # no CUDA device needed. Run with JAX_PLATFORMS=cpu so the eager glue (dummy
 # inputs, eval_shape zeros) stays on host; only the plugin's compiler runs.
 _topo_dev = None
-if (_cfg_path := os.environ.get("WARM_TARGET_CONFIG")):
+if _cfg_path := os.environ.get("WARM_TARGET_CONFIG"):
     from frx.experimental import topologies  # noqa: E402
 
     with open(_cfg_path) as _f:
         _topo_dev = topologies.get_topology_desc(
-            "warm-aot", "cuda", target_config=_f.read(),
-            topology="1x1x1").devices[0]
+            "warm-aot", "cuda", target_config=_f.read(), topology="1x1x1"
+        ).devices[0]
 
 
-def _compile_only_jit(fn=None, **kw):
+def _compile_only_jit(fn: Callable[..., Any] | None = None, **kw: Any) -> Any:
     if fn is None:
         return lambda f: _compile_only_jit(f, **kw)
     jitted = _real_jit(fn, **kw)
 
-    def wrapper(*args, **kwargs):
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
         # Nested (under an outer lower/eval_shape trace): run the real jit so it
         # inlines into the outer zone's module — never intercept a nested call.
         if _depth[0] > 0:
@@ -87,8 +90,7 @@ def _drain_compiles() -> int:
             _stats["compiled"] += 1
         except Exception as e:  # noqa: BLE001 — surface every zone failure
             failed += 1
-            print(f"=== zone compile FAILED: {type(e).__name__}: {e} ===",
-                  flush=True)
+            print(f"=== zone compile FAILED: {type(e).__name__}: {e} ===", flush=True)
     _futures.clear()
     return failed
 
@@ -96,26 +98,30 @@ def _drain_compiles() -> int:
 frx.jit = _compile_only_jit
 
 from sp1_zorch.shard_prover import verify_prove_shard as V  # noqa: E402
-from sp1_zorch.logup_gkr import head as _head  # noqa: E402
+from sp1_zorch.logup_gkr import prover as _gkr_prover  # noqa: E402
 
 # Bypass value-dependent HOST checks that zero'd compile-only outputs can't
 # satisfy — they gate correctness, not compilation.
 V.check_match = lambda *a, **k: True
 
 
-def _grind_no_pow(self, carry, transcript):
-    transcript, _ = transcript.check_witness(self._pow_bits, self._witness)
-    return carry, transcript, self._witness
+def _grind_no_pow(transcript: Any, pow_witness: Any, *, pow_bits: int = 0) -> Any:
+    transcript, _ = transcript.check_witness(pow_bits, pow_witness)
+    return transcript
 
 
-_head.GrindRound.__call__ = _grind_no_pow
+# Rebinds the name in the module that calls it, the same way `check_match` is
+# rebound above: the call sits deep inside the prover with no seam to inject
+# through, and `from ... import absorb_grind` resolves it as a module global
+# at call time.
+_gkr_prover.absorb_grind = _grind_no_pow
 
 
 if __name__ == "__main__":
     # argv[1] = comma-separated shard dirs; argv[2] (optional) = group manifest
     # so grouped-zerocheck compiles match the real prove's pinned class.
     shards = sys.argv[1]
-    argv = ["warm_worker", f"--shard_dir={shards}", "--max_stage=4"]
+    argv = ["warm_worker", f"--shard_dir={shards}", "--max_phase=4"]
     if len(sys.argv) > 2 and sys.argv[2]:
         argv.append(f"--group_manifest_json={sys.argv[2]}")
     sys.argv = argv
@@ -125,8 +131,11 @@ if __name__ == "__main__":
         pass
     n_failed = _drain_compiles()
     st = frx.local_devices()[0].memory_stats() or {}
-    print(f"=== worker done: {_stats['compiled']} zones compiled, "
-          f"{n_failed} failed, "
-          f"peak={st.get('peak_bytes_in_use', 0) / 2**30:.2f}GiB ===", flush=True)
+    print(
+        f"=== worker done: {_stats['compiled']} zones compiled, "
+        f"{n_failed} failed, "
+        f"peak={st.get('peak_bytes_in_use', 0) / 2**30:.2f}GiB ===",
+        flush=True,
+    )
     if n_failed:
         sys.exit(1)

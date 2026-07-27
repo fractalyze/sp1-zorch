@@ -6,6 +6,6 @@ pointer).
 
 | Doc | What's in it |
 | --- | --- |
-| [architecture.md](architecture.md) | The shard proof as a ProveChain of Stages, each running inner Rounds, threaded by a Bridge; the SP1 dump "phase" vocabulary. |
-| [development.md](development.md) | Environment setup, test `size`/`timeout` conventions and fixtures, and the reproducible per-stage SP1 baseline. |
-| [conventions.md](conventions.md) | Comment scoping (why-not-what) and how the SP1 reference code is cited. |
+| [architecture.md](architecture.md) | Stage / Round, the PCS commit half, and the SP1 dump "phase" vocabulary. |
+| [development.md](development.md) | Environment, the coupled zorch/frx pin, bazel gotchas, testing, and the per-phase SP1 baseline. |
+| [conventions.md](conventions.md) | Commit messages, comment scoping, and how the SP1 reference is cited. |

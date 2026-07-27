@@ -2,6 +2,13 @@
 build --announce_rc
 test --test_output=errors
 
+# Without this, rules_python synthesizes an empty __init__.py over every package
+# that does not declare one in srcs. Under --override_module the dep's source
+# tree is symlinked into the execroot, so the synthesized file lands on the
+# ORIGINAL file and truncates it to zero bytes -- a local zorch checkout comes
+# back with gutted __init__.py files it never asked to change.
+build --incompatible_default_to_explicit_init_py
+
 # Tests are backend-agnostic; CPU is the default (not a requirement) so plain
 # `bazel test` is deterministic on any machine. CI overrides it per matrix leg
 # via --test_env (the GPU leg pins FRX_PLATFORMS=cuda). Previously pinned

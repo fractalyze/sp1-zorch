@@ -12,7 +12,7 @@ frx  ──▶  zorch (scheme-/zkVM-agnostic blocks)  ──▶  sp1-zorch (SP1 
 
 ## Status
 
-The full SP1 shard proving scheme runs on `zorch` blocks: a `ProveChain` of
+The full SP1 shard proving scheme runs on `zorch` blocks: a sequence of
 trace commit → LogUp-GKR → zerocheck → jagged PCS, byte-matching SP1's reference
 prover end to end (its `sp1_verify_shard` accepts the assembled proof). See
 [`docs/architecture.md`](docs/architecture.md).
@@ -48,54 +48,29 @@ python -c "import frx, sp1_zorch; print(frx.devices()); print(sp1_zorch.__versio
 
 ## Development
 
-`sp1-zorch` is pure Python on frx (Field, Ring Accelerated), run
-against the Fractalyze XLA GPU plugin, built with Bazel (bzlmod). It consumes
-`zorch` as a Bazel module, pinned in `MODULE.bazel` via
-`git_override` for reproducible builds.
+Pure Python on frx (Field, Ring Accelerated), built with Bazel (bzlmod), with
+`zorch` consumed as a Bazel module pinned in `MODULE.bazel`.
 
 ```sh
 python3.11 -m venv .venv && . .venv/bin/activate
 pip install -r requirements.in \
     --extra-index-url https://fractalyze.github.io/pypi/simple/
-```
-
-Install the git hooks with both stages named. Plain `pre-commit install` wires
-only the `pre-commit` stage, which leaves the commit-message linter inactive —
-a malformed commit message then sails through to CI:
-
-```sh
 pre-commit install --install-hooks --hook-type pre-commit --hook-type commit-msg
+bazel test //sp1_zorch/... --test_tag_filters=-gpu_only
 ```
 
-Commit messages follow [Conventional Commits](https://www.conventionalcommits.org):
-a valid type, a lowercase summary with no trailing period, a header of at most
-80 characters, and a body on everything but `docs`. The scope is the package the
-change lives in — `logup_gkr`, `poseidon2`, `shard_prover`, `zerocheck` — plus
-`release` for the version in `sp1_zorch/__init__.py`. A change spanning several
-packages takes no scope. The same linter runs in CI over every commit in a pull
-request and over the PR title.
+Both `--hook-type` flags matter: plain `pre-commit install` wires only the
+`pre-commit` stage, leaving the commit-message linter inactive so a malformed
+message sails through to CI.
 
-**Dev against a local `zorch` checkout** instead of the pinned commit — create
-`.bazelrc.user` (gitignored):
-
-```
-common --override_module=zorch=/abs/path/to/your/zorch/checkout
-```
-
-Run the tests (CPU is the default for correctness; the FFI byte-match against
-the SP1 reference needs a CUDA GPU):
-
-```sh
-bazel test //...
-```
+[`docs/development.md`](docs/development.md) has the rest — devving against a
+local `zorch` checkout, the coupled zorch/frx pin, the GPU-plugin gotcha, test
+conventions, and the per-phase SP1 baseline.
 
 ## Documentation
 
-See [`docs/`](docs/README.md) — the [architecture](docs/architecture.md)
-(the shard proof as a ProveChain of Stages, each running inner Rounds, threaded
-by a Bridge, plus the SP1 dump vocabulary), the
-[development guide](docs/development.md) (environment, testing, and the
-per-stage SP1 baseline), and the [conventions](docs/conventions.md).
+[`docs/`](docs/README.md) indexes the architecture, development, and
+conventions guides.
 
 ## License
 

@@ -1,6 +1,11 @@
 # Copyright 2026 The sp1-zorch Authors. SPDX-License-Identifier: Apache-2.0
 """Producer ingest: fixture-loader parity and ingest-time failure modes."""
 
+from collections.abc import Mapping
+from typing import Any
+from frx import Array
+from rw_constraints import Chip
+from zorch.pcs.jagged.region import JaggedRegion
 from pathlib import Path
 
 import frx.numpy as fnp
@@ -58,7 +63,7 @@ def _write_dump(root: Path) -> dict[str, np.ndarray]:
     return raws
 
 
-def _bits(a) -> np.ndarray:
+def _bits(a: Array) -> np.ndarray:
     """Montgomery u32 bitpatterns — the parity comparison unit (dtype-blind,
     so a value-level __eq__ on the field dtype can't mask a bit divergence)."""
     return np.asarray(a.view(fnp.uint32))
@@ -69,7 +74,7 @@ class RegionsFromProducerParityTest(absltest.TestCase):
     shard metadata to the fixture-loader path for the same trace bits —
     the fractalyze/sp1-zorch#200 unit gate."""
 
-    def setUp(self):
+    def setUp(self) -> None:
         super().setUp()
         root = Path(self.create_tempdir().full_path)
         raws = _write_dump(root)
@@ -85,8 +90,7 @@ class RegionsFromProducerParityTest(absltest.TestCase):
         # arrays — so bit-parity below compares two ingests, not one array
         # with itself.
         producer = {
-            "sp1_" + sp1_name_to_rw(name): fnp.array(raw)
-            for name, raw in raws.items()
+            "sp1_" + sp1_name_to_rw(name): fnp.array(raw) for name, raw in raws.items()
         }
         self.producer_order = tuple(sorted(producer))
         self.producer_chips = {n: producer[n] for n in self.producer_order}
@@ -99,7 +103,9 @@ class RegionsFromProducerParityTest(absltest.TestCase):
             preprocessed=self.fixture_shard.preprocessed_traces,
         )
 
-    def _assert_region_parity(self, fixture_region, producer_region):
+    def _assert_region_parity(
+        self, fixture_region: JaggedRegion, producer_region: JaggedRegion
+    ) -> None:
         self.assertEqual(fixture_region.chip_names, producer_region.chip_names)
         self.assertEqual(fixture_region.chip_starts, producer_region.chip_starts)
         self.assertEqual(fixture_region.row_counts, producer_region.row_counts)
@@ -113,22 +119,22 @@ class RegionsFromProducerParityTest(absltest.TestCase):
             _bits(fixture_region.dense), _bits(producer_region.dense)
         )
 
-    def test_main_region_parity(self):
+    def test_main_region_parity(self) -> None:
         self._assert_region_parity(self.f_main, self.p_main)
 
-    def test_prep_region_parity(self):
+    def test_prep_region_parity(self) -> None:
         self.assertIsNotNone(self.f_prep)
         self.assertIsNotNone(self.p_prep)
         self._assert_region_parity(self.f_prep, self.p_prep)
 
-    def test_public_values_view_parity(self):
+    def test_public_values_view_parity(self) -> None:
         pv = self.p_shard.main_trace_data.public_values
         self.assertEqual(pv.dtype, F)
         np.testing.assert_array_equal(
             _bits(self.fixture_shard.main_trace_data.public_values), _bits(pv)
         )
 
-    def test_chip_order_and_num_reals_parity(self):
+    def test_chip_order_and_num_reals_parity(self) -> None:
         f_traces = self.fixture_shard.main_trace_data.traces
         p_traces = self.p_shard.main_trace_data.traces
         self.assertEqual(f_traces.chip_order, p_traces.chip_order)
@@ -137,7 +143,7 @@ class RegionsFromProducerParityTest(absltest.TestCase):
                 f_traces.per_chip[name].num_real, p_traces.per_chip[name].num_real
             )
 
-    def test_chip_resolution_parity(self):
+    def test_chip_resolution_parity(self) -> None:
         f_chips = self.fixture_shard.main_trace_data.chips
         p_chips = self.p_shard.main_trace_data.chips
         self.assertEqual(set(f_chips), set(p_chips))
@@ -151,7 +157,7 @@ class RegionsFromProducerParityTest(absltest.TestCase):
         # vacuously).
         self.assertNotEmpty(p_chips["Add"].constraint_names)
 
-    def test_producer_order_differs_but_maps_to_chip_order(self):
+    def test_producer_order_differs_but_maps_to_chip_order(self) -> None:
         # Guard that the fixture exercises the rw/SP1 collation flip: the
         # bundle's sorted-rw order maps to a NON-sorted SP1 sequence, and
         # ingest re-sorts it into the fixture path's chip_order.
@@ -172,7 +178,7 @@ class RegionsFromProducerErrorsTest(absltest.TestCase):
         enable_untrusted=0,
     )
 
-    def _ingest(self, chips, num_reals):
+    def _ingest(self, chips: dict[str, Chip], num_reals: Mapping[str, int]) -> Any:
         return regions_from_producer(
             chips,
             num_reals=num_reals,
@@ -180,36 +186,38 @@ class RegionsFromProducerErrorsTest(absltest.TestCase):
             vk=self._VK,
         )
 
-    def test_num_reals_height_mismatch_fails_at_ingest(self):
+    def test_num_reals_height_mismatch_fails_at_ingest(self) -> None:
         chips = {"add": fnp.ones((4, 3), dtype=fnp.uint32)}
         with self.assertRaisesRegex(ValueError, "num_reals"):
             self._ingest(chips, {"add": 3})
 
-    def test_unknown_rw_chip_name_fails(self):
+    def test_unknown_rw_chip_name_fails(self) -> None:
         chips = {"no_such_chip": fnp.ones((2, 3), dtype=fnp.uint32)}
         with self.assertRaisesRegex(ValueError, "unknown rw chip name"):
             self._ingest(chips, {"no_such_chip": 2})
 
 
 class RwNameToSp1Test(absltest.TestCase):
-    def test_irregular_names_come_from_the_table(self):
+    def test_irregular_names_come_from_the_table(self) -> None:
         self.assertEqual(rw_name_to_sp1("byte_lookup"), "Byte")
         self.assertEqual(rw_name_to_sp1("utype"), "UType")
         self.assertEqual(rw_name_to_sp1("memory_global_final"), "MemoryGlobalFinalize")
 
-    def test_single_token_names_invert_lower(self):
+    def test_single_token_names_invert_lower(self) -> None:
         self.assertEqual(rw_name_to_sp1("add"), "Add")
         self.assertEqual(rw_name_to_sp1("poseidon2"), "Poseidon2")
 
-    def test_registry_prefix_is_stripped(self):
+    def test_registry_prefix_is_stripped(self) -> None:
         self.assertEqual(rw_name_to_sp1("sp1_add"), "Add")
-        self.assertEqual(rw_name_to_sp1("sp1_memory_global_final"), "MemoryGlobalFinalize")
+        self.assertEqual(
+            rw_name_to_sp1("sp1_memory_global_final"), "MemoryGlobalFinalize"
+        )
 
-    def test_round_trip_through_forward_map(self):
+    def test_round_trip_through_forward_map(self) -> None:
         for rw in ("add", "byte_lookup", "utype", "uint256_mul", "divrem"):
             self.assertEqual(sp1_name_to_rw(rw_name_to_sp1(rw)), rw)
 
-    def test_snake_case_outside_the_table_is_uninvertible(self):
+    def test_snake_case_outside_the_table_is_uninvertible(self) -> None:
         with self.assertRaisesRegex(ValueError, "unknown rw chip name"):
             rw_name_to_sp1("definitely_not_a_chip")
 

@@ -20,7 +20,7 @@ Stage / dump vocabulary: ``docs/architecture.md``.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
 
 import frx.numpy as fnp
 from frx import Array
@@ -40,22 +40,30 @@ from sp1_zorch.zerocheck.jagged import (
     prove_jagged_zerocheck,
 )
 from sp1_zorch.zerocheck.coeffs import gkr_powers, rlc_coeffs
-from zorch.round import Round
+from zorch.round import ProverRound
 from zorch.sumcheck.prover import RoundMsg
 from zorch.transcript import Transcript, sample_challenge
 
 
 @dataclass(frozen=True)
 class ZerocheckProof:
-    """The zerocheck stage's proof: the three stage challenges and the eq
-    point (the byte-match harness and the jagged-opening stage consume them,
-    and neither holds the pre-stage transcript to re-sample), the wire's
-    claimed sum (the lambda-Horner fold of the per-chip GKR opening claims,
-    SP1's zerocheck RLC — retained because only this stage holds the claims),
-    the per-chip final folded traces with their split ``opened_values`` view
-    (the evaluation stage's per-column claims and the wire's
-    ShardOpenedValues), and the stacked round messages whose ``challenge``
-    is the sumcheck point."""
+    """Reduces "every chip's constraints vanish" to a `TraceEvaluationClaim`.
+
+    A verifier replays the multi-chip sumcheck in ``msgs`` — whose
+    ``challenge`` accumulates into the point the next Stage opens at — and is
+    left owing only that the values folded along the way are the committed
+    trace's.
+
+    Several fields are retained rather than re-derived, because their only
+    other source is state the consumer does not hold: the three challenges and
+    the eq point, because neither the byte-match harness nor the jagged
+    opening keeps the pre-stage transcript to re-sample them; the claimed sum
+    (the lambda-Horner fold of the per-chip GKR opening claims, SP1's
+    zerocheck RLC), because only this Stage sees those claims; and the
+    per-chip final folded traces, whose split ``opened_values`` view is both
+    the evaluation Stage's per-column claims and the wire's
+    ShardOpenedValues.
+    """
 
     batching_challenge: Array
     gkr_opening_batch_challenge: Array
@@ -179,9 +187,7 @@ def sample_stage_challenges(
     return transcript, batching, gkr_batch, lambda_
 
 
-def gkr_opening_claims(
-    openings: Sequence[ChipEvaluation], gkr_batch: Array
-) -> Array:
+def gkr_opening_claims(openings: Sequence[ChipEvaluation], gkr_batch: Array) -> Array:
     """Each chip's GKR opening claim: its ``[main | prep]`` evaluations
     weighted by the shared beta powers — the seed of the round engine's
     ``p(1) = claim - p(0)`` identity. One definition: the prover seeds the
@@ -190,9 +196,7 @@ def gkr_opening_claims(
     evals = [opening.all_evals() for opening in openings]
     max_cols = max(e.shape[0] for e in evals)
     gkr_all = (
-        gkr_powers(gkr_batch, max_cols)
-        if max_cols
-        else fnp.zeros(0, gkr_batch.dtype)
+        gkr_powers(gkr_batch, max_cols) if max_cols else fnp.zeros(0, gkr_batch.dtype)
     )
     return fnp.stack([fnp.sum(gkr_all[: e.shape[0]] * e) for e in evals])
 
@@ -233,7 +237,7 @@ def split_opened_values(
     return opened
 
 
-class OpenedValuesRound(Round):
+class OpenedValuesRound:
     """SP1's post-zerocheck opened-values absorb stream: the chip count, then
     per chip the length-prefixed ``[preprocessed | main]`` evaluations at the
     sumcheck point. Every evaluation-stage challenge is sampled after these
@@ -309,17 +313,13 @@ def prove_shard_zerocheck(
 
     zeta = eval_point[-max_log_row_count:]
 
-    chip_names = (
-        list(chip_names) if chip_names is not None else main_region.chip_names
-    )
+    chip_names = list(chip_names) if chip_names is not None else main_region.chip_names
     if flat_arrival is not None:
         # Flat jagged arrival (pack_flat_arrival): no per-chip trace buffers
         # exist — the constraint seams read column counts / main widths from
         # the statics the caller threads through.
         if num_reals is None or total_cap_class is None:
-            raise ValueError(
-                "flat_arrival rides the traced total_cap_class path"
-            )
+            raise ValueError("flat_arrival rides the traced total_cap_class path")
         if num_cols is None or main_widths is None:
             raise ValueError("flat_arrival needs num_cols and main_widths")
         eval_fns = [
@@ -418,7 +418,9 @@ def prove_shard_zerocheck(
     # not closed over — a closure would carry a tracer into the composite under
     # the jitted stage body.
     eval_fns = [
-        export_order_eval_fn(chips[name], int(main_region.chip_widths[i]), int(t.shape[0]))
+        export_order_eval_fn(
+            chips[name], int(main_region.chip_widths[i]), int(t.shape[0])
+        )
         for i, (name, t) in enumerate(zip(chip_names, traces))
     ]
 
@@ -468,3 +470,8 @@ def prove_shard_zerocheck(
         opened_values=opened_values,
         msgs=msgs,
     )
+
+
+if TYPE_CHECKING:
+    # mypy-enforced seam conformance -- driven by `prove_rounds`.
+    _: type[ProverRound] = OpenedValuesRound

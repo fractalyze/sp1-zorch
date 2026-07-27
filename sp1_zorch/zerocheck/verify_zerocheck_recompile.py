@@ -2,7 +2,7 @@
 """Multi-shard zero-recompile check for the traced total-cap zerocheck route.
 
 Proves every ``--shard-dirs`` shard's zerocheck stage through ONE
-``ZerocheckStage(total_cap_class=...)`` instance in one process and reports
+``ZerocheckProver(total_cap_class=...)`` instance in one process and reports
 the ``_jit_body_totalcap_traced`` compile count. Shards of one
 ``TotalCapClass`` (same chip set; the class bounding every shard in the
 group) must share a single stage executable — the multi-shard acceptance
@@ -31,15 +31,26 @@ import argparse
 import json
 import sys
 import time
-from dataclasses import replace
+from collections.abc import Mapping
 from pathlib import Path
 
 import frx
 
+from frx import Array
+
+from sp1_zorch.logup_gkr.prover import ChipEvaluation
 from sp1_zorch.shard_prover.fixture_loader import load_fixture_shard
+from sp1_zorch.shard_prover.types import ShardData
+from zorch.pcs.jagged.region import JaggedRegion
+from zorch.transcript import Transcript
+from sp1_zorch.shard_prover.types import (
+    ChipMetadata,
+    ShardWitness,
+)
 from sp1_zorch.shard_prover.prove_shard import (
-    ShardBridge,
-    ZerocheckStage,
+    GkrOutputClaim,
+    ZerocheckClaim,
+    ZerocheckProver,
 )
 from sp1_zorch.shard_prover.replay import (
     MAX_LOG_ROW_COUNT,
@@ -51,7 +62,13 @@ from sp1_zorch.shard_prover.replay import (
 from sp1_zorch.zerocheck.jagged import TotalCapClass
 
 
-def _gkr_inputs(shard, shard_dir: Path, main_region, prep_region, cache_dir: Path):
+def _gkr_inputs(
+    shard: ShardData,
+    shard_dir: Path,
+    main_region: JaggedRegion,
+    prep_region: JaggedRegion | None,
+    cache_dir: Path,
+) -> tuple[Array, Mapping[str, ChipEvaluation], Transcript]:
     cache = cache_dir / f"gkr_cache_{shard_dir.name}.npz"
     if cache.exists():
         print(f"[{shard_dir.name}] loading GKR outputs from {cache}", flush=True)
@@ -98,7 +115,7 @@ def main() -> int:
 
     stage = None
     chip_set = None
-    before = ZerocheckStage._jit_body_totalcap_traced._cache_size()
+    before = ZerocheckProver._jit_body_totalcap_traced._cache_size()
     for shard_dir in shard_dirs:
         shard = load_fixture_shard(shard_dir)
         main_region, prep_region = shard_regions(shard)
@@ -106,7 +123,7 @@ def main() -> int:
             # One chips mapping + one Stage for the whole group (identity-keyed
             # static jit arg), like a process-held machine.
             chip_set = tuple(main_region.chip_names)
-            stage = ZerocheckStage(
+            stage = ZerocheckProver(
                 shard.main_trace_data.chips,
                 max_log_row_count=MAX_LOG_ROW_COUNT,
                 total_cap_class=cap_class,
@@ -119,16 +136,21 @@ def main() -> int:
         eval_point, openings, transcript = _gkr_inputs(
             shard, shard_dir, main_region, prep_region, cache_dir
         )
-        bridge = replace(
-            ShardBridge(main_region, prep_region, shard.main_trace_data.public_values),
-            gkr_eval_point=eval_point,
-            gkr_chip_openings=openings,
-        )
         start = time.perf_counter()
-        _, _, proof = stage(bridge, transcript)
+        proof = stage.prove(
+            ZerocheckClaim(
+                shard.main_trace_data.public_values,
+                GkrOutputClaim(eval_point, openings),
+                ChipMetadata(
+                    tuple(main_region.chip_names), tuple(main_region.chip_heights)
+                ),
+            ),
+            ShardWitness(main_region, prep_region),
+            transcript,
+        ).reduction_proof
         frx.block_until_ready(proof.finals)
         wall = time.perf_counter() - start
-        compiles = ZerocheckStage._jit_body_totalcap_traced._cache_size() - before
+        compiles = ZerocheckProver._jit_body_totalcap_traced._cache_size() - before
         print(
             f"[{shard_dir.name}] zerocheck stage {wall * 1e3:.1f} ms "
             f"(incl. eager flat pack + any compile); cumulative stage compiles: "
@@ -136,7 +158,7 @@ def main() -> int:
             flush=True,
         )
 
-    compiles = ZerocheckStage._jit_body_totalcap_traced._cache_size() - before
+    compiles = ZerocheckProver._jit_body_totalcap_traced._cache_size() - before
     print(f"total shards: {len(shard_dirs)}, stage compiles: {compiles}", flush=True)
     if compiles != 1:
         print("FAIL: shards of one total-cap class did not share one executable")

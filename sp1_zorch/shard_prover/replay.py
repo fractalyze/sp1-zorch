@@ -13,6 +13,7 @@ exists to prevent.
 from __future__ import annotations
 
 from pathlib import Path
+from collections.abc import Mapping
 from typing import Any
 
 import frx
@@ -24,6 +25,7 @@ from zk_dtypes import koalabearx4_mont as EF
 
 from zorch.pcs.jagged.region import JaggedRegion
 from sp1_zorch.logup_gkr.circuit import GkrCapClass, build_gkr_chips
+from sp1_zorch.shard_prover.types import ShardWitness
 from sp1_zorch.logup_gkr.prover import (
     ChipEvaluation,
     LogupGkrProof,
@@ -32,7 +34,12 @@ from sp1_zorch.logup_gkr.prover import (
 )
 from sp1_zorch.poseidon2.koalabear16 import koalabear16_params
 from sp1_zorch.shard_prover.fixture_loader import _parse_int_list, _parse_kv_lines
-from sp1_zorch.shard_prover.prove_shard import PreambleStage, preamble_chip_metadata
+from sp1_zorch.shard_prover.types import (
+    ChipMetadata,
+)
+from sp1_zorch.shard_prover.prove_shard import (
+    absorb_preamble,
+)
 from sp1_zorch.shard_prover.types import ShardData
 from zorch.hash.poseidon2.poseidon2 import Poseidon2
 from zorch.transcript import DuplexState, DuplexTranscript, Transcript
@@ -95,7 +102,7 @@ def fresh_transcript() -> DuplexTranscript:
 
 def preamble_transcript(shard: ShardData, shard_dir: Path) -> Transcript:
     """The challenger state SP1 enters GKR with: a fresh duplex sponge run
-    through ``PreambleStage`` — the prover's own absorb schedule — with the
+    through ``absorb_preamble`` — the prover's own absorb schedule — with the
     dump's commitment. The commitment is the dump's value -- our own
     main-commit byte-match is the trace-commit stage's concern."""
     commit_kv = _parse_kv_lines((shard_dir / "gpu_commitment.txt").read_text())
@@ -105,13 +112,15 @@ def preamble_transcript(shard: ShardData, shard_dir: Path) -> Transcript:
     traces = shard.main_trace_data.traces
     names = traces.chip_order
     num_reals = [traces.per_chip[name].num_real for name in names]
-    preamble = PreambleStage(
+    transcript = absorb_preamble(
+        fresh_transcript(),
         vk=shard.vk,
         public_values=shard.main_trace_data.public_values,
         commitment=commitment,
-        chip_metadata=preamble_chip_metadata(names, num_reals, dtype=F),
+        chip_metadata=ChipMetadata(tuple(names), tuple(num_reals)).preamble_stream(
+            dtype=F
+        ),
     )
-    _, transcript, _ = preamble(None, fresh_transcript())
     return transcript
 
 
@@ -132,7 +141,7 @@ def save_gkr_cache(
     live sponge state) as an npz. Shared by the zerocheck bench and
     ``verify_zerocheck`` so a cache seeded by either tool loads in the other."""
     st = transcript.state
-    data: dict[str, np.ndarray] = {
+    data: dict[str, Any] = {
         "eval_point": to_u32(eval_point),
         "chips": np.array(sorted(openings)),
         "t_input": to_u32(st.input_buffer),
@@ -203,13 +212,12 @@ def replay_gkr(
         gkr_chips = build_gkr_chips(shard.main_trace_data.chips, order)
     return prove_logup_gkr(
         gkr_chips,
-        main_region,
-        prep_region,
+        ShardWitness(main_region, prep_region),
         preamble,
         num_betas=num_beta_values(shard.main_trace_data.chips),
         num_row_variables=MAX_LOG_ROW_COUNT - 1,
         pow_bits=pow_bits,
-        witness=fnp.array(int(state["witness"]), F),
+        pow_witness=fnp.array(int(state["witness"]), F),
         cap_class=cap_class,
     )
 
@@ -243,16 +251,17 @@ def seed_gkr_outputs_rolled(
     # chips static via closure; regions/transcript/witness traced -- mirrors how
     # the rolled bench jits the stage, keeping the zorch.sumcheck composite
     # intact for the vendor emitter. Return arrays/pytrees, never the proof.
-    def _rolled(mr, pr, tr, w):
+    def _rolled(
+        mr: JaggedRegion, pr: JaggedRegion | None, tr: Transcript, w: Array
+    ) -> tuple[Transcript, Array, Mapping[str, Any]]:
         t, proof = prove_logup_gkr(
             gkr_chips,
-            mr,
-            pr,
+            ShardWitness(mr, pr),
             tr,
             num_betas=num_betas,
             num_row_variables=num_row_variables,
             pow_bits=0,
-            witness=w,
+            pow_witness=w,
         )
         return t, proof.eval_point, proof.chip_openings
 

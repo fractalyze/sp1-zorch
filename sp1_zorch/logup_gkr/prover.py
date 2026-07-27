@@ -20,7 +20,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import partial
-from typing import Any, Mapping, Sequence
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 import frx
 import frx.numpy as fnp
@@ -28,7 +29,7 @@ from frx import Array, lax
 from rw_constraints import Chip
 from zk_dtypes import efinfo
 
-from zorch.pcs.jagged.region import JaggedRegion
+from sp1_zorch.shard_prover.types import ShardWitness
 from sp1_zorch.logup_gkr.circuit import (
     GkrCapClass,
     GkrChip,
@@ -41,10 +42,10 @@ from sp1_zorch.logup_gkr.circuit import (
     sp1_schedule_counts,
 )
 from sp1_zorch.logup_gkr.head import (
-    EF_LIMBS,
-    GrindRound,
-    HeadChallengesRound,
-    OutputBindRound,
+    EF_CHALLENGES,
+    absorb_grind,
+    bind_circuit_output,
+    sample_head_challenges,
 )
 from zorch.logup_gkr.circuit import (
     JaggedGkrLayer,
@@ -58,7 +59,7 @@ from zorch.logup_gkr.jagged_prover import (
     JaggedLayerProof,
     RoundWidthCaps,
 )
-from zorch.round import ProveChain, Round
+from zorch.round import ProverRound, prove_rounds
 from zorch.transcript import GrindingTranscript, Transcript
 
 
@@ -87,16 +88,20 @@ class ChipEvaluation:
 
 @dataclass(frozen=True)
 class LogupGkrProof:
-    """The LogUp-GKR stage's proof: grind witness, circuit output, one round
-    proof per layer (output to input), the final evaluation point, and the
-    per-chip trace openings at it.
+    """Reduces the shard's LogUp bus-balance statement to a `GkrOutputClaim`.
+
+    A verifier replays the layer chain from output to input — grind witness,
+    circuit output, one round proof per layer — and arrives at the evaluation
+    point and per-chip openings the next Stage takes as its hypothesis. What
+    it proves is that those openings are the trace's; what it leaves open is
+    everything about the constraints.
 
     Each layer's sumcheck point rides on its ``JaggedLayerProof.point``
     (zorch retains it at prove time); the shard wire serializes it per layer
     (``point_and_eval``).
     """
 
-    witness: Array
+    pow_witness: Array
     circuit_output: LogUpGkrOutput
     round_proofs: list[JaggedLayerProof]
     eval_point: Array
@@ -188,7 +193,7 @@ def flat_openings_absorb(
     return fnp.concatenate(flat_parts)
 
 
-class ChipOpeningsRound(Round):
+class ChipOpeningsRound:
     """SP1's GKR chip-openings absorb schedule, single-sourced the same way
     as the preamble and the GKR head glue: the prover (``open_traces_capped``)
     drives it with the openings it just computed, the verifier dual with the
@@ -216,8 +221,13 @@ class ChipOpeningsRound(Round):
 @partial(
     frx.jit,
     static_argnames=(
-        "trace_dimension", "cap_class", "chip_names", "main_widths",
-        "prep_names", "prep_widths", "prep_heights",
+        "trace_dimension",
+        "cap_class",
+        "chip_names",
+        "main_widths",
+        "prep_names",
+        "prep_widths",
+        "prep_heights",
     ),
 )
 def open_traces_capped(
@@ -298,7 +308,7 @@ def resolve_witness_and_grind(
     transcript: GrindingTranscript,
     *,
     pow_bits: int,
-    witness: Array | None,
+    pow_witness: Array | None,
     bf_dtype: Any,
 ) -> tuple[Transcript, Array]:
     """Apply the witness-default policy and run the grind, returning the
@@ -316,7 +326,7 @@ def resolve_witness_and_grind(
         # Fail closed at the stage boundary: a negative bit count is nonsense,
         # and the branch below would otherwise treat it as the zero-bit replay.
         raise ValueError("pow_bits must be non-negative")
-    if pow_bits > 0 and witness is None:
+    if pow_bits > 0 and pow_witness is None:
         # Grind for the witness -- the "search" half this function's name
         # promises, now built. zorch's windowed grinder enumerates canonical
         # witnesses 0, 1, 2, ... for the lowest whose ``check_witness`` gate has
@@ -328,20 +338,20 @@ def resolve_witness_and_grind(
         # byte-identical to the recorded-witness replay path (and to the FRI
         # open-phase grind already built the same way in ``jagged/open.py``:
         # ``t.grind(pow_bits)``).
-        _, witness = transcript.grind(pow_bits)
-    elif witness is None:
+        _, pow_witness = transcript.grind(pow_bits)
+    elif pow_witness is None:
         # pow_bits == 0 with no witness: a dummy zero just advances the stream.
         # A *passed* witness at pow_bits == 0 is a recorded-witness replay -- the
         # zero-bit GrindRound gate observes it (the transcript's `message`)
         # without host-reading the verdict, so the stage stays jit-traceable AND
         # the transcript matches the judged pow_bits > 0 path. Zeroing it here
         # would diverge that transcript, so keep the caller's witness.
-        witness = fnp.zeros((), dtype=bf_dtype)
+        pow_witness = fnp.zeros((), dtype=bf_dtype)
     # The head schedule (grind, challenges, output binding) runs as the
-    # shared glue Rounds -- the byte-match harness and the phase benchmark
+    # shared glue Rounds -- the byte-match harness and the shard benchmark
     # thread the same definitions, so the three cannot drift.
-    _, transcript, _ = GrindRound(witness, pow_bits=pow_bits)(None, transcript)
-    return transcript, witness
+    transcript = absorb_grind(transcript, pow_witness, pow_bits=pow_bits)
+    return transcript, pow_witness
 
 
 # Right-size the fixed-width round buffer (xla#179) to a shared compile class.
@@ -385,10 +395,12 @@ def _prove_from_first_layer(
     class_counts: tuple[int, ...],
     slot_cap: int,
     transcript: Transcript,
-    witness: Array,
+    pow_witness: Array,
     *,
     num_row_variables: int,
-    open_fn,
+    open_fn: Callable[
+        [Array, Transcript], tuple[Transcript, dict[str, ChipEvaluation]]
+    ],
 ) -> tuple[Transcript, LogupGkrProof]:
     """First-layer-onward prove over the tight-layout ``first`` layer: fold
     the pyramid, bind the output, prove the layer chain, open via
@@ -400,7 +412,7 @@ def _prove_from_first_layer(
     dominate every admitted shard.
 
     The chain MUST consume layers through the lazy ``layers.pop()``
-    generator, not a materialized list — only then does ProveChain release
+    generator, not a materialized list — only then does `prove_rounds` release
     each proved layer before building the next, keeping at most one
     big-witness layer live (the host-RAM half of zorch#362).
 
@@ -429,15 +441,13 @@ def _prove_from_first_layer(
     schedules = list(
         zip(
             sp1_schedule_counts(first.row_counts, num_row_variables - 1),
-            capped_pyramid_widths(
-                slot_cap, num_segments, num_row_variables - 1
-            ),
+            capped_pyramid_widths(slot_cap, num_segments, num_row_variables - 1),
             strict=True,
         )
     )
     layers = build_jagged_pyramid(first, schedules)
     output = extract_sp1_outputs(layers[-1])
-    carry, transcript, _ = OutputBindRound(output)(None, transcript)
+    transcript, carry = bind_circuit_output(transcript, output)
 
     caps = RoundWidthCaps(
         elements=_row_cap(capacity),
@@ -448,15 +458,18 @@ def _prove_from_first_layer(
     # layer): the caps pre-lay in zorch's `_jagged_round_via_zone` keys the
     # compile per nrv class, so shards share every layer program and XLA fuses
     # the inter-round glue instead of the host dispatching per round.
-    chain = ProveChain(
-        JaggedGkrLayerRound(layers.pop(), EF_LIMBS, caps=caps)
-        for _ in range(len(layers))
+    (_, _, eval_point), transcript, round_proofs = prove_rounds(
+        (
+            JaggedGkrLayerRound(layers.pop(), EF_CHALLENGES, caps=caps)
+            for _ in range(len(layers))
+        ),
+        carry,
+        transcript,
     )
-    (_, _, eval_point), transcript, round_proofs = chain(carry, transcript)
 
     transcript, chip_openings = open_fn(eval_point, transcript)
     proof = LogupGkrProof(
-        witness=witness,
+        pow_witness=pow_witness,
         circuit_output=output,
         round_proofs=round_proofs,
         eval_point=eval_point,
@@ -473,24 +486,23 @@ def _head_zone(
     samples cost ~14 ms of warm host gaps between tiny permutes. Only the
     head fuses: swallowing the first-layer build too hands XLA every chip's
     intermediates at once and blows the wide-shard memory budget."""
-    _, transcript, head = HeadChallengesRound(num_betas)(None, transcript)
+    transcript, head = sample_head_challenges(transcript, num_betas)
     return transcript, head.alpha, head.betas
 
 
 def prove_logup_gkr(
     gkr_chips: Sequence[GkrChip],
-    main_region: JaggedRegion,
-    prep_region: JaggedRegion | None,
+    witness: ShardWitness,
     transcript: Transcript,
     *,
     num_betas: int,
     num_row_variables: int,
     cap_class: GkrCapClass | None = None,
     pow_bits: int = 0,
-    witness: Array | None = None,
+    pow_witness: Array | None = None,
 ) -> tuple[Transcript, LogupGkrProof]:
     """Run the LogUp-GKR stage on a transcript positioned after the shard
-    preamble — the single source for the stage (``LogupGkrStage``:
+    preamble — the single source for the stage (``LogupGkrProver``:
     host-side grind, then class-keyed inner zones).
 
     The one prove path is the shard-invariant class contract:
@@ -505,24 +517,24 @@ def prove_logup_gkr(
     no-ops in the sumcheck (the virtual-mass correction subtracts exactly
     their eq weight), and zeros the open folds into its correction factors.
     """
-    transcript, witness = resolve_witness_and_grind(
+    transcript, pow_witness = resolve_witness_and_grind(
         transcript,
         pow_bits=pow_bits,
-        witness=witness,
-        bf_dtype=main_region.dense.dtype,
+        pow_witness=pow_witness,
+        bf_dtype=witness.main_region.dense.dtype,
     )
     if cap_class is None:
         cap_class = GkrCapClass.from_heights(
-            [int(h) for h in main_region.chip_heights]
+            [int(h) for h in witness.main_region.chip_heights]
         )
     main_flat, prep_flat, heights = pack_gkr_arrival(
-        main_region, prep_region, cap_class
+        witness.main_region, witness.prep_region, cap_class
     )
-    chip_names, main_widths, _ = region_statics(main_region)
-    prep_names, prep_widths, prep_heights = region_statics(prep_region)
+    chip_names, main_widths, _ = region_statics(witness.main_region)
+    prep_names, prep_widths, prep_heights = region_statics(witness.prep_region)
 
     cap_class.check_slot_cap(
-        [int(h) for h in main_region.chip_heights], gkr_chips, chip_names
+        [int(h) for h in witness.main_region.chip_heights], gkr_chips, chip_names
     )
 
     transcript, alpha, betas = _head_zone(transcript, num_betas=num_betas)
@@ -545,7 +557,7 @@ def prove_logup_gkr(
         cap_class.slot_counts(gkr_chips, chip_names),
         cap_class.resolved_slot_cap(gkr_chips, chip_names),
         transcript,
-        witness,
+        pow_witness,
         num_row_variables=num_row_variables,
         open_fn=lambda eval_point, t: open_traces_capped(
             main_flat,
@@ -561,3 +573,8 @@ def prove_logup_gkr(
             prep_heights=prep_heights,
         ),
     )
+
+
+if TYPE_CHECKING:
+    # mypy-enforced seam conformance -- driven by `prove_rounds`.
+    _: type[ProverRound] = ChipOpeningsRound

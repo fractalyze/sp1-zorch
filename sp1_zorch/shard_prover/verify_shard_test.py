@@ -1,83 +1,118 @@
 # Copyright 2026 The sp1-zorch Authors. SPDX-License-Identifier: Apache-2.0
-"""``verify_shard_chain`` vs ``prove_shard_chain`` — the structural mirror.
+"""``ShardVerifier`` vs ``ShardProver`` — the structural mirror.
 
-The dual chain's guarantee is structural before it is cryptographic: one
+The verifier's guarantee is structural before it is cryptographic: one
 verifier Stage per prover stage, so a proof whose message list misaligns with
-the schedule is rejected loudly by ``VerifyChain`` itself rather than
+the schedule is rejected loudly by ``verify_rounds`` itself rather than
 accepted on a desynced stream. These tests pin that alignment plus all four
-stage duals against a full prover run (the shared ``chain_testkit``
-fixture): same Fiat-Shamir stream, bridge seams written for the downstream
-duals, a tampered stage message rejected through the chain (the per-leg
+stage duals against a full prover run (the shared ``shard_testkit``
+fixture): same Fiat-Shamir stream, seams derived for the downstream
+duals, a tampered proof section rejected end to end (the per-leg
 tamper coverage is each stage's own verifier test), and the zerocheck
 dual's opening-shape statement checks.
 """
 
 from __future__ import annotations
 
+from frx import Array
 from dataclasses import replace
 
 import frx
 import frx.numpy as fnp
 import numpy as np
 from absl.testing import absltest
-from zk_dtypes import koalabear_mont
+from zk_dtypes import koalabear_mont as F
 
 from zorch.testkit.transcript import cheap_transcript
 
-from sp1_zorch.shard_prover.types import ChipShape, TraceShape
+from sp1_zorch.shard_prover.types import ChipWidths
 from sp1_zorch.shard_prover.verify_shard import (
-    ShardVerifierBridge,
-    ZerocheckVerifierStage,
+    ZerocheckVerifier,
 )
 
-from sp1_zorch.shard_prover.chain_testkit import (
-    CHIP_HEIGHT,
+
+from sp1_zorch.shard_prover.prove_shard import ZerocheckClaim, bind_commitment
+
+from sp1_zorch.shard_prover.shard_testkit import (
     CHIP_WIDTH,
     MAX_LOG_ROW_COUNT,
-    small_shard_chain_fixture,
+    small_shard_fixture,
 )
 
-BF = koalabear_mont
 
-
-def _u32(a) -> np.ndarray:
+def _u32(a: Array) -> np.ndarray:
     return np.asarray(frx.lax.bitcast_convert_type(a, fnp.uint32)).reshape(-1)
 
 
-def _assert_bytes_equal(got, want, label: str = "") -> None:
+def _assert_bytes_equal(got: Array, want: Array, label: str = "") -> None:
     np.testing.assert_array_equal(_u32(got), _u32(want), err_msg=label)
 
 
 class VerifyShardChainTest(absltest.TestCase):
-    """A full four-stage prover run vs one full dual-chain run, every stage
-    dual checked cryptographically through the chain."""
+    """A full prove vs one full verify, every Stage's dual checked
+    cryptographically end to end."""
 
     @classmethod
-    def setUpClass(cls):
-        fx = small_shard_chain_fixture()
+    def setUpClass(cls) -> None:
+        fx = small_shard_fixture()
         cls.fx = fx
-        cls.commitment, cls.gkr_proof, cls.zc_proof, cls.je_proof = fx.messages
-        cls.dual_bridge, cls.dual_transcript, cls.dual_ok = fx.dual(
-            ShardVerifierBridge(fx.public_values),
-            fx.messages,
-            cheap_transcript(BF),
+        proof = fx.proof
+        cls.commitment = proof.commitment
+        cls.gkr_proof = proof.gkr
+        cls.zc_proof = proof.zerocheck
+        cls.je_proof = proof.jagged
+        verified = fx.verifier.verify(fx.claim, proof, cheap_transcript(F))
+        cls.dual_transcript, cls.dual_ok = verified.transcript, verified.ok
+        # The same roles again, kept apart, so a test can assert on one
+        # Stage's reduced claim or drive one dual directly.
+        t, cls.roots = bind_commitment(cheap_transcript(F), fx.claim, proof.commitment)
+        gkr = fx.verifier.gkr.verify(fx.claim, proof.gkr, t)
+        cls.gkr_reduced = gkr.reduced_claim
+        cls.zc_claim = ZerocheckClaim(
+            fx.claim.public_values, gkr.reduced_claim, fx.claim.chip_metadata
+        )
+        cls.zc_transcript = gkr.transcript
+        zc = fx.verifier.zerocheck.verify(cls.zc_claim, proof.zerocheck, gkr.transcript)
+        cls.zc_reduced = zc.reduced_claim
+
+    def test_both_roles_derive_the_same_seams(self) -> None:
+        """The mirror that matters: every claim the prover reduces to, the
+        verifier re-derives from the proof alone and gets the same value.
+
+        A Stage wired to the wrong claim, or a dual replaying a different
+        schedule, breaks this even when both sides still accept — which is
+        what a name-level symmetry check would miss."""
+        fx = self.fx
+        commitment, _ = fx.prover.opening.commit(fx.witness)
+        t, _ = bind_commitment(cheap_transcript(F), fx.claim, commitment)
+        p_gkr = fx.prover.gkr.prove(fx.claim, fx.witness, t)
+        p_zc = fx.prover.zerocheck.prove(
+            ZerocheckClaim(
+                fx.claim.public_values, p_gkr.reduced_claim, fx.claim.chip_metadata
+            ),
+            fx.witness,
+            p_gkr.transcript,
         )
 
-    def test_one_verifier_stage_per_prover_stage(self) -> None:
-        self.assertLen(self.fx.dual.rounds, len(self.fx.prove_chain.rounds))
-
-    def test_round_count_mismatch_fails_loud(self) -> None:
-        """A message list one short of the schedule is a structural reject —
-        ``VerifyChain``'s own check, before any stage dual runs."""
-        with self.assertRaisesRegex(ValueError, "one message per round"):
-            self.fx.dual(
-                ShardVerifierBridge(self.fx.public_values),
-                self.fx.messages[:3],
-                cheap_transcript(BF),
+        _assert_bytes_equal(
+            self.gkr_reduced.eval_point,
+            p_gkr.reduced_claim.eval_point,
+            "gkr eval_point",
+        )
+        for name, want in p_gkr.reduced_claim.chip_openings.items():
+            _assert_bytes_equal(
+                self.gkr_reduced.chip_openings[name].main, want.main, f"gkr {name}"
+            )
+        _assert_bytes_equal(
+            self.zc_reduced.point, p_zc.reduced_claim.point, "zerocheck point"
+        )
+        for name, want in p_zc.reduced_claim.opened_values.items():
+            _assert_bytes_equal(
+                self.zc_reduced.opened_values[name].main, want.main, f"zerocheck {name}"
             )
 
     def test_live_duals_match_the_prover_stream(self) -> None:
-        """The chain accepts and its output transcript byte-matches the
+        """The verifier accepts and its output transcript byte-matches the
         prover's post-stage-4 one, so the two Fiat-Shamir streams agree
         through every stage, glue included."""
         self.assertTrue(bool(self.dual_ok))
@@ -88,18 +123,18 @@ class VerifyShardChainTest(absltest.TestCase):
     def test_gkr_dual_writes_the_zerocheck_seams(self) -> None:
         """The point is the dual's own derivation (pinned against the wire
         copy inside the stage), the openings the proof's leaf-checked values
-        — what the zerocheck dual reads, surviving to the chain output."""
+        — what the zerocheck dual reads, surviving to the verifier's output."""
         _assert_bytes_equal(
-            self.dual_bridge.gkr_eval_point, self.gkr_proof.eval_point, "point"
+            self.gkr_reduced.eval_point, self.gkr_proof.eval_point, "point"
         )
         _assert_bytes_equal(
-            self.dual_bridge.gkr_chip_openings["alpha"].main,
+            self.gkr_reduced.chip_openings["alpha"].main,
             self.gkr_proof.chip_openings["alpha"].main,
             "openings",
         )
 
     def test_tampered_gkr_message_rejected_through_the_chain(self) -> None:
-        """One representative stage-2 tamper rejecting at the chain level;
+        """One representative stage-2 tamper rejecting end to end;
         the per-leg coverage is the stage's own test file."""
         rp = self.gkr_proof.round_proofs[0]
         bad_polys = rp.round_polys.at[0, 0].add(fnp.ones((), rp.round_polys.dtype))
@@ -107,63 +142,55 @@ class VerifyShardChainTest(absltest.TestCase):
             self.gkr_proof.round_proofs[1:]
         )
         bad_proof = replace(self.gkr_proof, round_proofs=bad_rounds)
-        _, _, ok = self.fx.dual(
-            ShardVerifierBridge(self.fx.public_values),
-            [self.commitment, bad_proof, self.zc_proof, self.je_proof],
-            cheap_transcript(BF),
-        )
+        ok = self.fx.verifier.verify(
+            self.fx.claim,
+            replace(self.fx.proof, gkr=bad_proof),
+            cheap_transcript(F),
+        ).ok
         self.assertFalse(bool(ok))
 
     def test_zerocheck_dual_writes_the_eval_seams(self) -> None:
         """The point is the dual's own sampled challenges (the prover's
         ``msgs.challenge`` order), the opened values the proof's
         oracle-checked ones — what the jagged-eval dual reads, surviving to
-        the chain output."""
+        the verifier's output."""
         _assert_bytes_equal(
-            self.dual_bridge.zc_sumcheck_point, self.zc_proof.msgs.challenge, "point"
+            self.zc_reduced.point, self.zc_proof.msgs.challenge, "point"
         )
         _assert_bytes_equal(
-            self.dual_bridge.zc_opened_values["alpha"].main,
+            self.zc_reduced.opened_values["alpha"].main,
             self.zc_proof.opened_values["alpha"].main,
             "opened values",
         )
 
     def test_tampered_zerocheck_message_rejected_through_the_chain(self) -> None:
-        """One representative stage-3 tamper rejecting at the chain level;
+        """One representative stage-3 tamper rejecting end to end;
         the per-leg coverage is the stage's own test file."""
         bad_sum = self.zc_proof.claimed_sum + fnp.ones(
             (), self.zc_proof.claimed_sum.dtype
         )
-        _, _, ok = self.fx.dual(
-            ShardVerifierBridge(self.fx.public_values),
-            [
-                self.commitment,
-                self.gkr_proof,
-                replace(self.zc_proof, claimed_sum=bad_sum),
-                self.je_proof,
-            ],
-            cheap_transcript(BF),
-        )
+        ok = self.fx.verifier.verify(
+            self.fx.claim,
+            replace(
+                self.fx.proof, zerocheck=replace(self.zc_proof, claimed_sum=bad_sum)
+            ),
+            cheap_transcript(F),
+        ).ok
         self.assertFalse(bool(ok))
 
     def test_tampered_jagged_eval_message_rejected_through_the_chain(self) -> None:
-        """One representative stage-4 tamper rejecting at the chain level;
+        """One representative stage-4 tamper rejecting end to end;
         the per-leg coverage is the stage's own verifier test."""
         bad_eval = replace(
             self.je_proof.eval,
             dense_eval=self.je_proof.eval.dense_eval
             + fnp.ones((), self.je_proof.eval.dense_eval.dtype),
         )
-        _, _, ok = self.fx.dual(
-            ShardVerifierBridge(self.fx.public_values),
-            [
-                self.commitment,
-                self.gkr_proof,
-                self.zc_proof,
-                replace(self.je_proof, eval=bad_eval),
-            ],
-            cheap_transcript(BF),
-        )
+        ok = self.fx.verifier.verify(
+            self.fx.claim,
+            replace(self.fx.proof, jagged=replace(self.je_proof, eval=bad_eval)),
+            cheap_transcript(F),
+        ).ok
         self.assertFalse(bool(ok))
 
     def test_truncated_main_opening_rejected(self) -> None:
@@ -178,7 +205,7 @@ class VerifyShardChainTest(absltest.TestCase):
             opened_values={"alpha": replace(ev, main=ev.main[:-1])},
         )
         with self.assertRaisesRegex(ValueError, "main claim per statement"):
-            self.fx.dual.rounds[2](self.dual_bridge, bad, self.dual_transcript)
+            self.fx.verifier.zerocheck.verify(self.zc_claim, bad, self.zc_transcript)
 
     def test_unexpected_preprocessed_opening_rejected(self) -> None:
         """A statement with no preprocessed trace rejects a proof that opens
@@ -189,45 +216,31 @@ class VerifyShardChainTest(absltest.TestCase):
             opened_values={"alpha": replace(ev, preprocessed=ev.main[:1])},
         )
         with self.assertRaisesRegex(ValueError, "no preprocessed trace"):
-            self.fx.dual.rounds[2](self.dual_bridge, bad, self.dual_transcript)
+            self.fx.verifier.zerocheck.verify(self.zc_claim, bad, self.zc_transcript)
 
     def test_missing_preprocessed_opening_rejected(self) -> None:
         """A statement whose chip carries a preprocessed trace rejects a
         proof that opens none (SP1's preprocessed-chips-appear-in-the-proof
-        check). The bridge is the post-chain one (every seam written), so the
+        check). The seams are the post-prove ones, so the
         call exercises only the shape check, which raises before any
         cryptographic work."""
-        stage = ZerocheckVerifierStage(
+        stage = ZerocheckVerifier(
             self.fx.chips,
             chip_names=("alpha",),
-            chip_shapes={
-                "alpha": ChipShape(
-                    TraceShape(CHIP_HEIGHT, CHIP_WIDTH),
-                    prep=TraceShape(CHIP_HEIGHT, 1),
-                )
-            },
+            chip_widths={"alpha": ChipWidths(CHIP_WIDTH, prep=1)},
             max_log_row_count=MAX_LOG_ROW_COUNT,
         )
         with self.assertRaisesRegex(ValueError, "preprocessed claim per statement"):
-            stage(self.dual_bridge, self.zc_proof, self.dual_transcript)
+            stage.verify(self.zc_claim, self.zc_proof, self.zc_transcript)
 
-    def test_trace_commit_dual_writes_commitment_roots(self) -> None:
+    def test_trace_commit_dual_derives_commitment_roots(self) -> None:
         """[prep (from the vk), main (from the message)] — the order of SP1's
         round_evaluation_claims, read skip-level by the stacked-open dual."""
-        roots = self.dual_bridge.commitment_roots
+        roots = self.roots
         _assert_bytes_equal(
-            roots[0], self.fx.vk.preprocessed_commit, "prep root"
+            roots.preprocessed, self.fx.vk.preprocessed_commit, "prep root"
         )
-        _assert_bytes_equal(roots[1], self.commitment, "main root")
-
-    def test_verifier_bridge_flattens_to_array_leaves(self) -> None:
-        """``ShardVerifierBridge`` is a pytree like the prover's bridge: the
-        public values and written roots are its array leaves, so the dual
-        chain can cross a ``@jit`` boundary as one argument."""
-        leaves = frx.tree_util.tree_leaves(self.dual_bridge)
-        self.assertNotEmpty(leaves)
-        for leaf in leaves:
-            self.assertIsInstance(leaf, frx.Array)
+        _assert_bytes_equal(roots.main, self.commitment, "main root")
 
 
 if __name__ == "__main__":

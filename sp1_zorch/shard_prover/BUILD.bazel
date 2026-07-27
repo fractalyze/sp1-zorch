@@ -74,13 +74,14 @@ py_test(
     ],
 )
 
-# The shard proof as one zorch ProveChain of Stages (docs/architecture.md).
+# The shard proof as one composite zorch Stage (docs/architecture.md).
 py_library(
     name = "prove_shard",
     srcs = ["prove_shard.py"],
     visibility = ["//visibility:public"],
     deps = [
         ":shard_prover",
+        "//sp1_zorch/jagged_pcs",
         "//sp1_zorch/logup_gkr",
         "//sp1_zorch/zerocheck",
         "@zorch//zorch:round",
@@ -98,8 +99,8 @@ py_library(
     ],
 )
 
-# The shard verifier as one zorch VerifyChain of stage duals, mirroring
-# prove_shard stage for stage (docs/architecture.md).
+# The shard verifier as the composite dual, mirroring prove_shard role for
+# role (docs/architecture.md).
 py_library(
     name = "verify_shard",
     srcs = ["verify_shard.py"],
@@ -126,9 +127,9 @@ py_library(
 # Shared four-stage chain fixture for the dual-chain test suites
 # (verify_shard_test here, jagged:verifier_test).
 py_library(
-    name = "chain_testkit",
+    name = "shard_testkit",
     testonly = True,
-    srcs = ["chain_testkit.py"],
+    srcs = ["shard_testkit.py"],
     visibility = ["//visibility:public"],
     deps = [
         ":prove_shard",
@@ -190,8 +191,8 @@ py_test(
     timeout = "eternal",
     srcs = ["verify_shard_test.py"],
     deps = [
-        ":chain_testkit",
         ":shard_prover",
+        ":shard_testkit",
         ":verify_shard",
         "@zorch//zorch/testkit:transcript",
         requirement("absl_py"),
@@ -244,7 +245,7 @@ py_library(
 py_binary(
     name = "verify_prove_shard",
     srcs = ["verify_prove_shard.py"],
-    # rsp byte-match of the assembled ProveChain (~1.5 GB/shard, GPU trace
+    # rsp byte-match of the assembled ShardProver (~1.5 GB/shard, GPU trace
     # commit) — a runnable, not a unit test:
     #   bazel run //sp1_zorch/shard_prover:verify_prove_shard -- \
     #       --shard_dir=/path/to/rsp_dump/shardN

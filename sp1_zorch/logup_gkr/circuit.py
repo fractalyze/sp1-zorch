@@ -11,7 +11,7 @@ rw-constraints ``VirtualPairCol`` decompositions, the per-interaction slot
 schedule (``sp1_col_h``) with fold-neutral trailing padding, the power-of-two
 interaction padding, and the fixed-depth transition schedule
 (``sp1_next_row_counts``) driving zorch's jagged fold. Numerator slots stay
-in the main trace's BF dtype; denominators are EF.
+in the main trace's base field; denominators are in the extension field.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from typing import Mapping, Sequence
 import frx
 import frx.numpy as fnp
 from frx import Array, lax
-from rw_constraints import Chip, Interaction
+from rw_constraints import Chip, Interaction, InteractionInfo, VirtualPairCol
 
 from zorch.pcs.jagged.region import JaggedRegion
 from zorch.logup_gkr.circuit import JaggedGkrLayer, _gather_pad
@@ -38,7 +38,7 @@ class GkrChip:
     interactions: tuple[Interaction, ...]
 
 
-def _by_sp1_index(info) -> int:
+def _by_sp1_index(info: InteractionInfo) -> int:
     return info.sp1_index if info.sp1_index is not None else 0
 
 
@@ -109,7 +109,7 @@ def sp1_col_h(real_h: int) -> int:
 
 
 @partial(frx.jit, static_argnames=("h", "w"))
-def _chip_view_jit(dense: Array, start, *, h: int, w: int) -> Array:
+def _chip_view_jit(dense: Array, start: Array, *, h: int, w: int) -> Array:
     # Static-arg key is just (h, w); start stays traced so cross-shard offset
     # variation doesn't blow the pjit cache.
     return lax.dynamic_slice(dense, (start,), (h * w,)).reshape(w, h).T
@@ -162,7 +162,8 @@ def _chip_mult_fingerprint(
         for vpc in (it.multiplicity, *it.values)
         for (_col, is_prep, _w) in vpc.column_weights
     )
-    total_w = main_w + (prep_trace.shape[1] if uses_prep else 0)
+    prep_w = prep_trace.shape[1] if prep_trace is not None else 0
+    total_w = main_w + (prep_w if uses_prep else 0)
 
     # Static tables over canonical ints. Duplicate columns within a form are
     # summed into one weight (field add is exact, so this matches the per-term
@@ -173,7 +174,7 @@ def _chip_mult_fingerprint(
     mult_sign: list[int] = []  # [num_inter] +1 send / -1 receive
     kinds: list[int] = []  # [num_inter]
 
-    def _add_form(vpc) -> int:
+    def _add_form(vpc: VirtualPairCol) -> int:
         row = [0] * total_w
         for col_idx, is_prep, weight in vpc.column_weights:
             if is_prep:
@@ -210,10 +211,12 @@ def _chip_mult_fingerprint(
     )
     w_all = fnp.asarray(weight_rows, dtype=bf_dtype)  # [forms, total_w]
     c_all = fnp.asarray(constants, dtype=bf_dtype)  # [forms]
-    forms = c_all[:, None] + w_all @ trace_cat.T  # [forms, height], BF
+    forms = c_all[:, None] + w_all @ trace_cat.T  # [forms, height], base field
 
     # Multiplicity per interaction; receives negate (× field -1 == negation).
-    mult = forms[fnp.asarray(mult_form)] * fnp.asarray(mult_sign, dtype=bf_dtype)[:, None]
+    mult = (
+        forms[fnp.asarray(mult_form)] * fnp.asarray(mult_sign, dtype=bf_dtype)[:, None]
+    )
 
     # Fingerprint = alpha + betas[0]·kind + Σ_i betas[i+1]·valueᵢ, the value sum
     # unrolled over the (small) widest fingerprint. Padded slots gather the zero
@@ -230,8 +233,13 @@ def _chip_mult_fingerprint(
 @partial(
     frx.jit,
     static_argnames=(
-        "chip", "main_start", "main_width", "cap", "prep_start",
-        "prep_width", "prep_height",
+        "chip",
+        "main_start",
+        "main_width",
+        "cap",
+        "prep_start",
+        "prep_width",
+        "prep_height",
     ),
 )
 def _chip_first_layer(
@@ -258,12 +266,12 @@ def _chip_first_layer(
     every build's intermediates at once and blows the wide-shard budget."""
     height = cap
     main_trace = (
-        main_flat[main_start : main_start + main_width * cap]
-        .reshape(main_width, cap)
-        .T
+        main_flat[main_start : main_start + main_width * cap].reshape(main_width, cap).T
     )
     prep_trace = None
     if prep_width:
+        # A nonzero prep width is only ever paired with a prep arrival.
+        assert prep_flat is not None
         prep_trace = (
             prep_flat[prep_start : prep_start + prep_width * prep_height]
             .reshape(prep_width, prep_height)
@@ -391,9 +399,7 @@ def generate_first_layer(
     One build path: the class-shaped build at the shard's own tight class,
     where the layout equals the exact SP1 layout byte-for-byte.
     """
-    cap_class = GkrCapClass.from_heights(
-        [int(h) for h in main_region.chip_heights]
-    )
+    cap_class = GkrCapClass.from_heights([int(h) for h in main_region.chip_heights])
     main_flat, prep_flat, heights = pack_gkr_arrival(
         main_region, prep_region, cap_class
     )
@@ -495,7 +501,11 @@ class GkrCapClass:
         caps = [c.slot_cap for c in classes]
         return cls(
             tuple(max(hs) for hs in zip(*(c.chip_heights for c in classes))),
-            None if any(c is None for c in caps) else max(caps),
+            (
+                None
+                if any(c is None for c in caps)
+                else max(c for c in caps if c is not None)
+            ),
         )
 
     def resolved_slot_cap(
@@ -525,9 +535,7 @@ class GkrCapClass:
                     f"split needs an even height"
                 )
             if h > cap:
-                raise ValueError(
-                    f"chip {i} height {h} exceeds its class bound {cap}"
-                )
+                raise ValueError(f"chip {i} height {h} exceeds its class bound {cap}")
 
     def check_slot_cap(
         self,
@@ -539,15 +547,12 @@ class GkrCapClass:
         capacity — the ``slot_cap`` half of admission, host-side like
         ``check_bounds``."""
         tight = sum(
-            GkrCapClass.from_heights(heights).slot_counts(
-                gkr_chips, chip_names
-            )
+            GkrCapClass.from_heights(heights).slot_counts(gkr_chips, chip_names)
         )
         cap = self.resolved_slot_cap(gkr_chips, chip_names)
         if tight > cap:
             raise ValueError(
-                f"shard tight slot total {tight} exceeds the class "
-                f"slot_cap {cap}"
+                f"shard tight slot total {tight} exceeds the class " f"slot_cap {cap}"
             )
 
     def slot_counts(
@@ -575,9 +580,7 @@ class GkrCapClass:
         """The class transition schedule — ``sp1_schedules`` over the class
         slot counts; pointwise dominates every admitted shard's exact
         schedule (``sp1_next_row_counts`` is monotone)."""
-        return sp1_schedules(
-            self.slot_counts(gkr_chips, chip_names), num_row_variables
-        )
+        return sp1_schedules(self.slot_counts(gkr_chips, chip_names), num_row_variables)
 
 
 def interaction_chip_indices(
@@ -608,9 +611,7 @@ def traced_slot_counts(heights: Array, seg_chip_idx: tuple[int, ...]) -> Array:
 
 
 @partial(frx.jit, static_argnames=("num_transitions",))
-def sp1_schedule_counts(
-    tight_counts: Array, num_transitions: int
-) -> list[Array]:
+def sp1_schedule_counts(tight_counts: Array, num_transitions: int) -> list[Array]:
     """``sp1_schedules`` on traced counts: ``ceil(rc / 4) * 2`` per segment
     per transition. One compiled dispatch — eagerly the chain is
     ``num_transitions`` launches of trivial work on a warm serve."""
@@ -639,9 +640,7 @@ def capped_pyramid_widths(
     return widths
 
 
-def _arrival_offsets(
-    widths: Sequence[int], heights: Sequence[int]
-) -> tuple[int, ...]:
+def _arrival_offsets(widths: Sequence[int], heights: Sequence[int]) -> tuple[int, ...]:
     """Chip offsets into a flat chip-major column-major arrival:
     ``cumsum(width * height)``. ``pack_gkr_arrival`` and the class-shaped
     consumers MUST derive the same offsets or views read across chips."""
@@ -673,13 +672,11 @@ def _pack_main_zone(
             continue
         h = heights[i]
         start = starts[i]
-        block = frx.vmap(
-            lambda c: lax.dynamic_slice(dense, (start + c * h,), (cap,))
-        )(fnp.arange(w, dtype=fnp.int32))  # [w, cap]
+        block = frx.vmap(lambda c: lax.dynamic_slice(dense, (start + c * h,), (cap,)))(
+            fnp.arange(w, dtype=fnp.int32)
+        )  # [w, cap]
         live = fnp.arange(cap, dtype=fnp.int32)[None, :] < h
-        parts.append(
-            fnp.where(live, block, fnp.zeros((), dense.dtype)).reshape(-1)
-        )
+        parts.append(fnp.where(live, block, fnp.zeros((), dense.dtype)).reshape(-1))
     return fnp.concatenate(parts)
 
 

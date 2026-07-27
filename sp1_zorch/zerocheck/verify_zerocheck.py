@@ -34,6 +34,7 @@ Exits non-zero on any gating mismatch.
 from __future__ import annotations
 
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
 import json
@@ -60,7 +61,11 @@ from sp1_zorch.shard_prover.replay import (
     shard_regions,
     to_u32,
 )
-from sp1_zorch.shard_prover.prove_shard import ZerocheckStage
+from sp1_zorch.logup_gkr.prover import ChipEvaluation
+from sp1_zorch.shard_prover.prove_shard import ZerocheckProver
+from sp1_zorch.shard_prover.types import ShardData
+from zorch.pcs.jagged.region import JaggedRegion
+from zorch.transcript import Transcript
 from sp1_zorch.zerocheck.jagged import TotalCapClass, pack_flat_arrival
 from sp1_zorch.zerocheck.prover import (
     ZerocheckProof,
@@ -93,7 +98,12 @@ _ZC_CLASS_JSON = flags.DEFINE_string(
 )
 
 
-def _replay_gkr(shard, shard_dir: Path, main_region, prep_region):
+def _replay_gkr(
+    shard: ShardData,
+    shard_dir: Path,
+    main_region: JaggedRegion,
+    prep_region: JaggedRegion | None,
+) -> tuple[Array, dict[str, ChipEvaluation], Transcript]:
     """The full GKR leg of the pipeline, sealed against the dump's post-GKR
     diag before its outputs are trusted as zerocheck inputs."""
     transcript, proof = replay_gkr(
@@ -150,7 +160,9 @@ def _parse_phase3(path: Path) -> dict[str, dict[str, Array]]:
     return chips
 
 
-def _check_opened_values(zc: ZerocheckProof, main_region, shard_dir: Path) -> bool:
+def _check_opened_values(
+    zc: ZerocheckProof, main_region: JaggedRegion, shard_dir: Path
+) -> bool:
     """Each chip's final per-column openings against the dump, main and prep
     separately (the driver folds ``[main | prep]`` traces; the dump labels
     the two ranges)."""
@@ -218,7 +230,7 @@ def _print_mem(label: str) -> None:
     )
 
 
-def main(argv) -> None:
+def main(argv: Sequence[str]) -> None:
     del argv
     shard_dir = Path(_SHARD_DIR.value)
     shard = load_fixture_shard(shard_dir)
@@ -243,9 +255,9 @@ def main(argv) -> None:
 
     if _ZC_CLASS_JSON.value:
         # Traced total-cap class route (the shard-invariance form the prove
-        # chain runs): flat jagged arrival packed eagerly with host heights,
+        # prove runs): flat jagged arrival packed eagerly with host heights,
         # per-chip statics threaded through — mirrors
-        # ZerocheckStage.__call__'s flat prologue.
+        # ZerocheckProver.prove's flat prologue.
         with open(_ZC_CLASS_JSON.value) as f:
             c = {k: int(v) for k, v in json.load(f).items()}
         cls = TotalCapClass(area_cap=c["area_cap"])
@@ -254,18 +266,15 @@ def main(argv) -> None:
         traces = chip_traces(order, heights_host, main_region, prep_region)
         flat = pack_flat_arrival(traces, heights_host, cls, MAX_LOG_ROW_COUNT)
         prep_w = (
-            {
-                n: int(w)
-                for n, w in zip(prep_region.chip_names, prep_region.chip_widths)
-            }
+            {n: int(w) for n, w in zip(prep_region.chip_names, prep_region.chip_widths)}
             if prep_region is not None
             else {}
         )
         # Run the Round's OWN jitted body — the same executable the prove
-        # chain compiles (and the one the persistent compile cache shares
+        # prove compiles (and the one the persistent compile cache shares
         # across shards). Eagerly the stage materializes every round's
         # intermediates and tips big classes over the card.
-        transcript, fields = ZerocheckStage._jit_body_totalcap_traced(
+        transcript, fields = ZerocheckProver._jit_body_totalcap_traced(
             flat,
             shard.main_trace_data.public_values,
             eval_point,

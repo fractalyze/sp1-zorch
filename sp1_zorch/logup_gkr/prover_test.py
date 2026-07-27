@@ -9,27 +9,31 @@ beta-count rule.
 """
 
 import hashlib
+from collections.abc import Sequence
 from dataclasses import fields
 from types import SimpleNamespace
 
 import frx.numpy as fnp
 import numpy as np
 from absl.testing import absltest
-from rw_constraints import Interaction, VirtualPairCol
+from frx import Array
+from rw_constraints import Chip, Interaction, VirtualPairCol
 from zk_dtypes import koalabear_mont as F
 from zk_dtypes import koalabearx4_mont as EF
 
 from zorch.pcs.jagged.region import JaggedRegion
 from sp1_zorch.logup_gkr.circuit import GkrCapClass, GkrChip
 from sp1_zorch.logup_gkr.head import (
-    EF_LIMBS,
-    GrindRound,
-    HeadChallengesRound,
-    OutputBindRound,
+    EF_CHALLENGES,
+    absorb_grind,
+    bind_circuit_output,
+    sample_head_challenges,
 )
+from sp1_zorch.shard_prover.types import ShardWitness
 from sp1_zorch.logup_gkr.prover import (
     ChipEvaluation,
     ChipOpeningsRound,
+    LogupGkrProof,
     extract_sp1_outputs,
     num_beta_values,
     open_traces_capped,
@@ -40,7 +44,7 @@ from sp1_zorch.shard_prover.chip_loader import make_chip_stub
 from zorch.logup_gkr.circuit import JaggedGkrLayer, jagged_layer_transition
 from zorch.logup_gkr.jagged_prover import JaggedLayerProof
 from zorch.logup_gkr.jagged_verifier import JaggedGkrLayerRound as VerifierRound
-from zorch.round import VerifyChain
+from zorch.round import verify_rounds
 from zorch.testkit.transcript import cheap_transcript
 
 
@@ -53,7 +57,7 @@ def _interaction(mult_col: int, val_col: int, *, kind: int = 3) -> Interaction:
     )
 
 
-def _region(*chips, names) -> JaggedRegion:
+def _region(*chips: Array, names: Sequence[str]) -> JaggedRegion:
     return JaggedRegion.from_chips(
         list(chips),
         log_stacking_height=3,
@@ -70,7 +74,13 @@ def _main(height: int, width: int = 2, offset: int = 0) -> fnp.ndarray:
     )
 
 
-def _jagged(row_counts, n0, n1, d0, d1):
+def _jagged(
+    row_counts: Sequence[int],
+    n0: Sequence[int],
+    n1: Sequence[int],
+    d0: Sequence[int],
+    d1: Sequence[int],
+) -> JaggedGkrLayer:
     return JaggedGkrLayer(
         numerator_0=fnp.array(n0, F),
         numerator_1=fnp.array(n1, F),
@@ -81,7 +91,7 @@ def _jagged(row_counts, n0, n1, d0, d1):
 
 
 class NumBetaValuesTest(absltest.TestCase):
-    def _chip(self, name, widths):
+    def _chip(self, name: str, widths: Sequence[int]) -> Chip:
         chip = make_chip_stub(name, 2)
         chip._interaction_info = {
             f"f{i}": SimpleNamespace(kind="send", tuple_width=w)
@@ -145,7 +155,7 @@ _ROLLED_PYRAMID_GOLDEN = (
 )
 
 
-def _proof_digest(proof: object) -> str:
+def _proof_digest(proof: LogupGkrProof) -> str:
     """SHA-256 over the proof's field bytes in a fixed order -- a compact CPU
     regression guard. The full field-level oracle is the SP1 reference byte-match
     (``verify_gkr_prove``, a GPU runnable)."""
@@ -167,7 +177,7 @@ def _proof_digest(proof: object) -> str:
 
 
 class ProveLogupGkrTest(absltest.TestCase):
-    def _prove(self, *, witness=None):
+    def _prove(self, *, pow_witness: Array | None = None) -> LogupGkrProof:
         main_a, main_b = _main(24), _main(4, offset=100)
         gkr_chips = [
             GkrChip("A", (_interaction(0, 1),)),
@@ -177,12 +187,11 @@ class ProveLogupGkrTest(absltest.TestCase):
         transcript = cheap_transcript(F)
         transcript, proof = prove_logup_gkr(
             gkr_chips,
-            region,
-            None,
+            ShardWitness(region, None),
             transcript,
             num_betas=3,
             num_row_variables=4,
-            witness=witness,
+            pow_witness=pow_witness,
         )
         return proof
 
@@ -202,15 +211,15 @@ class ProveLogupGkrTest(absltest.TestCase):
         proof = self._prove()
 
         transcript = cheap_transcript(F)
-        _, transcript, _ = GrindRound(proof.witness)(None, transcript)
-        _, transcript, _ = HeadChallengesRound(3)(None, transcript)
-        carry, transcript, _ = OutputBindRound(proof.circuit_output)(
-            None, transcript
-        )
+        transcript = absorb_grind(transcript, proof.pow_witness)
+        transcript, _ = sample_head_challenges(transcript, 3)
+        transcript, carry = bind_circuit_output(transcript, proof.circuit_output)
 
-        chain = VerifyChain([VerifierRound(EF_LIMBS) for _ in proof.round_proofs])
-        (num_eval, den_eval, point), _, ok = chain(
-            carry, proof.round_proofs, transcript
+        (num_eval, den_eval, point), _, ok = verify_rounds(
+            [VerifierRound(EF_CHALLENGES) for _ in proof.round_proofs],
+            carry,
+            proof.round_proofs,
+            transcript,
         )
         self.assertTrue(bool(ok))
         self.assertTrue(bool(fnp.all(point == proof.eval_point)))
@@ -249,14 +258,13 @@ class ProveLogupGkrTest(absltest.TestCase):
         region = _region(_main(8), names=("A",))
         _, proof = prove_logup_gkr(
             gkr_chips,
-            region,
-            None,
+            ShardWitness(region, None),
             cheap_transcript(F),
             num_betas=3,
             num_row_variables=3,
             pow_bits=8,
         )
-        self.assertIsNotNone(proof.witness)
+        self.assertIsNotNone(proof.pow_witness)
 
     def test_negative_pow_bits_rejected(self) -> None:
         # Fail closed at the stage boundary -- a negative bit count would
@@ -266,8 +274,7 @@ class ProveLogupGkrTest(absltest.TestCase):
         with self.assertRaises(ValueError):
             prove_logup_gkr(
                 gkr_chips,
-                region,
-                None,
+                ShardWitness(region, None),
                 cheap_transcript(F),
                 num_betas=3,
                 num_row_variables=3,
@@ -282,12 +289,12 @@ class ProveLogupGkrTest(absltest.TestCase):
         # so it must reach the sponge. Zeroing a passed witness diverged that
         # replay from the judged pow_bits > 0 path.
         zero = self._prove()
-        self.assertTrue(bool(fnp.all(zero.witness == fnp.zeros((), F))))
+        self.assertTrue(bool(fnp.all(zero.pow_witness == fnp.zeros((), F))))
 
         passed = fnp.ones((), F)
-        proof = self._prove(witness=passed)
+        proof = self._prove(pow_witness=passed)
         # Kept, not discarded: the proof carries exactly the witness observed.
-        self.assertTrue(bool(fnp.all(proof.witness == passed)))
+        self.assertTrue(bool(fnp.all(proof.pow_witness == passed)))
         # And observing it perturbs the post-grind sponge, so the head
         # challenges -- and the eval_point they drive -- diverge from the
         # zero-witness run.
@@ -305,13 +312,13 @@ class CappedProveTest(absltest.TestCase):
         GkrChip("B", (_interaction(0, 1, kind=5),)),
     ]
 
-    def _shards(self):
+    def _shards(self) -> list[JaggedRegion]:
         return [
             _region(_main(24), _main(4, offset=100), names=("A", "B")),
             _region(_main(6, offset=7), _main(16, offset=50), names=("A", "B")),
         ]
 
-    def _class_of(self, shards):
+    def _class_of(self, shards: Sequence[JaggedRegion]) -> GkrCapClass:
         return GkrCapClass.union(
             *(
                 GkrCapClass.from_heights([int(h) for h in s.chip_heights])
@@ -319,7 +326,9 @@ class CappedProveTest(absltest.TestCase):
             )
         )
 
-    def _assert_proofs_byte_equal(self, got, want) -> None:
+    def _assert_proofs_byte_equal(
+        self, got: LogupGkrProof, want: LogupGkrProof
+    ) -> None:
         self.assertEqual(_proof_digest(got), _proof_digest(want))
         # The digest skips prep openings and the witness; compare directly.
         for name, ev in want.chip_openings.items():
@@ -328,7 +337,7 @@ class CappedProveTest(absltest.TestCase):
                 self.assertIsNone(got_prep)
             else:
                 self.assertTrue(bool(fnp.all(got_prep == ev.preprocessed)))
-        self.assertTrue(bool(fnp.all(got.witness == want.witness)))
+        self.assertTrue(bool(fnp.all(got.pow_witness == want.pow_witness)))
 
     def test_capped_prove_matches_exact_across_one_class(self) -> None:
         shards = self._shards()
@@ -336,16 +345,14 @@ class CappedProveTest(absltest.TestCase):
         for shard in shards:
             _, exact = prove_logup_gkr(
                 self._CHIPS,
-                shard,
-                None,
+                ShardWitness(shard, None),
                 cheap_transcript(F),
                 num_betas=3,
                 num_row_variables=4,
             )
             capped_t, capped = prove_logup_gkr(
                 self._CHIPS,
-                shard,
-                None,
+                ShardWitness(shard, None),
                 cheap_transcript(F),
                 num_betas=3,
                 num_row_variables=4,
@@ -355,8 +362,7 @@ class CappedProveTest(absltest.TestCase):
             # The advanced transcripts agree too: same next challenge.
             exact_t, _ = prove_logup_gkr(
                 self._CHIPS,
-                shard,
-                None,
+                ShardWitness(shard, None),
                 cheap_transcript(F),
                 num_betas=3,
                 num_row_variables=4,
@@ -375,9 +381,9 @@ class CappedProveTest(absltest.TestCase):
         names = ("A", "B")
         member_totals = [
             sum(
-                GkrCapClass.from_heights(
-                    [int(h) for h in s.chip_heights]
-                ).slot_counts(self._CHIPS, names)
+                GkrCapClass.from_heights([int(h) for h in s.chip_heights]).slot_counts(
+                    self._CHIPS, names
+                )
             )
             for s in shards
         ]
@@ -387,16 +393,14 @@ class CappedProveTest(absltest.TestCase):
         for shard in shards:
             _, exact = prove_logup_gkr(
                 self._CHIPS,
-                shard,
-                None,
+                ShardWitness(shard, None),
                 cheap_transcript(F),
                 num_betas=3,
                 num_row_variables=4,
             )
             _, capped = prove_logup_gkr(
                 self._CHIPS,
-                shard,
-                None,
+                ShardWitness(shard, None),
                 cheap_transcript(F),
                 num_betas=3,
                 num_row_variables=4,
@@ -411,8 +415,7 @@ class CappedProveTest(absltest.TestCase):
         with self.assertRaisesRegex(ValueError, "slot_cap"):
             prove_logup_gkr(
                 self._CHIPS,
-                shards[0],
-                None,
+                ShardWitness(shards[0], None),
                 cheap_transcript(F),
                 num_betas=3,
                 num_row_variables=4,
@@ -426,8 +429,7 @@ class CappedProveTest(absltest.TestCase):
         for shard in shards:
             prove_logup_gkr(
                 self._CHIPS,
-                shard,
-                None,
+                ShardWitness(shard, None),
                 cheap_transcript(F),
                 num_betas=3,
                 num_row_variables=4,
@@ -451,16 +453,14 @@ class CappedProveTest(absltest.TestCase):
         prep_region = _region(prep, names=("A",))
         _, exact = prove_logup_gkr(
             chips,
-            shard,
-            prep_region,
+            ShardWitness(shard, prep_region),
             cheap_transcript(F),
             num_betas=3,
             num_row_variables=3,
         )
         _, capped = prove_logup_gkr(
             chips,
-            shard,
-            prep_region,
+            ShardWitness(shard, prep_region),
             cheap_transcript(F),
             num_betas=3,
             num_row_variables=3,
@@ -508,33 +508,33 @@ class LiveGrindTest(absltest.TestCase):
         # Small pow_bits: fast to grind, still exercises the real search + gate.
         pow_bits = 6
         orig = cheap_transcript(F)
-        # witness=None -> must grind. resolve runs GrindRound(pow_bits) internally,
+        # pow_witness=None -> must grind. resolve runs GrindRound(pow_bits) internally,
         # which raises unless the witness passes the pow_bits gate; returning at
         # all proves the search found a gate-passing witness.
-        t_grind, witness = resolve_witness_and_grind(
-            orig, pow_bits=pow_bits, witness=None, bf_dtype=F
+        t_grind, found = resolve_witness_and_grind(
+            orig, pow_bits=pow_bits, pow_witness=None, bf_dtype=F
         )
-        self.assertIsNotNone(witness)
+        self.assertIsNotNone(found)
         # Replaying the found witness (the recorded-dump path) must reproduce the
         # exact post-grind stream: same resolved witness, same next challenge.
         t_replay, w_replay = resolve_witness_and_grind(
-            orig, pow_bits=pow_bits, witness=witness, bf_dtype=F
+            orig, pow_bits=pow_bits, pow_witness=found, bf_dtype=F
         )
-        self.assertTrue(bool(fnp.all(w_replay == witness)))
+        self.assertTrue(bool(fnp.all(w_replay == found)))
         _, c_grind = t_grind.sample(1)
         _, c_replay = t_replay.sample(1)
         self.assertTrue(bool(fnp.all(c_grind == c_replay)))
 
     def test_zero_pow_bits_defaults_to_zero_witness(self) -> None:
         _, witness = resolve_witness_and_grind(
-            cheap_transcript(F), pow_bits=0, witness=None, bf_dtype=F
+            cheap_transcript(F), pow_bits=0, pow_witness=None, bf_dtype=F
         )
         self.assertTrue(bool(fnp.all(witness == fnp.zeros((), witness.dtype))))
 
     def test_negative_pow_bits_rejected(self) -> None:
         with self.assertRaises(ValueError):
             resolve_witness_and_grind(
-                cheap_transcript(F), pow_bits=-1, witness=None, bf_dtype=F
+                cheap_transcript(F), pow_bits=-1, pow_witness=None, bf_dtype=F
             )
 
 

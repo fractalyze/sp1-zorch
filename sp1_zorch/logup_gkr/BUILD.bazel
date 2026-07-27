@@ -16,6 +16,7 @@ py_library(
     ],
     visibility = ["//visibility:public"],
     deps = [
+        "//sp1_zorch/shard_prover",
         "@zorch//zorch:round",
         "@zorch//zorch:transcript",
         "@zorch//zorch/logup_gkr",

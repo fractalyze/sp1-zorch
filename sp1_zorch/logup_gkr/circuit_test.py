@@ -30,6 +30,12 @@ from sp1_zorch.logup_gkr.circuit import (
     sp1_schedules,
     traced_slot_counts,
 )
+from collections.abc import Mapping, Sequence
+from typing import Any
+
+from frx import Array
+from rw_constraints import Chip
+
 from sp1_zorch.shard_prover.chip_loader import make_chip_stub
 from zorch.logup_gkr.circuit import (
     JaggedGkrLayer,
@@ -57,6 +63,7 @@ def generate_circuit_layers(
         layers.append(jagged_layer_transition(layers[-1], counts))
     return layers
 
+
 ALPHA = fnp.array(7, F)
 BETAS = fnp.array([5, 11], F)
 
@@ -74,7 +81,9 @@ def _starts(layer: JaggedGkrLayer) -> tuple[int, ...]:
     return tuple(out)
 
 
-def _interaction(mult_col: int, val_col: int, *, kind: int = 3, is_send: bool = True):
+def _interaction(
+    mult_col: int, val_col: int, *, kind: int = 3, is_send: bool = True
+) -> Interaction:
     return Interaction(
         values=(VirtualPairCol.single_main(val_col),),
         multiplicity=VirtualPairCol.single_main(mult_col),
@@ -83,7 +92,7 @@ def _interaction(mult_col: int, val_col: int, *, kind: int = 3, is_send: bool = 
     )
 
 
-def _region(*chips, names):
+def _region(*chips: Array, names: Sequence[str]) -> JaggedRegion:
     return JaggedRegion.from_chips(
         list(chips),
         log_stacking_height=3,
@@ -92,7 +101,7 @@ def _region(*chips, names):
     )
 
 
-def _main(height: int, width: int = 2, offset: int = 0):
+def _main(height: int, width: int = 2, offset: int = 0) -> Array:
     return (
         fnp.arange(offset, offset + height * width, dtype=fnp.uint32)
         .reshape(height, width)
@@ -100,7 +109,9 @@ def _main(height: int, width: int = 2, offset: int = 0):
     )
 
 
-def _expected_vals(trace, inter, prep=None):
+def _expected_vals(
+    trace: Array, inter: Interaction, prep: Array | None = None
+) -> tuple[Array, Array]:
     """(mult, fingerprint) per row by direct formula."""
     mult = inter.multiplicity.apply_batch(prep, trace)
     if not inter.is_send:
@@ -224,7 +235,7 @@ class Sp1NextRowCountsTest(absltest.TestCase):
 
 
 class GenerateCircuitLayersTest(absltest.TestCase):
-    def _first_layer(self):
+    def _first_layer(self) -> JaggedGkrLayer:
         # col_h(24) = 6 -> 12 slots; col_h(4) clamps at 8 -> 4 slots.
         main_a, main_b = _main(24), _main(4, offset=100)
         chips = [
@@ -269,7 +280,7 @@ class ScanBuildJaggedPyramidWiringTest(absltest.TestCase):
     `build_jagged_pyramid` under the SP1 schedule must be byte-identical to
     the eager `generate_circuit_layers` reference loop."""
 
-    def _first_layer(self, alpha, betas):
+    def _first_layer(self, alpha: Array, betas: Array) -> JaggedGkrLayer:
         # col_h(24) = 6 -> 12 slots; col_h(4) clamps at 8 -> 4 slots.
         main_a, main_b = _main(24), _main(4, offset=100)
         chips = [
@@ -280,7 +291,9 @@ class ScanBuildJaggedPyramidWiringTest(absltest.TestCase):
             chips, _region(main_a, main_b, names=("A", "B")), None, alpha, betas
         )
 
-    def _assert_layers_byte_equal(self, got, want):
+    def _assert_layers_byte_equal(
+        self, got: JaggedGkrLayer, want: JaggedGkrLayer
+    ) -> None:
         self.assertEqual(len(got), len(want))
         for i, (g, w) in enumerate(zip(got, want)):
             self.assertEqual(
@@ -301,7 +314,9 @@ class ScanBuildJaggedPyramidWiringTest(absltest.TestCase):
         # sp1_schedules is exactly the per-transition out_row_counts
         # generate_circuit_layers folds through (the [1:] of its layer shapes).
         first = self._first_layer(ALPHA, BETAS)
-        self.assertEqual(sp1_schedules(_host_counts(first), 4), [(6, 2), (4, 2), (2, 2)])
+        self.assertEqual(
+            sp1_schedules(_host_counts(first), 4), [(6, 2), (4, 2), (2, 2)]
+        )
 
     def test_depth_one_has_no_transitions(self) -> None:
         first = self._first_layer(ALPHA, BETAS)
@@ -331,7 +346,7 @@ class ScanBuildJaggedPyramidWiringTest(absltest.TestCase):
 
 
 class BuildGkrChipsTest(absltest.TestCase):
-    def _chip_with_infos(self, name, infos):
+    def _chip_with_infos(self, name: str, infos: Mapping[str, Any]) -> Chip:
         chip = make_chip_stub(name, 2)
         chip._interaction_info = infos
         return chip
@@ -370,7 +385,13 @@ class BuildGkrChipsTest(absltest.TestCase):
         self.assertIs(build_gkr_chips(chips, ("A",)), build_gkr_chips(chips, ("A",)))
 
 
-def _reference_first_layer(chips, main_region, prep_region, alpha, betas):
+def _reference_first_layer(
+    chips: Sequence[GkrChip],
+    main_region: JaggedRegion,
+    prep_region: JaggedRegion | None,
+    alpha: Array,
+    betas: Array,
+) -> JaggedGkrLayer:
     """Pre-vectorization per-interaction build (the SP1-byte-matched path):
     ``apply_batch`` per interaction, even/odd split + fold-neutral pad, then
     power-of-two interaction padding. The oracle for the batched build."""
@@ -389,7 +410,11 @@ def _reference_first_layer(chips, main_region, prep_region, alpha, betas):
             continue
         main = _chip_view(main_region, m_idx[chip.name])
         h = main.shape[0]
-        prep = _chip_view(prep_region, p_idx[chip.name])[:h] if chip.name in p_idx else None
+        prep = (
+            _chip_view(prep_region, p_idx[chip.name])[:h]
+            if chip.name in p_idx
+            else None
+        )
         slot = 2 * sp1_col_h(h)
         pad = slot - h // 2
         pn, pd = fnp.zeros(pad, dtype=bf), fnp.ones(pad, dtype=ef)
@@ -426,7 +451,7 @@ def _reference_first_layer(chips, main_region, prep_region, alpha, betas):
 BETAS3 = fnp.array([5, 11, 13, 2], F)
 
 
-def _vpc(constant, *terms):
+def _vpc(constant: int, *terms: tuple[int, bool, int]) -> VirtualPairCol:
     """A VirtualPairCol from ``(col, is_prep, weight)`` term tuples."""
     return VirtualPairCol(constant=constant, column_weights=tuple(terms))
 
@@ -438,7 +463,13 @@ class FirstLayerBatchedEquivalenceTest(absltest.TestCase):
     fingerprints, send/receive mixes, prep columns, power-of-two padding, and
     interaction counts past the old 128 chunk size."""
 
-    def _assert_equiv(self, chips, main_region, prep_region, betas):
+    def _assert_equiv(
+        self,
+        chips: Sequence[GkrChip],
+        main_region: JaggedRegion,
+        prep_region: JaggedRegion | None,
+        betas: Array,
+    ) -> None:
         got = generate_first_layer(chips, main_region, prep_region, ALPHA, betas)
         rn0, rn1, rd0, rd1, rrc = _reference_first_layer(
             chips, main_region, prep_region, ALPHA, betas
@@ -556,7 +587,9 @@ class FirstLayerBatchedEquivalenceTest(absltest.TestCase):
             kind=2,
             is_send=True,
         )
-        self._assert_equiv([GkrChip("A", (inter,))], _region(main, names=("A",)), None, BETAS)
+        self._assert_equiv(
+            [GkrChip("A", (inter,))], _region(main, names=("A",)), None, BETAS
+        )
 
     def test_many_interactions_past_old_chunk_size(self) -> None:
         # The old build chunked at 128 interactions; the batched build is one
@@ -566,7 +599,9 @@ class FirstLayerBatchedEquivalenceTest(absltest.TestCase):
             _interaction(i % 4, (i + 1) % 4, kind=(i % 6) + 1, is_send=(i % 2 == 0))
             for i in range(200)
         )
-        self._assert_equiv([GkrChip("A", inters)], _region(main, names=("A",)), None, BETAS)
+        self._assert_equiv(
+            [GkrChip("A", inters)], _region(main, names=("A",)), None, BETAS
+        )
 
 
 class GkrCapClassTest(absltest.TestCase):
@@ -602,9 +637,7 @@ class GkrCapClassTest(absltest.TestCase):
         region = _region(main_a, main_b, names=("A", "B"))
         exact = generate_first_layer(chips, region, None, ALPHA, BETAS)
         cls = GkrCapClass.from_heights([int(h) for h in region.chip_heights])
-        self.assertEqual(
-            cls.slot_counts(chips, region.chip_names), _host_counts(exact)
-        )
+        self.assertEqual(cls.slot_counts(chips, region.chip_names), _host_counts(exact))
         self.assertEqual(
             cls.schedules(chips, region.chip_names, 4),
             sp1_schedules(_host_counts(exact), 4),
@@ -620,7 +653,13 @@ class GkrCapClassTest(absltest.TestCase):
         self.assertEqual(cls.slot_counts(chips, ("A", "B")), (4, 4, 4, 4))
 
 
-def _capped_layer(chips, main_region, prep_region, cap_class, betas=BETAS):
+def _capped_layer(
+    chips: Sequence[GkrChip],
+    main_region: JaggedRegion,
+    prep_region: JaggedRegion | None,
+    cap_class: GkrCapClass,
+    betas: Array = BETAS,
+) -> JaggedGkrLayer:
     """Pack + build the class-shaped first layer from regions, the way the
     stage prologue will."""
     main_flat, prep_flat, heights = pack_gkr_arrival(
@@ -658,13 +697,15 @@ class CappedFirstLayerTest(absltest.TestCase):
     prefixes, fold-neutral class tails, and one compile across the heights
     of one class."""
 
-    def _chips(self):
+    def _chips(self) -> list[GkrChip]:
         return [
             GkrChip("A", (_interaction(0, 1),)),
             GkrChip("B", (_interaction(0, 1, kind=5),)),
         ]
 
-    def _assert_matches_exact(self, capped, exact) -> None:
+    def _assert_matches_exact(
+        self, capped: JaggedGkrLayer, exact: JaggedGkrLayer
+    ) -> None:
         """Per interaction: the capped segment's first ``exact_rc`` slots are
         the exact segment, the rest the fold-neutral (n=0, d=1)."""
         self.assertEqual(capped.num_batches, exact.num_batches)
@@ -735,9 +776,7 @@ class CappedFirstLayerTest(absltest.TestCase):
             self._assert_matches_exact(capped, exact)
         # One compile per chip across both shards: the class shapes + traced
         # height keep the second shard a cache hit.
-        self.assertEqual(
-            _chip_first_layer._cache_size() - before, len(chips)
-        )
+        self.assertEqual(_chip_first_layer._cache_size() - before, len(chips))
 
     def test_prep_chip_matches_exact_under_a_wider_class(self) -> None:
         # Keygen-height prep above main (recursion-shard shape); the class

@@ -38,7 +38,6 @@ from typing import Mapping, Sequence
 import frx.numpy as fnp
 from frx import Array
 from rw_constraints import Chip
-from zk_dtypes import efinfo
 
 from sp1_zorch.logup_gkr.prover import ChipEvaluation, select_openings
 from sp1_zorch.logup_gkr.verifier import padding_geqs
@@ -53,6 +52,7 @@ from sp1_zorch.zerocheck.prover import (
     sample_stage_challenges,
 )
 from zorch.poly.eq import eval_eq
+from zorch.challenge import ChallengePolicy
 from zorch.sumcheck.verifier import CoeffsSumcheckRound
 from zorch.transcript import Transcript
 from zorch.verify import verify
@@ -75,7 +75,7 @@ def verify_shard_zerocheck(
 
     ``eval_point`` and ``chip_openings`` are the LogUp-GKR dual's outputs —
     already leaf-checked, so the claims derived from them are trusted
-    inputs, mirroring the prover's reads of ``ShardBridge``.
+    inputs, mirroring the prover's reads of its source claim.
     ``zc_sumcheck_point`` is the dual's own sampled challenge list (the
     prover's ``msgs.challenge`` order); the caller threads it to the
     jagged-eval dual. ``ok`` is a traced scalar AND of every acceptance leg;
@@ -97,15 +97,11 @@ def verify_shard_zerocheck(
     opened = select_openings(proof.opened_values, chip_names)
     opened_rows = [ev.all_evals() for ev in opened]
 
-    transcript, batching, gkr_batch, lambda_ = sample_stage_challenges(
-        transcript, ef
-    )
+    transcript, batching, gkr_batch, lambda_ = sample_stage_challenges(transcript, ef)
 
     zeta = eval_point[-max_log_row_count:]
 
-    claims = gkr_opening_claims(
-        [chip_openings[name] for name in chip_names], gkr_batch
-    )
+    claims = gkr_opening_claims([chip_openings[name] for name in chip_names], gkr_batch)
     lambdas = rlc_coeffs(lambda_, len(chip_names))
     claimed_sum = fnp.sum(claims * lambdas)
 
@@ -120,7 +116,7 @@ def verify_shard_zerocheck(
     )
 
     point, final_claim, transcript, ok_rounds = verify(
-        CoeffsSumcheckRound(DEGREE, efinfo(ef).degree),
+        CoeffsSumcheckRound(DEGREE, ChallengePolicy(ef)),
         claimed_sum,
         proof.msgs.round_poly,
         transcript,
@@ -152,9 +148,7 @@ def verify_shard_zerocheck(
             0 if stmt.preprocessed is None else int(stmt.preprocessed.shape[0])
         )
         eval_fn = export_order_eval_fn(chips[name], main_width, num_cols)
-        num_constraints = probe_num_constraints(
-            eval_fn, num_cols, ef, public_values
-        )
+        num_constraints = probe_num_constraints(eval_fn, num_cols, ef, public_values)
         if num_constraints:
             # Row 0 is the opening, row 1 a zero row: one batched fold yields
             # the opened evaluation and the padded-row adjustment together
