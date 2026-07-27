@@ -12,8 +12,11 @@ on:
 jobs:
   lint:
     # The frx pin-bump PRs are authored by this account and their generated
-    # subjects are not written to the convention.
-    if: github.actor != 'fractalyze-dev'
+    # subjects are not written to the convention. Keyed on the PR author rather
+    # than github.actor, which is whoever triggered the event: a maintainer
+    # editing or pushing to a bot-authored PR would otherwise put it back in
+    # scope and fail it.
+    if: github.event.pull_request.user.login != 'fractalyze-dev'
     # GitHub-hosted, never self-hosted: pull_request_target grants base-repo
     # permissions and fires for forks, so fork-triggered jobs must not land on
     # a self-hosted runner.

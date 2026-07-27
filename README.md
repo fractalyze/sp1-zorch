@@ -69,9 +69,10 @@ pre-commit install --install-hooks --hook-type pre-commit --hook-type commit-msg
 Commit messages follow [Conventional Commits](https://www.conventionalcommits.org):
 a valid type, a lowercase summary with no trailing period, a header of at most
 80 characters, and a body on everything but `docs`. The scope is the package the
-change lives in — `logup_gkr`, `poseidon2`, `shard_prover`, `zerocheck`. A
-change spanning several of them takes no scope. The same linter runs in CI over
-every commit in a pull request and over the PR title.
+change lives in — `logup_gkr`, `poseidon2`, `shard_prover`, `zerocheck` — plus
+`release` for the version in `sp1_zorch/__init__.py`. A change spanning several
+packages takes no scope. The same linter runs in CI over every commit in a pull
+request and over the PR title.
 
 **Dev against a local `zorch` checkout** instead of the pinned commit — create
 `.bazelrc.user` (gitignored):
