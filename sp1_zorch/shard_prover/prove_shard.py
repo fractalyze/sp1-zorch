@@ -361,7 +361,17 @@ class LogupGkrProver(
         witness: ShardWitness,
         transcript: Transcript,
     ) -> ProveResult[GkrOutputClaim, LogupGkrProof]:
-        del claim  # the GKR statement is the chip set, fixed on the role
+        # The verifier dual reads the row counts off the claim while the
+        # prover has them in the witness's regions; a claim that disagrees
+        # would otherwise only surface later, as a transcript divergence.
+        assert claim.chip_metadata.by_chip() == {
+            n: int(h)
+            for n, h in zip(
+                witness.main_region.chip_names,
+                witness.main_region.chip_heights,
+                strict=True,
+            )
+        }, "claim's chip metadata does not match the witness's main region"
         transcript, proof = prove_logup_gkr(
             self._gkr_chips,
             witness.main_region,

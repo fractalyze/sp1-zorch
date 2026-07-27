@@ -605,7 +605,11 @@ class LogupGkrProverCapClassTest(absltest.TestCase):
         open_before = open_traces_capped._cache_size()
         for rows, main_region, public_values, want in shards:
             result = stage.prove(
-                ShardClaim(None, public_values, ChipMetadata((), ())),  # type: ignore[arg-type]
+                ShardClaim(
+                    None,  # type: ignore[arg-type]
+                    public_values,
+                    ChipMetadata(("alpha",), (rows,)),
+                ),
                 ShardWitness(main_region, None),
                 cheap_transcript(BF),
             )

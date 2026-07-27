@@ -140,7 +140,7 @@ def main() -> int:
                 shard.main_trace_data.public_values,
                 GkrOutputClaim(eval_point, openings),
                 ChipMetadata(
-                    tuple(main_region.chip_names), tuple(main_region.row_counts)
+                    tuple(main_region.chip_names), tuple(main_region.chip_heights)
                 ),
             ),
             ShardWitness(main_region, prep_region),
