@@ -102,7 +102,15 @@ class ChipMetadata:
 
 @dataclass(frozen=True)
 class ShardClaim:
-    """The public shard statement: what a verifier holds before any proof."""
+    """Some trace of this shape is a valid execution of the shard.
+
+    Spelled out: there exists a trace holding `chip_metadata`'s chips at its
+    row counts, whose preprocessed part is the one `vk` commits to, on which
+    every chip's AIR constraints vanish and whose LogUp bus balances against
+    `public_values`. Nothing here names that trace — it is existentially
+    quantified, and the prover exhibits one by committing to it, which is why
+    the commitment is proof data rather than a field of the statement.
+    """
 
     vk: MachineVerifyingKey
     public_values: Array
@@ -116,7 +124,8 @@ class ShardClaim:
 )
 @dataclass(frozen=True)
 class ShardWitness:
-    """The prover's private trace: the committed regions themselves.
+    """The trace that makes a `ShardClaim` true: the shard's own rows, plus
+    the preprocessed rows when the shard has them.
 
     A pytree, so the whole witness crosses a ``@jit`` boundary as one donated
     argument. Its leaves are exactly the regions' dense buffers — a `None`
@@ -129,9 +138,14 @@ class ShardWitness:
 
 @dataclass(frozen=True)
 class GkrOutputClaim:
-    """What LogUp-GKR reduces its statement to: the input-layer evaluation
-    point and the per-chip openings there. Both roles derive it — the prover
-    from its own chain, the verifier by replaying the proof."""
+    """The trace's LogUp columns take `chip_openings` at `eval_point`.
+
+    What LogUp-GKR reduces the bus-balance statement to: checking a whole
+    logarithmic-derivative argument becomes checking a handful of column
+    values at one point. Both roles derive it — the prover from its own layer
+    chain, the verifier by replaying the proof — so neither has to be trusted
+    for it.
+    """
 
     eval_point: Array
     chip_openings: Mapping[str, ChipEvaluation]
@@ -139,8 +153,14 @@ class GkrOutputClaim:
 
 @dataclass(frozen=True)
 class ZerocheckClaim:
-    """Zerocheck's source claim: the public values its constraint evaluation
-    folds, plus the LogUp-GKR reduction it is conditional on."""
+    """Every chip's AIR constraints vanish on the trace — conditionally on
+    `gkr`, whose column openings the constraint sum folds in.
+
+    Conditional because zerocheck never re-proves the LogUp leg: it inherits
+    `gkr` as a hypothesis and discharges only the constraint half, so the two
+    together are what pin the trace. `public_values` supplies the operands the
+    PV-reading constraint circuits index.
+    """
 
     public_values: Array
     gkr: GkrOutputClaim
@@ -149,8 +169,12 @@ class ZerocheckClaim:
 
 @dataclass(frozen=True)
 class TraceEvaluationClaim:
-    """What zerocheck reduces to and the jagged opening discharges: the trace
-    evaluates to `opened_values` at `point`."""
+    """The trace evaluates to `opened_values` at `point`.
+
+    Zerocheck reduces to this and the jagged opening discharges it: once the
+    constraint sum is checked, all that remains is that the values it was
+    computed over really are the committed trace's.
+    """
 
     point: Array
     opened_values: Mapping[str, ChipEvaluation]
@@ -200,8 +224,13 @@ class SmcsCommitments:
 
 @dataclass(frozen=True)
 class JaggedOpeningClaim:
-    """The opening statement: the committed trace evaluates to
-    `evaluation.opened_values` at `evaluation.point`, under `roots`."""
+    """The trace committed under `roots` evaluates to
+    `evaluation.opened_values` at `evaluation.point`.
+
+    `TraceEvaluationClaim` asserts this of *the* trace; binding it to `roots`
+    is what ties the assertion to the one the prover actually committed to, so
+    discharging this claim leaves nothing to prove.
+    """
 
     evaluation: TraceEvaluationClaim
     roots: BoundRoots
@@ -225,7 +254,8 @@ class JaggedCommitData:
 
 @dataclass(frozen=True)
 class JaggedOpeningWitness:
-    """The shard's trace plus the prover data the commit half produced."""
+    """What discharging a `JaggedOpeningClaim` takes: the trace itself, and
+    the prover data the PCS kept from committing it."""
 
     trace: ShardWitness
     commit_data: JaggedCommitData

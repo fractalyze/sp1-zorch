@@ -47,6 +47,20 @@ drift). This mirrors zorch's rule — keep them consistent.
 [`sp1_zorch/logup_gkr/prover.py`](../sp1_zorch/logup_gkr/prover.py)'s `_prove`
 is the worked shape.
 
+### Claims and witnesses state propositions
+
+A `*Claim` docstring says **what it asserts**, as a sentence that could be
+true or false — not what its fields hold or where they came from. A `*Witness`
+docstring says **what it is a witness for**. Both are the one thing a reader
+cannot recover from the field list, and both are what makes a Stage's contract
+legible: a Stage reduces the claim on its left to the claim on its right, and
+you can only check that reading if each end states a proposition.
+
+`ShardClaim` and `GkrOutputClaim` in
+[`sp1_zorch/shard_prover/prove_shard.py`](../sp1_zorch/shard_prover/prove_shard.py)
+are the worked shape. Provenance ("both roles derive it"), pytree
+registration, and jit notes are real, but they are a second paragraph.
+
 ## External zkVM references
 
 This repo byte-matches and benchmarks against the SP1 reference prover. When code
