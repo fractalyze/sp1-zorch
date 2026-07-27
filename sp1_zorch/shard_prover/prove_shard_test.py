@@ -42,8 +42,10 @@ from sp1_zorch.logup_gkr.prover import (
 from sp1_zorch.poseidon2.koalabear16 import koalabear16_params
 
 from sp1_zorch.shard_prover.prove_shard import (
+    CommitmentRoots,
     JaggedOpeningClaim,
     JaggedPcsProver,
+    RoundCommitments,
     LogupGkrProver,
     JaggedOpeningWitness,
     absorb_preamble,
@@ -283,7 +285,7 @@ class ProveShardChainTest(absltest.TestCase):
         cls.got_transcript = zc.transcript
         opening = prover.opening.prove(
             JaggedOpeningClaim(zc.reduced_claim, commitments),
-            JaggedOpeningWitness(main_region, prep_region, digests),
+            JaggedOpeningWitness(main_region, prep_region, digests, commitments),
             zc.transcript,
         )
         cls.commitment, cls.digests = commitment, digests
@@ -763,10 +765,13 @@ class JaggedPcsProverClassTest(absltest.TestCase):
                         )
                     },
                 ),
-                (commit_data.smcs_commitment,),
+                CommitmentRoots(commit_data.smcs_commitment, commit_data.smcs_commitment),
             )
             open_witness = JaggedOpeningWitness(
-                main_region, None, (commit_data.digest_layers,)
+                main_region,
+                None,
+                (commit_data.digest_layers,),
+                RoundCommitments(main=commit_data.smcs_commitment),
             )
             got_r = stage.prove(open_claim, open_witness, cheap_transcript(BF))
             want_r = eager.prove(open_claim, open_witness, cheap_transcript(BF))

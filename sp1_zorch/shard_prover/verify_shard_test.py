@@ -250,9 +250,9 @@ class VerifyShardChainTest(absltest.TestCase):
         round_evaluation_claims, read skip-level by the stacked-open dual."""
         roots = self.roots
         _assert_bytes_equal(
-            roots[0], self.fx.vk.preprocessed_commit, "prep root"
+            roots.preprocessed, self.fx.vk.preprocessed_commit, "prep root"
         )
-        _assert_bytes_equal(roots[1], self.commitment, "main root")
+        _assert_bytes_equal(roots.main, self.commitment, "main root")
 
 
 if __name__ == "__main__":

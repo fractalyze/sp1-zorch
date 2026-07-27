@@ -377,7 +377,6 @@ def encode_shard_proof(
     proof: ShardProof,
     evaluation: TraceEvaluationClaim,
     commit_digest_layers: tuple[list[Array], ...],
-    commit_commitments: tuple[Array, ...],
     *,
     max_log_row_count: int,
 ) -> bytes:
@@ -385,7 +384,8 @@ def encode_shard_proof(
 
     Takes the shard statement and its proof, plus the two prover-only products
     the wire needs but no claim carries: the zerocheck reduced claim's opened
-    values and the commit-time digest trees. Serde field order: public values,
+    values and the commit-time digest trees. The per-round SMCS commitments
+    ride the jagged proof, since the verifier cannot derive them. Serde field order: public values,
     main commitment, LogUp-GKR proof, zerocheck partial sumcheck, shard opened
     values, evaluation proof.
     """
@@ -429,7 +429,7 @@ def encode_shard_proof(
     ]
     # original_commitments = the SMCS commitment (pre-structure-binding), retained
     # off the commit stage in the same [prep, main] order as commit_digest_layers.
-    component_commitments = list(commit_commitments)
+    component_commitments = jagged_proof.original_commitments.in_round_order()
     row_column_counts = [
         list(zip(region.row_counts, region.column_counts, strict=True))
         for region in regions

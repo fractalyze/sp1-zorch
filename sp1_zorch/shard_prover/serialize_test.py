@@ -25,6 +25,7 @@ from zorch.pcs.jagged.open import StackedOpenProof
 from sp1_zorch.logup_gkr.prover import ChipEvaluation, LogupGkrProof
 from sp1_zorch.shard_prover.prove_shard import (
     JaggedPcsProof,
+    RoundCommitments,
     ShardClaim,
     ShardProof,
     ShardWitness,
@@ -554,7 +555,13 @@ class EncodeShardProofTest(absltest.TestCase):
         public_values = fnp.arange(1, 6, dtype=F)
         zerocheck = _zerocheck_proof()
         gkr = _gkr_proof()
-        jagged = JaggedPcsProof(eval=_eval_msg(), open=_open_proof(num_rounds=2))
+        jagged = JaggedPcsProof(
+            eval=_eval_msg(),
+            open=_open_proof(num_rounds=2),
+            original_commitments=RoundCommitments(
+                main=_COMMITMENTS[1], preprocessed=_COMMITMENTS[0]
+            ),
+        )
         commitment = fnp.arange(50, 58, dtype=F)
 
         covs = [
@@ -602,7 +609,6 @@ class EncodeShardProofTest(absltest.TestCase):
                 ShardProof(commitment, gkr, zerocheck, jagged),
                 _evaluation(),
                 (_digest_layers(100), _digest_layers(400)),
-                _COMMITMENTS,
                 max_log_row_count=3,
             ),
             expected,

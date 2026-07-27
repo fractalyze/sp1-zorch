@@ -34,6 +34,7 @@ from sp1_zorch.logup_gkr.circuit import GkrChip
 from sp1_zorch.logup_gkr.prover import ChipEvaluation, LogupGkrProof
 from sp1_zorch.logup_gkr.verifier import verify_logup_gkr
 from sp1_zorch.shard_prover.prove_shard import (
+    CommitmentRoots,
     GkrOutputClaim,
     JaggedOpeningClaim,
     ShardClaim,
@@ -69,7 +70,7 @@ class TraceCommitAbsorber:
 
     def absorb(
         self, claim: ShardClaim, commitment: Array, transcript: Transcript
-    ) -> tuple[Transcript, tuple[Array, Array]]:
+    ) -> tuple[Transcript, CommitmentRoots]:
         """Absorb the preamble and derive the commitment roots.
 
         The dual of the prover's committer: no claim is reduced here, so it is
@@ -88,7 +89,7 @@ class TraceCommitAbsorber:
             commitment=commitment,
             chip_metadata=claim.chip_metadata,
         )
-        return transcript, (claim.vk.preprocessed_commit, commitment)
+        return transcript, CommitmentRoots(claim.vk.preprocessed_commit, commitment)
 
 
 class LogupGkrVerifier(
@@ -333,7 +334,7 @@ class JaggedPcsVerifier(
             dtype=ef,
         )
 
-        bf = claim.commitments[1].dtype
+        bf = claim.roots.main.dtype
         code = BitReversedReedSolomon(
             message_len=S, blowup=1 << self._log_blowup, dtype=bf
         )
@@ -343,11 +344,7 @@ class JaggedPcsVerifier(
         # preamble-observed commitment (SP1's table-sizes
         # check) — only then do the open's Merkle checks against the proof
         # commitments bind the openings to the statement.
-        statement_roots = (
-            list(claim.commitments)
-            if prep_names
-            else [claim.commitments[1]]
-        )
+        statement_roots = claim.roots.as_statement(bool(prep_names))
         if len(msg.open.component_commitments) != len(statement_roots):
             raise ValueError(
                 f"need one committed round per statement region "

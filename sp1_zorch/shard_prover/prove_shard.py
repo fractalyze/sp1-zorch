@@ -127,12 +127,46 @@ class TraceEvaluationClaim:
 
 
 @dataclass(frozen=True)
+class CommitmentRoots:
+    """The structure-bound Merkle roots an opening is checked against.
+
+    Named rather than a tuple of arrays: the SMCS commitments the prover also
+    holds have the identical shape, and only a distinct type stops the two
+    being passed to each other's slot. Both roles derive these — the verifier
+    from the vk and the proof's commitment — so they belong in the claim.
+    """
+
+    preprocessed: Array
+    main: Array
+
+    def as_statement(self, has_preprocessed: bool) -> list[Array]:
+        """The roots the opening binds against, matching SP1's round order."""
+        return [self.preprocessed, self.main] if has_preprocessed else [self.main]
+
+
+@dataclass(frozen=True)
+class RoundCommitments:
+    """Per-round SMCS commitments — the wire's ``original_commitments``.
+
+    Prover output the verifier cannot derive, so this is proof data, not claim
+    data. `preprocessed` is absent when the shard commits no preprocessed
+    region, which is why the arity varies where `CommitmentRoots` is fixed.
+    """
+
+    main: Array
+    preprocessed: Array | None = None
+
+    def in_round_order(self) -> list[Array]:
+        return [self.preprocessed, self.main] if self.preprocessed is not None else [self.main]
+
+
+@dataclass(frozen=True)
 class JaggedOpeningClaim:
     """The opening statement: the committed trace evaluates to
-    `evaluation.opened_values` at `evaluation.point`, under `commitments`."""
+    `evaluation.opened_values` at `evaluation.point`, under `roots`."""
 
     evaluation: TraceEvaluationClaim
-    commitments: tuple[Array, ...]
+    roots: CommitmentRoots
 
 
 @dataclass(frozen=True)
@@ -144,6 +178,7 @@ class JaggedOpeningWitness:
     main_region: JaggedRegion
     prep_region: JaggedRegion | None
     commit_digest_layers: tuple[list[Array], ...]
+    commitments: RoundCommitments
 
 
 @dataclass(frozen=True)
@@ -213,7 +248,7 @@ class TraceCommitter:
 
     def commit(
         self, claim: ShardClaim, witness: ShardWitness, transcript: Transcript
-    ) -> tuple[Transcript, Array, tuple[list[Array], ...], tuple[Array, ...]]:
+    ) -> tuple[Transcript, Array, tuple[list[Array], ...], RoundCommitments]:
         """Commit the regions and absorb the preamble.
 
         A committer, not a stage: it runs before any claim about the trace
@@ -253,11 +288,12 @@ class TraceCommitter:
         # Keep only the digest tree; the open recomputes the mle from the region
         # dense (mle == dense.reshape(K, S).T) instead of holding a trace-sized
         # copy through GKR + zerocheck. The mles in commit_data drop at return.
+        smcs = [d.smcs_commitment for d in commit_data]
         return (
             transcript,
             bound,
             tuple(d.digest_layers for d in commit_data),
-            tuple(d.smcs_commitment for d in commit_data),
+            RoundCommitments(main=smcs[-1], preprocessed=smcs[0] if len(smcs) > 1 else None),
         )
 
 
@@ -496,6 +532,7 @@ class JaggedPcsProof:
 
     eval: JaggedEvalMsg
     open: StackedOpenProof
+    original_commitments: RoundCommitments
 
 
 @partial(frx.jit, static_argnames=("rc_rounds", "cc_rounds", "target", "dtype"))
@@ -704,7 +741,11 @@ class JaggedPcsProver(
         )
         return ProveResult(
             TrivialClaim(),
-            JaggedPcsProof(eval=eval_msg, open=open_proof),
+            JaggedPcsProof(
+                eval=eval_msg,
+                open=open_proof,
+                original_commitments=witness.commitments,
+            ),
             transcript,
         )
 
@@ -779,6 +820,7 @@ class ShardProver(ProverStage[ShardClaim, ShardWitness, TrivialClaim, ShardProof
         transcript, commitment, digest_layers, commitments = self.committer.commit(
             claim, witness, transcript
         )
+        roots = CommitmentRoots(claim.vk.preprocessed_commit, commitment)
         gkr = self.gkr.prove(claim, witness, transcript)
         zerocheck = self.zerocheck.prove(
             ZerocheckClaim(claim.public_values, gkr.reduced_claim),
@@ -786,9 +828,9 @@ class ShardProver(ProverStage[ShardClaim, ShardWitness, TrivialClaim, ShardProof
             gkr.transcript,
         )
         opening = self.opening.prove(
-            JaggedOpeningClaim(zerocheck.reduced_claim, commitments),
+            JaggedOpeningClaim(zerocheck.reduced_claim, roots),
             JaggedOpeningWitness(
-                witness.main_region, witness.prep_region, digest_layers
+                witness.main_region, witness.prep_region, digest_layers, commitments
             ),
             zerocheck.transcript,
         )

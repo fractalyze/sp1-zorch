@@ -85,6 +85,7 @@ from sp1_zorch.shard_prover.fixture_loader import (
     load_fixture_shard,
 )
 from sp1_zorch.shard_prover.prove_shard import (
+    CommitmentRoots,
     ShardClaim,
     ShardProof,
     ShardProver,
@@ -262,7 +263,7 @@ def _prove_phases(prover, claim, witness, transcript, n, checks):
     phase pays its multi-minute compile. Same call order, same transcript
     threading, so the stream is the composite's byte for byte.
     """
-    evaluation = digest_layers = commitments = None
+    evaluation = digest_layers = commitments = roots = None
     gkr = zerocheck = opening = None
 
     transcript, commitment, digest_layers, commitments = _timed(
@@ -271,6 +272,8 @@ def _prove_phases(prover, claim, witness, transcript, n, checks):
         0,
         lambda: prover.committer.commit(claim, witness, transcript),
     )
+    roots = CommitmentRoots(claim.vk.preprocessed_commit, commitment)
+
     if n >= 2:
         gkr = _timed(
             "LogupGkrProver",
@@ -298,9 +301,12 @@ def _prove_phases(prover, claim, witness, transcript, n, checks):
             checks,
             3,
             lambda: prover.opening.prove(
-                JaggedOpeningClaim(evaluation, commitments),
+                JaggedOpeningClaim(evaluation, roots),
                 JaggedOpeningWitness(
-                    witness.main_region, witness.prep_region, digest_layers
+                    witness.main_region,
+                    witness.prep_region,
+                    digest_layers,
+                    commitments,
                 ),
                 transcript,
             ),
