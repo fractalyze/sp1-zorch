@@ -264,6 +264,36 @@ def extract_sp1_outputs(floor: JaggedGkrLayer) -> LogUpGkrOutput:
     return extract_jagged_outputs(floor)
 
 
+@partial(frx.jit, static_argnames=("out_widths",))
+def _pyramid_zone(
+    first: JaggedGkrLayer, transcript: Transcript, *, out_widths: tuple[int, ...]
+) -> tuple[
+    list[JaggedGkrLayer],
+    tuple[Array, Array],
+    tuple[Array, Array, Array],
+    Transcript,
+]:
+    """Fold the pyramid, extract SP1's floor outputs, and bind them.
+
+    Unrolls rather than scans: the per-level widths differ. Do not extend the
+    zone up into the first-layer build -- that is a fan-in, not a chain, and
+    blows the wide-shard memory budget (``_head_zone``).
+
+    Outputs ride as a bare pair; ``LogUpGkrOutput`` is not a registered pytree.
+    """
+    schedules = list(
+        zip(
+            sp1_schedule_counts(first.row_counts, len(out_widths)),
+            out_widths,
+            strict=True,
+        )
+    )
+    layers = build_jagged_pyramid(first, schedules)
+    out = extract_sp1_outputs(layers[-1])
+    transcript, carry = bind_circuit_output(transcript, out)
+    return layers, (out.numerator, out.denominator), carry, transcript
+
+
 def resolve_witness_and_grind(
     transcript: Transcript,
     *,
@@ -398,29 +428,27 @@ def _prove_from_first_layer(
         )
 
     capacity = slot_cap + slot_cap % 2
-    schedules = list(
-        zip(
-            sp1_schedule_counts(first.row_counts, num_row_variables - 1),
-            capped_pyramid_widths(slot_cap, num_segments, num_row_variables - 1),
-            strict=True,
-        )
+    transition_widths = capped_pyramid_widths(
+        slot_cap, num_segments, num_row_variables - 1
     )
-    layers = build_jagged_pyramid(first, schedules)
-    output = extract_sp1_outputs(layers[-1])
-    transcript, carry = bind_circuit_output(transcript, output)
+    layers, (out_num, out_den), carry, transcript = _pyramid_zone(
+        first, transcript, out_widths=tuple(transition_widths)
+    )
+    output = LogUpGkrOutput(numerator=out_num, denominator=out_den)
 
-    caps = RoundWidthCaps(
-        elements=_row_cap(capacity),
-        eq_row=1 << num_row_variables,
-        interaction=max(4, num_segments),
-    )
-    # Each layer proves through the whole-layer jit zone (one executable per
-    # layer): the caps pre-lay in zorch's `_jagged_round_via_zone` keys the
-    # compile per nrv class, so shards share every layer program and XLA fuses
-    # the inter-round glue instead of the host dispatching per round.
+    layer_widths = [capacity, *transition_widths]
+    layer_caps = [
+        RoundWidthCaps(
+            elements=_row_cap(w),
+            eq_row=1 << num_row_variables,
+            interaction=max(4, num_segments),
+        )
+        for w in layer_widths[: len(layers)]
+    ]
+    # Popped in lockstep with `layers`, floor first.
     (_, _, eval_point), transcript, round_proofs = prove_rounds(
         (
-            JaggedGkrLayerRound(layers.pop(), EF_CHALLENGES, caps=caps)
+            JaggedGkrLayerRound(layers.pop(), EF_CHALLENGES, caps=layer_caps.pop())
             for _ in range(len(layers))
         ),
         carry,
