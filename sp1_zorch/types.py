@@ -35,6 +35,8 @@ if TYPE_CHECKING:
 # layout (sp1-hypercube ``PROOF_MAX_NUM_PVS``).
 PROOF_MAX_NUM_PVS = 187
 
+# --- Vocabulary: the leaves every claim and proof is built from. ----------
+
 
 @dataclass(frozen=True)
 class MachineVerifyingKey:
@@ -75,15 +77,47 @@ class ChipWidths:
 
 
 @dataclass(frozen=True)
-class ChipOpenedValues:
-    """SP1 mirror: ``ChipOpenedValues<F, EF>`` — one chip's zerocheck
-    openings as the shard-proof wire carries them. ``degree`` is the chip's
-    padded height; the wire stores its bits MSB-first over
-    ``max_log_row_count + 1`` positions."""
+class ChipMetadata:
+    """Which chips this shard holds and how many real rows each one has, in
+    SP1's chip order.
 
-    preprocessed_evals: Array | None
-    main_evals: Array
-    degree: int
+    The claim-side half of the trace dimensions: row counts change shard to
+    shard, so the statement has to give them, while column counts are fixed by
+    each chip's AIR and stay role configuration (`ChipWidths`). Held as values
+    rather than as the absorb stream they encode — `preamble_stream` derives
+    that — so both roles read the same statement instead of a blob only the
+    transcript can consume.
+    """
+
+    chip_names: tuple[str, ...]
+    num_reals: tuple[int, ...]
+
+    def __post_init__(self) -> None:
+        # Two parallel tuples, so the pairing is an invariant rather than a
+        # shape. Checked here because a mismatch is otherwise inert until
+        # something zips them, and the likeliest way to get one is passing a
+        # region's `row_counts` (its `chip_heights` plus two stacking entries)
+        # where its `chip_heights` belong.
+        if len(self.chip_names) != len(self.num_reals):
+            raise ValueError(
+                f"{len(self.chip_names)} chip names but "
+                f"{len(self.num_reals)} row counts"
+            )
+
+    def by_chip(self) -> dict[str, int]:
+        return dict(zip(self.chip_names, self.num_reals, strict=True))
+
+    def preamble_stream(self, *, dtype: Any) -> Array:
+        """The preamble's chip-metadata stream as one flat array: chip count,
+        then per chip (num_real, name length, name bytes). One flat absorb
+        matches SP1's per-value observes byte-for-byte while skipping hundreds
+        of single-element transcript calls."""
+        metadata: list[int] = [len(self.chip_names)]
+        for name, num_real in zip(self.chip_names, self.num_reals, strict=True):
+            metadata.append(int(num_real))
+            metadata.append(len(name))
+            metadata.extend(name.encode("ascii"))
+        return fnp.array(metadata, dtype)
 
 
 @dataclass(frozen=True)
@@ -144,79 +178,38 @@ class ShardData:
 
 
 @dataclass(frozen=True)
-class ChipMetadata:
-    """Which chips this shard holds and how many real rows each one has, in
-    SP1's chip order.
+class ChipOpenedValues:
+    """SP1 mirror: ``ChipOpenedValues<F, EF>`` — one chip's zerocheck
+    openings as the shard-proof wire carries them. ``degree`` is the chip's
+    padded height; the wire stores its bits MSB-first over
+    ``max_log_row_count + 1`` positions."""
 
-    The claim-side half of the trace dimensions: row counts change shard to
-    shard, so the statement has to give them, while column counts are fixed by
-    each chip's AIR and stay role configuration (`ChipWidths`). Held as values
-    rather than as the absorb stream they encode — `preamble_stream` derives
-    that — so both roles read the same statement instead of a blob only the
-    transcript can consume.
-    """
-
-    chip_names: tuple[str, ...]
-    num_reals: tuple[int, ...]
-
-    def __post_init__(self) -> None:
-        # Two parallel tuples, so the pairing is an invariant rather than a
-        # shape. Checked here because a mismatch is otherwise inert until
-        # something zips them, and the likeliest way to get one is passing a
-        # region's `row_counts` (its `chip_heights` plus two stacking entries)
-        # where its `chip_heights` belong.
-        if len(self.chip_names) != len(self.num_reals):
-            raise ValueError(
-                f"{len(self.chip_names)} chip names but "
-                f"{len(self.num_reals)} row counts"
-            )
-
-    def by_chip(self) -> dict[str, int]:
-        return dict(zip(self.chip_names, self.num_reals, strict=True))
-
-    def preamble_stream(self, *, dtype: Any) -> Array:
-        """The preamble's chip-metadata stream as one flat array: chip count,
-        then per chip (num_real, name length, name bytes). One flat absorb
-        matches SP1's per-value observes byte-for-byte while skipping hundreds
-        of single-element transcript calls."""
-        metadata: list[int] = [len(self.chip_names)]
-        for name, num_real in zip(self.chip_names, self.num_reals, strict=True):
-            metadata.append(int(num_real))
-            metadata.append(len(name))
-            metadata.extend(name.encode("ascii"))
-        return fnp.array(metadata, dtype)
+    preprocessed_evals: Array | None
+    main_evals: Array
+    degree: int
 
 
+# Pytree: both evals are array leaves (preprocessed is None for prep-less
+# chips), so a carry holding these openings stays an arrays-only pytree.
 @partial(
     frx.tree_util.register_dataclass,
-    data_fields=["main_region", "prep_region"],
+    data_fields=["main", "preprocessed"],
     meta_fields=[],
 )
 @dataclass(frozen=True)
-class ShardWitness:
-    """The trace that makes a `ShardClaim` true: the shard's own rows, plus
-    the preprocessed rows when the shard has them.
+class ChipEvaluation:
+    """One chip's trace openings at the final GKR point."""
 
-    A pytree, so the whole witness crosses a ``@jit`` boundary as one donated
-    argument. Its leaves are exactly the regions' dense buffers — a `None`
-    prep region is an empty subtree and contributes none.
-    """
+    main: Array  # (width,) EF, one eval per main column
+    preprocessed: Array | None  # (prep width,) EF, when the chip has prep
 
-    main_region: JaggedRegion
-    prep_region: JaggedRegion | None = None
-
-
-@dataclass(frozen=True)
-class TraceEvaluationClaim:
-    """The trace evaluates to `opened_values` at `point`.
-
-    Zerocheck reduces to this and the jagged opening discharges it: once the
-    constraint sum is checked, all that remains is that the values it was
-    computed over really are the committed trace's.
-    """
-
-    point: Array
-    opened_values: Mapping[str, ChipEvaluation]
+    def all_evals(self) -> Array:
+        """The ``[main | prep]`` evaluation vector — the column order of the
+        beta-power batching shared by the GKR opening claims and the
+        zerocheck column batch."""
+        if self.preprocessed is not None:
+            return fnp.concatenate([self.main, self.preprocessed])
+        return self.main
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -261,55 +254,7 @@ class SmcsCommitments:
         )
 
 
-@dataclass(frozen=True)
-class JaggedOpeningClaim:
-    """The trace committed under `roots` evaluates to
-    `evaluation.opened_values` at `evaluation.point`.
-
-    `TraceEvaluationClaim` asserts this of *the* trace; binding it to `roots`
-    is what ties the assertion to the one the prover actually committed to, so
-    discharging this claim leaves nothing to prove.
-    """
-
-    evaluation: TraceEvaluationClaim
-    roots: BoundRoots
-    chip_metadata: ChipMetadata
-
-
-@dataclass(frozen=True)
-class JaggedCommitData:
-    """What the jagged PCS's commit half hands to its open half, per round in
-    [prep, main] order.
-
-    Fiat-Shamir splits the halves across the whole shard proof — the
-    commitment must bind the transcript before LogUp-GKR draws a challenge,
-    and the open cannot run until zerocheck produces the point to open at — so
-    this bridges that gap. It is not prover-only state: the open draws the
-    wire's ``original_commitments`` straight from `commitments`, and each
-    tree's top layer is serialized as that round's raw root. Only the lower
-    layers stay prover-side, to answer the query openings.
-
-    Committing binds in three steps, and which level goes where is why two of
-    them are kept here and the third is not:
-
-    - raw Merkle root, ``digest_layers[-1][0]`` — on the wire as that round's
-      raw root;
-    - shape-bound, `commitments` — the wire's ``original_commitments``;
-    - structure-bound — what the transcript absorbs and `BoundRoots.main` is
-      checked against, so it rides `ShardProof` rather than this type.
-    """
-
-    digest_layers: tuple[list[Array], ...]
-    commitments: SmcsCommitments
-
-
-@dataclass(frozen=True)
-class JaggedOpeningWitness:
-    """What discharging a `JaggedOpeningClaim` takes: the trace itself, and
-    the prover data the PCS kept from committing it."""
-
-    trace: ShardWitness
-    commit_data: JaggedCommitData
+# --- The shard statement and the trace that satisfies it. -----------------
 
 
 @dataclass(frozen=True)
@@ -329,6 +274,28 @@ class ShardClaim:
     chip_metadata: ChipMetadata
 
 
+@partial(
+    frx.tree_util.register_dataclass,
+    data_fields=["main_region", "prep_region"],
+    meta_fields=[],
+)
+@dataclass(frozen=True)
+class ShardWitness:
+    """The trace that makes a `ShardClaim` true: the shard's own rows, plus
+    the preprocessed rows when the shard has them.
+
+    A pytree, so the whole witness crosses a ``@jit`` boundary as one donated
+    argument. Its leaves are exactly the regions' dense buffers — a `None`
+    prep region is an empty subtree and contributes none.
+    """
+
+    main_region: JaggedRegion
+    prep_region: JaggedRegion | None = None
+
+
+# --- Reduction 1: LogUp-GKR — bus balance to column openings. -------------
+
+
 @dataclass(frozen=True)
 class GkrOutputClaim:
     """The trace's LogUp columns take `chip_openings` at `eval_point`.
@@ -342,60 +309,6 @@ class GkrOutputClaim:
 
     eval_point: Array
     chip_openings: Mapping[str, ChipEvaluation]
-
-
-@dataclass(frozen=True)
-class ZerocheckClaim:
-    """Every chip's AIR constraints vanish on the trace — conditionally on
-    `gkr`, whose column openings the constraint sum folds in.
-
-    Conditional because zerocheck never re-proves the LogUp leg: it inherits
-    `gkr` as a hypothesis and discharges only the constraint half, so the two
-    together are what pin the trace. `public_values` supplies the operands the
-    PV-reading constraint circuits index.
-    """
-
-    public_values: Array
-    gkr: GkrOutputClaim
-    chip_metadata: ChipMetadata
-
-
-@dataclass(frozen=True)
-class ShardProof:
-    """What a verifier needs to check a `ShardClaim` without the trace.
-
-    The commitment fixes which trace is being talked about; the three
-    reduction proofs then carry the verifier along the same chain the prover
-    walked, one section per Stage, ending at the trivial claim.
-    """
-
-    commitment: Array  # structure-bound main root; see JaggedCommitData
-    gkr: LogupGkrProof
-    zerocheck: ZerocheckProof
-    jagged: JaggedPcsProof
-
-
-# Pytree: both evals are array leaves (preprocessed is None for prep-less
-# chips), so a carry holding these openings stays an arrays-only pytree.
-@partial(
-    frx.tree_util.register_dataclass,
-    data_fields=["main", "preprocessed"],
-    meta_fields=[],
-)
-@dataclass(frozen=True)
-class ChipEvaluation:
-    """One chip's trace openings at the final GKR point."""
-
-    main: Array  # (width,) EF, one eval per main column
-    preprocessed: Array | None  # (prep width,) EF, when the chip has prep
-
-    def all_evals(self) -> Array:
-        """The ``[main | prep]`` evaluation vector — the column order of the
-        beta-power batching shared by the GKR opening claims and the
-        zerocheck column batch."""
-        if self.preprocessed is not None:
-            return fnp.concatenate([self.main, self.preprocessed])
-        return self.main
 
 
 @dataclass(frozen=True)
@@ -418,6 +331,25 @@ class LogupGkrProof:
     round_proofs: list[JaggedLayerProof]
     eval_point: Array
     chip_openings: dict[str, ChipEvaluation]
+
+
+# --- Reduction 2: zerocheck — constraints to a trace evaluation. ----------
+
+
+@dataclass(frozen=True)
+class ZerocheckClaim:
+    """Every chip's AIR constraints vanish on the trace — conditionally on
+    `gkr`, whose column openings the constraint sum folds in.
+
+    Conditional because zerocheck never re-proves the LogUp leg: it inherits
+    `gkr` as a hypothesis and discharges only the constraint half, so the two
+    together are what pin the trace. `public_values` supplies the operands the
+    PV-reading constraint circuits index.
+    """
+
+    public_values: Array
+    gkr: GkrOutputClaim
+    chip_metadata: ChipMetadata
 
 
 @dataclass(frozen=True)
@@ -450,6 +382,73 @@ class ZerocheckProof:
     msgs: RoundMsg
 
 
+# --- Reduction 3: jagged opening — trace evaluation to nothing. -----------
+
+
+@dataclass(frozen=True)
+class TraceEvaluationClaim:
+    """The trace evaluates to `opened_values` at `point`.
+
+    Zerocheck reduces to this and the jagged opening discharges it: once the
+    constraint sum is checked, all that remains is that the values it was
+    computed over really are the committed trace's.
+    """
+
+    point: Array
+    opened_values: Mapping[str, ChipEvaluation]
+
+
+@dataclass(frozen=True)
+class JaggedOpeningClaim:
+    """The trace committed under `roots` evaluates to
+    `evaluation.opened_values` at `evaluation.point`.
+
+    `TraceEvaluationClaim` asserts this of *the* trace; binding it to `roots`
+    is what ties the assertion to the one the prover actually committed to, so
+    discharging this claim leaves nothing to prove.
+    """
+
+    evaluation: TraceEvaluationClaim
+    roots: BoundRoots
+    chip_metadata: ChipMetadata
+
+
+@dataclass(frozen=True)
+class JaggedOpeningWitness:
+    """What discharging a `JaggedOpeningClaim` takes: the trace itself, and
+    the prover data the PCS kept from committing it."""
+
+    trace: ShardWitness
+    commit_data: JaggedCommitData
+
+
+@dataclass(frozen=True)
+class JaggedCommitData:
+    """What the jagged PCS's commit half hands to its open half, per round in
+    [prep, main] order.
+
+    Fiat-Shamir splits the halves across the whole shard proof — the
+    commitment must bind the transcript before LogUp-GKR draws a challenge,
+    and the open cannot run until zerocheck produces the point to open at — so
+    this bridges that gap. It is not prover-only state: the open draws the
+    wire's ``original_commitments`` straight from `commitments`, and each
+    tree's top layer is serialized as that round's raw root. Only the lower
+    layers stay prover-side, to answer the query openings.
+
+    Committing binds in three steps, and which level goes where is why two of
+    them are kept here and the third is not:
+
+    - raw Merkle root, ``digest_layers[-1][0]`` — on the wire as that round's
+      raw root;
+    - shape-bound, `commitments` — the wire's ``original_commitments``;
+    - structure-bound — what the transcript absorbs and `BoundRoots.main` is
+      checked against, so it rides `ShardProof` rather than this type.
+    """
+
+    digest_layers: tuple[list[Array], ...]
+    commitments: SmcsCommitments
+
+
 @dataclass(frozen=True)
 class JaggedPcsProof:
     """Discharges a `JaggedOpeningClaim`, leaving nothing to prove.
@@ -462,3 +461,21 @@ class JaggedPcsProof:
     eval: JaggedEvalMsg
     open: StackedOpenProof
     smcs_commitments: SmcsCommitments
+
+
+# --- The composite, naming each reduction's proof. ------------------------
+
+
+@dataclass(frozen=True)
+class ShardProof:
+    """What a verifier needs to check a `ShardClaim` without the trace.
+
+    The commitment fixes which trace is being talked about; the three
+    reduction proofs then carry the verifier along the same chain the prover
+    walked, one section per Stage, ending at the trivial claim.
+    """
+
+    commitment: Array  # structure-bound main root; see JaggedCommitData
+    gkr: LogupGkrProof
+    zerocheck: ZerocheckProof
+    jagged: JaggedPcsProof
