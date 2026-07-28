@@ -35,29 +35,26 @@ from collections.abc import Mapping
 from pathlib import Path
 
 import frx
-
 from frx import Array
-
-from sp1_zorch.logup_gkr.prover import ChipEvaluation
-from sp1_zorch.shard_prover.fixture_loader import load_fixture_shard
-from sp1_zorch.shard_prover.types import ShardData
 from zorch.pcs.jagged.region import JaggedRegion
 from zorch.transcript import Transcript
-from sp1_zorch.shard_prover.types import (
-    ChipMetadata,
-    ShardWitness,
-)
-from sp1_zorch.shard_prover.prove_shard import (
-    GkrOutputClaim,
-    ZerocheckClaim,
-    ZerocheckProver,
-)
+
+from sp1_zorch.shard_prover.fixture_loader import load_fixture_shard
+from sp1_zorch.shard_prover.prove_shard import ZerocheckProver
 from sp1_zorch.shard_prover.replay import (
     MAX_LOG_ROW_COUNT,
     load_gkr_cache,
     save_gkr_cache,
     seed_gkr_outputs_rolled,
     shard_regions,
+)
+from sp1_zorch.types import (
+    ChipEvaluation,
+    ChipMetadata,
+    GkrOutputClaim,
+    ShardData,
+    ShardWitness,
+    ZerocheckClaim,
 )
 from sp1_zorch.zerocheck.jagged import TotalCapClass
 

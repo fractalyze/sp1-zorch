@@ -8,13 +8,13 @@ py_library(
         "chip_loader.py",
         "fixture_loader.py",
         "serialize.py",
-        "types.py",
     ],
     visibility = ["//visibility:public"],
     # serialize.py's jagged imports are TYPE_CHECKING-only by design — adding
     # the jagged deps here swaps consumers' frx wheel via pip-hub sys.path
     # shadowing (#60).
     deps = [
+        "//sp1_zorch:types",
         requirement("frx"),
         requirement("numpy"),
         requirement("rw_constraints"),
@@ -286,6 +286,7 @@ py_binary(
         ":replay",
         ":shard_prover",
         ":sp1_ffi",
+        "//sp1_zorch:types",
         "//sp1_zorch/logup_gkr",
         "//sp1_zorch/poseidon2:koalabear16",
         "@zorch//zorch/commit:smcs",

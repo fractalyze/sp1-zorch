@@ -19,60 +19,38 @@ Stage / dump vocabulary: ``docs/architecture.md``.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from functools import partial
+from typing import TYPE_CHECKING, Any
 
+import frx
 import frx.numpy as fnp
 from frx import Array
 from rw_constraints import Chip
-
 from zk_dtypes import efinfo
-
 from zorch.pcs.jagged.region import JaggedRegion
+from zorch.round import ProverRound
+from zorch.stage import ProveResult, ProverStage
+from zorch.transcript import Transcript, sample_challenge
+
 from sp1_zorch.logup_gkr.prover import (
-    ChipEvaluation,
     flat_openings_absorb,
     select_openings,
 )
+from sp1_zorch.types import (
+    ChipEvaluation,
+    ShardWitness,
+    TraceEvaluationClaim,
+    ZerocheckClaim,
+    ZerocheckProof,
+)
+from sp1_zorch.zerocheck.coeffs import gkr_powers, rlc_coeffs
 from sp1_zorch.zerocheck.jagged import (
     JaggedZerocheckSummand,
     TotalCapClass,
+    pack_flat_arrival,
     prove_jagged_zerocheck,
 )
-from sp1_zorch.zerocheck.coeffs import gkr_powers, rlc_coeffs
-from zorch.round import ProverRound
-from zorch.sumcheck.prover import RoundMsg
-from zorch.transcript import Transcript, sample_challenge
-
-
-@dataclass(frozen=True)
-class ZerocheckProof:
-    """Reduces "every chip's constraints vanish" to a `TraceEvaluationClaim`.
-
-    A verifier replays the multi-chip sumcheck in ``msgs`` — whose
-    ``challenge`` accumulates into the point the next Stage opens at — and is
-    left owing only that the values folded along the way are the committed
-    trace's.
-
-    Several fields are retained rather than re-derived, because their only
-    other source is state the consumer does not hold: the three challenges and
-    the eq point, because neither the byte-match harness nor the jagged
-    opening keeps the pre-stage transcript to re-sample them; the claimed sum
-    (the lambda-Horner fold of the per-chip GKR opening claims, SP1's
-    zerocheck RLC), because only this Stage sees those claims; and the
-    per-chip final folded traces, whose split ``opened_values`` view is both
-    the evaluation Stage's per-column claims and the wire's
-    ShardOpenedValues.
-    """
-
-    batching_challenge: Array
-    gkr_opening_batch_challenge: Array
-    lambda_: Array
-    zeta: Array
-    claimed_sum: Array
-    finals: list[Array]
-    opened_values: dict[str, ChipEvaluation]
-    msgs: RoundMsg
 
 
 def chip_traces(
@@ -475,3 +453,180 @@ def prove_shard_zerocheck(
 if TYPE_CHECKING:
     # mypy-enforced seam conformance -- driven by `prove_rounds`.
     _: type[ProverRound] = OpenedValuesRound
+
+
+class ZerocheckProver(
+    ProverStage[ZerocheckClaim, ShardWitness, TraceEvaluationClaim, ZerocheckProof]
+):
+    """Zerocheck stage over ``prove_shard_zerocheck``, consuming the GKR
+    point and openings off its source claim. The stage absorbs the per-chip opened
+    values itself (``OpenedValuesRound`` in ``zerocheck.prover``); this Stage
+    surfaces them in its reduced claim for the jagged opening and the
+    wire's ShardOpenedValues.
+
+    The stage body runs under one cached outer ``@jit`` on the total-cap
+    contract (fractalyze/sp1-zorch#242): a ``TotalCapClass`` bounds the one
+    flat jagged round buffer, the arrival is packed to the class shape in an
+    eager prologue, and the shard's real heights ride as one traced int32
+    vector, so the body's compile keys on the class and the chip set alone --
+    shards that differ only in row counts share one executable (exact heights
+    bust the cache: 22 distinct shape signatures across the 25-shard rsp
+    block). With no class pinned, the shard's own a-priori-tight class is
+    derived (per-shard compile, same body). pv-reading constraint circuits
+    are legal because the statement rides ``constraint_eval``'s declared
+    ``aux_operands`` operand, not a closure the composite would reject.
+    Byte-identical to an eager exact-heights prove, and CPU-executable (the
+    former eager-only fallback was a stale fractalyze/frx#168 workaround)."""
+
+    def __init__(
+        self,
+        chips: Mapping[str, Chip],
+        *,
+        max_log_row_count: int,
+        total_cap_class: TotalCapClass | None = None,
+    ) -> None:
+        self._chips = chips
+        self._max_log_row_count = max_log_row_count
+        self._total_cap_class = total_cap_class
+
+    @staticmethod
+    @partial(
+        frx.jit,
+        static_argnames=(
+            "chips",
+            "max_log_row_count",
+            "total_cap_class",
+            "chip_names",
+            "num_cols",
+            "main_widths",
+            "prep_widths",
+        ),
+    )
+    def _jit_body_totalcap_traced(
+        flat_arrival: Array,
+        public_values: Array,
+        eval_point: Array,
+        chip_openings: Mapping[str, ChipEvaluation],
+        num_reals: Array,
+        transcript: Transcript,
+        *,
+        chips: tuple[tuple[str, Chip], ...],
+        max_log_row_count: int,
+        total_cap_class: TotalCapClass,
+        chip_names: tuple[str, ...],
+        num_cols: tuple[int, ...],
+        main_widths: tuple[int, ...],
+        prep_widths: tuple[int, ...],
+    ) -> tuple[Transcript, tuple[Any, ...]]:
+        # The shard-invariant total-cap body (sp1-zorch#242): the arrival is
+        # the ONE class-shaped flat jagged buffer (`pack_flat_arrival`) and
+        # the shard's real heights ride in `num_reals` (one traced int32
+        # vector); every other per-chip datum is a class-level static. The
+        # compile keys on (chips, total_cap_class, the static tuples) alone —
+        # shards of one class share the executable, and no per-shard region
+        # shape enters the cache key.
+        transcript, proof = prove_shard_zerocheck(
+            dict(chips),
+            None,
+            None,
+            public_values,
+            eval_point,
+            chip_openings,
+            transcript,
+            max_log_row_count=max_log_row_count,
+            num_reals=[num_reals[i] for i in range(len(chip_names))],
+            total_cap_class=total_cap_class,
+            flat_arrival=flat_arrival,
+            num_cols=num_cols,
+            main_widths=main_widths,
+            prep_widths=prep_widths,
+            chip_names=chip_names,
+        )
+        return transcript, (
+            proof.batching_challenge,
+            proof.gkr_opening_batch_challenge,
+            proof.lambda_,
+            proof.zeta,
+            proof.claimed_sum,
+            proof.finals,
+            proof.opened_values,
+            proof.msgs,
+        )
+
+    def prove(
+        self,
+        claim: ZerocheckClaim,
+        witness: ShardWitness,
+        transcript: Transcript,
+    ) -> ProveResult[TraceEvaluationClaim, ZerocheckProof]:
+        # Shard-invariant flat prologue (sp1-zorch#242): pack the
+        # class-shaped flat jagged arrival EAGERLY from the exact-height
+        # traces — heights are host ints here, and the pack mirrors the
+        # cols*evenpad(h) cumsum the traced body derives, so the layouts
+        # agree. No chip pads to the class window (a wide class made that
+        # uniform 2W padding overflow int32 element indexing and dwarf the
+        # live area); the arrival is live rows + zeros, in the base field.
+        names = witness.main_region.chip_names
+        heights_host = [int(h) for h in witness.main_region.chip_heights]
+        traces = chip_traces(
+            names, heights_host, witness.main_region, witness.prep_region
+        )
+        # No pinned class: derive this shard's own a-priori-tight class
+        # (per-shard compile, same traced body).
+        total_cap_class = self._total_cap_class or TotalCapClass.from_heights(
+            heights_host, [int(t.shape[0]) for t in traces]
+        )
+        flat = pack_flat_arrival(
+            traces, heights_host, total_cap_class, self._max_log_row_count
+        )
+        prep_w = (
+            {
+                n: int(w)
+                for n, w in zip(
+                    witness.prep_region.chip_names,
+                    witness.prep_region.chip_widths,
+                )
+            }
+            if witness.prep_region is not None
+            else {}
+        )
+        transcript, fields = self._jit_body_totalcap_traced(
+            flat,
+            claim.public_values,
+            claim.gkr.eval_point,
+            claim.gkr.chip_openings,
+            fnp.asarray(heights_host, fnp.int32),
+            transcript,
+            chips=tuple(self._chips.items()),
+            max_log_row_count=self._max_log_row_count,
+            total_cap_class=total_cap_class,
+            chip_names=tuple(names),
+            num_cols=tuple(int(t.shape[0]) for t in traces),
+            main_widths=tuple(int(w) for w in witness.main_region.chip_widths),
+            prep_widths=tuple(prep_w.get(n, 0) for n in names),
+        )
+        (
+            batching_challenge,
+            gkr_batch,
+            lambda_,
+            zeta,
+            claimed_sum,
+            finals,
+            opened_values,
+            msgs,
+        ) = fields
+        proof = ZerocheckProof(
+            batching_challenge=batching_challenge,
+            gkr_opening_batch_challenge=gkr_batch,
+            lambda_=lambda_,
+            zeta=zeta,
+            claimed_sum=claimed_sum,
+            finals=finals,
+            opened_values=opened_values,
+            msgs=msgs,
+        )
+        return ProveResult(
+            TraceEvaluationClaim(proof.msgs.challenge, proof.opened_values),
+            proof,
+            transcript,
+        )

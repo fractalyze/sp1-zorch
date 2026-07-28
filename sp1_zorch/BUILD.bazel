@@ -1,0 +1,21 @@
+load("@rules_python//python:defs.bzl", "py_library")
+load("@sp1_zorch_pip//:requirements.bzl", "requirement")
+
+# The shard's claims, witnesses and wire types — shared by both roles of every
+# claim reduction, so neither has to import the other to read them. zorch
+# imports stay TYPE_CHECKING-only: taking a real dep here would swap consumers'
+# frx wheel via pip-hub sys.path shadowing (#60).
+py_library(
+    name = "types",
+    srcs = [
+        "__init__.py",
+        "types.py",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        requirement("frx"),
+        requirement("numpy"),
+        requirement("rw_constraints"),
+        requirement("zk_dtypes"),
+    ],
+)

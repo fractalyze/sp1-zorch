@@ -20,8 +20,13 @@ from frx import Array
 from rw_constraints import Chip, Interaction, VirtualPairCol
 from zk_dtypes import koalabear_mont as F
 from zk_dtypes import koalabearx4_mont as EF
-
+from zorch.logup_gkr.circuit import JaggedGkrLayer, jagged_layer_transition
+from zorch.logup_gkr.jagged_prover import JaggedLayerProof
+from zorch.logup_gkr.jagged_verifier import JaggedGkrLayerRound as VerifierRound
 from zorch.pcs.jagged.region import JaggedRegion
+from zorch.round import verify_rounds
+from zorch.testkit.transcript import cheap_transcript
+
 from sp1_zorch.logup_gkr.circuit import GkrCapClass, GkrChip
 from sp1_zorch.logup_gkr.head import (
     EF_CHALLENGES,
@@ -29,11 +34,8 @@ from sp1_zorch.logup_gkr.head import (
     bind_circuit_output,
     sample_head_challenges,
 )
-from sp1_zorch.shard_prover.types import ShardWitness
 from sp1_zorch.logup_gkr.prover import (
-    ChipEvaluation,
     ChipOpeningsRound,
-    LogupGkrProof,
     extract_sp1_outputs,
     num_beta_values,
     open_traces_capped,
@@ -41,11 +43,11 @@ from sp1_zorch.logup_gkr.prover import (
     resolve_witness_and_grind,
 )
 from sp1_zorch.shard_prover.chip_loader import make_chip_stub
-from zorch.logup_gkr.circuit import JaggedGkrLayer, jagged_layer_transition
-from zorch.logup_gkr.jagged_prover import JaggedLayerProof
-from zorch.logup_gkr.jagged_verifier import JaggedGkrLayerRound as VerifierRound
-from zorch.round import verify_rounds
-from zorch.testkit.transcript import cheap_transcript
+from sp1_zorch.types import (
+    ChipEvaluation,
+    LogupGkrProof,
+    ShardWitness,
+)
 
 
 def _interaction(mult_col: int, val_col: int, *, kind: int = 3) -> Interaction:

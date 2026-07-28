@@ -19,21 +19,19 @@ driver and reference, seeding the claims from the columns' MLE openings at
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
-from typing import Any
-from frx import Array
 import re
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from functools import partial
+from typing import Any
 
 import frx
 import frx.numpy as fnp
 import numpy as np
-
 from absl.testing import absltest
+from frx import Array
 from zk_dtypes import koalabear_mont as F
 from zk_dtypes import koalabearx4_mont as EF
-
 from zorch.poly.eq import expand_eq_to_hypercube
 from zorch.poly.geq import VirtualGeq
 from zorch.poly.univariate import compute_inv_vandermonde, eval_coeffs
@@ -42,6 +40,7 @@ from zorch.testkit.transcript import cheap_transcript
 from zorch.transcript import sample_challenge
 
 from sp1_zorch.zerocheck import jagged
+from sp1_zorch.zerocheck.coeffs import gkr_powers, rlc_coeffs
 from sp1_zorch.zerocheck.jagged import (
     DEGREE,
     JaggedZerocheckSummand,
@@ -51,7 +50,6 @@ from sp1_zorch.zerocheck.jagged import (
     eq_widths,
     prove_jagged_zerocheck,
 )
-from sp1_zorch.zerocheck.coeffs import gkr_powers, rlc_coeffs
 
 
 def zero_extend(arr: Array, width: int) -> Array:

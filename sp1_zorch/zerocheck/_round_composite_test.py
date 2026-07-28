@@ -3,14 +3,13 @@
 (CPU) decomposes inline, reproducing the plain _reduce_and_assemble exactly."""
 from __future__ import annotations
 
-from frx import Array
 import frx
 import frx.numpy as fnp
 import numpy as np
 from absl.testing import absltest
+from frx import Array
 from zk_dtypes import koalabear_mont as F
 from zk_dtypes import koalabearx4_mont as EF
-
 from zorch.poly.geq import VirtualGeq
 from zorch.sumcheck.gruen import interp_matrix
 

@@ -23,7 +23,6 @@ from collections.abc import Callable
 
 import frx.numpy as fnp
 from frx import Array
-
 from zorch.constraint_eval import constraint_eval
 from zorch.poly.univariate import powers
 

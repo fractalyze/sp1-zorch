@@ -25,12 +25,11 @@ import frx.numpy as fnp
 from frx import Array
 from zk_dtypes import efinfo
 from zk_dtypes import koalabearx4_mont as EF
-
 from zorch.challenge import ChallengePolicy
 from zorch.logup_gkr.circuit import LogUpGkrOutput
 from zorch.poly.eq import expand_eq_to_hypercube
 from zorch.poly.multilinear import eval_mle
-from zorch.transcript import GrindingTranscript, Transcript, sample_challenge
+from zorch.transcript import Transcript, sample_challenge
 from zorch.utils.bits import log2_ceil_usize, log2_strict_usize
 
 # An SP1 extension-field challenge is one base-field squeeze per coefficient.
@@ -59,8 +58,8 @@ def _sample_ef_point(
 
 
 def absorb_grind(
-    transcript: GrindingTranscript, pow_witness: Array, *, pow_bits: int = 0
-) -> GrindingTranscript:
+    transcript: Transcript, pow_witness: Array, *, pow_bits: int = 0
+) -> Transcript:
     """Observe the grind witness and judge the proof-of-work gate.
 
     Delegates to the transcript's ``check_witness`` so the gate predicate is
@@ -74,7 +73,7 @@ def absorb_grind(
     The verifier dual does not call this: it needs the verdict as a traced leg
     of its `ok`, so it calls the same `check_witness` predicate directly.
     """
-    transcript, ok = transcript.check_witness(pow_bits, pow_witness)
+    transcript, ok = transcript.check_witness(pow_witness, pow_bits=pow_bits)
     if pow_bits > 0 and not bool(ok):
         raise ValueError(f"witness fails the {pow_bits}-bit proof of work")
     return transcript

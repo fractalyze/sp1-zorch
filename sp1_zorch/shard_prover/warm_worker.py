@@ -23,8 +23,8 @@ from collections.abc import Callable
 from typing import Any
 
 import frx  # establish the frx jax fork before anything imports `jax`
-import jax
 import frx.numpy as fnp
+import jax
 
 _real_jit = frx.jit
 _depth = [0]
@@ -97,8 +97,8 @@ def _drain_compiles() -> int:
 
 frx.jit = _compile_only_jit
 
-from sp1_zorch.shard_prover import verify_prove_shard as V  # noqa: E402
 from sp1_zorch.logup_gkr import prover as _gkr_prover  # noqa: E402
+from sp1_zorch.shard_prover import verify_prove_shard as V  # noqa: E402
 
 # Bypass value-dependent HOST checks that zero'd compile-only outputs can't
 # satisfy — they gate correctness, not compilation.
@@ -106,7 +106,7 @@ V.check_match = lambda *a, **k: True
 
 
 def _grind_no_pow(transcript: Any, pow_witness: Any, *, pow_bits: int = 0) -> Any:
-    transcript, _ = transcript.check_witness(pow_bits, pow_witness)
+    transcript, _ = transcript.check_witness(pow_witness, pow_bits=pow_bits)
     return transcript
 
 

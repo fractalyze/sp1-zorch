@@ -20,28 +20,23 @@ import numpy as np
 from frx import Array
 from rw_constraints import Interaction, VirtualPairCol
 from zk_dtypes import koalabear_mont as F
-
+from zorch.commit.smcs import SingleMatrixCommitmentScheme
 from zorch.hash.compression import Compression, CompressionParams
 from zorch.hash.poseidon2.poseidon2 import Poseidon2
 from zorch.hash.sponge import Sponge, SpongeParams
+from zorch.pcs.jagged.region import JaggedRegion
 from zorch.testkit.transcript import cheap_transcript
 
-from zorch.pcs.jagged.region import JaggedRegion
-from zorch.commit.smcs import SingleMatrixCommitmentScheme
 from sp1_zorch.logup_gkr.circuit import GkrChip
 from sp1_zorch.poseidon2.koalabear16 import koalabear16_params
-from sp1_zorch.shard_prover.types import (
+from sp1_zorch.shard_prover.prove_shard import ShardProver
+from sp1_zorch.types import (
     ChipMetadata,
-    ShardWitness,
-)
-from sp1_zorch.shard_prover.prove_shard import (
-    ShardClaim,
-    ShardProof,
-    ShardProver,
-)
-from sp1_zorch.shard_prover.types import (
     ChipWidths,
     MachineVerifyingKey,
+    ShardClaim,
+    ShardProof,
+    ShardWitness,
 )
 from sp1_zorch.shard_prover.verify_shard import ShardVerifier
 

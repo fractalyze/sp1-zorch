@@ -1,7 +1,6 @@
 # Copyright 2026 The sp1-zorch Authors. SPDX-License-Identifier: Apache-2.0
 """Fixture loader: synthetic GPU-dump round-trips and rw-chip attachment."""
 
-from sp1_zorch.shard_prover.types import ShardData
 from pathlib import Path
 
 import frx.numpy as fnp
@@ -15,6 +14,7 @@ from sp1_zorch.shard_prover.fixture_loader import (
     load_fixture_shard,
     read_dump,
 )
+from sp1_zorch.types import ShardData
 
 _VK_TEXT = """\
 preprocessed_commit=[1, 2, 3, 4, 5, 6, 7, 8]

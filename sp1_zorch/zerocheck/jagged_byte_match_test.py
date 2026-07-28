@@ -23,34 +23,32 @@ prove_test.py`` and copy the directory under ``testdata/``.
 
 from __future__ import annotations
 
-from typing import Any
-from collections.abc import Sequence
-from frx import Array
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
+from typing import Any
 
 import frx
 import frx.numpy as fnp
 import numpy as np
 from absl.testing import absltest
+from frx import Array
 from zk_dtypes import koalabear_mont as F
 from zk_dtypes import koalabearx4_mont as EF
-
+from zorch.pcs.jagged.region import JaggedRegion
 from zorch.poly.eq import eval_eq
 
-from zorch.pcs.jagged.region import JaggedRegion
 from sp1_zorch.shard_prover.chip_loader import load_sp1_chips, sp1_name_to_rw
-from sp1_zorch.shard_prover.types import PROOF_MAX_NUM_PVS
+from sp1_zorch.types import PROOF_MAX_NUM_PVS
+from sp1_zorch.zerocheck.coeffs import rlc_coeffs
 from sp1_zorch.zerocheck.jagged import (
     DEGREE,
     JaggedZerocheckSummand,
     prove_jagged_zerocheck,
 )
-from sp1_zorch.zerocheck.coeffs import rlc_coeffs
 from sp1_zorch.zerocheck.prover import chip_traces
-
 
 _FIXTURE = Path(__file__).parent / "testdata" / "gpu_fibonacci"
 
@@ -92,7 +90,7 @@ class _ScriptedTranscript:
     pos: fnp.ndarray
 
     @classmethod
-    def replaying(cls, challenges: Sequence[Array]) -> "_ScriptedTranscript":
+    def replaying(cls, challenges: Sequence[Array]) -> _ScriptedTranscript:
         # The engine squeezes base limbs and reassembles each EF challenge
         # (one extension element = degree base squeezes, the
         # ``sample_challenge`` rule — fractalyze/sp1-zorch#88), so the script
@@ -100,7 +98,7 @@ class _ScriptedTranscript:
         flat = frx.lax.bitcast_convert_type(fnp.asarray(challenges), F).reshape(-1)
         return cls(flat, fnp.asarray(0, fnp.int32))
 
-    def observe(self, values: Array) -> "_ScriptedTranscript":
+    def observe(self, values: Array) -> _ScriptedTranscript:
         del values
         return self
 

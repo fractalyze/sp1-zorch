@@ -15,9 +15,12 @@ py_library(
     ],
     visibility = ["//visibility:public"],
     deps = [
+        "//sp1_zorch:types",
         "//sp1_zorch/logup_gkr",
+        "//sp1_zorch/shard_prover",
         "@zorch//zorch:constraint_eval",
         "@zorch//zorch:round",
+        "@zorch//zorch:stage",
         "@zorch//zorch:transcript",
         "@zorch//zorch:verify",
         "@zorch//zorch/pcs/jagged:region",

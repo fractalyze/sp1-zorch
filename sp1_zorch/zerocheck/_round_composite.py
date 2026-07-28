@@ -9,13 +9,13 @@ round shape; the SP1-specific column term never enters it. An unclaimed marker
 decomposes inline, byte-identical to the plain reduce."""
 from __future__ import annotations
 
-import frx.numpy as fnp
-from frx import Array
 from typing import Any
 
+import frx.numpy as fnp
+from frx import Array
 from zorch._composite import composite
-from zorch.poly.geq import VirtualGeq
 from zorch.poly.eq import eq_factor
+from zorch.poly.geq import VirtualGeq
 from zorch.sumcheck.gruen import round_coeffs_from_matrix
 from zorch.sumcheck.prover import SUMCHECK_ROUND_MARKER, SUMCHECK_ROUND_MARKER_VERSION
 

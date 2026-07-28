@@ -61,17 +61,17 @@ import sys
 import time
 from collections import defaultdict
 from collections.abc import Sequence
-from typing import Any
 from pathlib import Path
+from typing import Any
 
 from absl import app, flags
 
+from sp1_zorch.logup_gkr.circuit import GkrCapClass, build_gkr_chips
 from sp1_zorch.shard_prover.verify_prove_shard import (
     load_fixture_shard,
     shard_regions,
 )
 from sp1_zorch.zerocheck.jagged import TotalCapClass
-from sp1_zorch.logup_gkr.circuit import GkrCapClass, build_gkr_chips
 
 _DUMP_DIR = flags.DEFINE_string(
     "dump_dir",

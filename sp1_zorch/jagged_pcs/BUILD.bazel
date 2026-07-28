@@ -9,9 +9,11 @@ py_library(
     srcs = [
         "__init__.py",
         "prover.py",
+        "verifier.py",
     ],
     visibility = ["//visibility:public"],
     deps = [
+        "//sp1_zorch:types",
         "//sp1_zorch/shard_prover",
         "@zorch//zorch:stage",
         "@zorch//zorch:transcript",
@@ -20,6 +22,8 @@ py_library(
         "@zorch//zorch/pcs/jagged:commit",
         "@zorch//zorch/pcs/jagged:open",
         "@zorch//zorch/pcs/jagged:prover",
+        "@zorch//zorch/pcs/jagged:region",
+        "@zorch//zorch/pcs/jagged:verifier",
         "@zorch//zorch/poly",
         "@zorch//zorch/utils:bits",
         requirement("frx"),
