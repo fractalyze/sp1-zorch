@@ -18,7 +18,7 @@ frx-cuda12-pjrt==0.10.0.dev20260725093147 \
     # via
     #   -r requirements.in
     #   frx-cuda12-plugin
-frx-cuda12-plugin==0.10.0.dev20260725093147 \
+frx-cuda12-plugin[with-cuda]==0.10.0.dev20260725093147 \
     --hash=sha256:14ba8d599dc2645385b9fd59c519f36fd1955da5a9eef6c19f09065214d8844f
     # via -r requirements.in
 frxlib==0.10.0.dev20260725093147 \
@@ -162,6 +162,82 @@ numpy==2.4.6 \
     #   rw-constraints
     #   scipy
     #   zk-dtypes
+nvidia-cublas-cu12==12.9.2.10 \
+    --hash=sha256:5572131a59c3eebeeb1c4c8144f772d49372c20124916e072a0e3fc30df421d5 \
+    --hash=sha256:623f43027d40d44ceadf0043f002bd25cf353e8f13ce90b9a87057019f560661 \
+    --hash=sha256:e4f53a8ca8c5d6e8c492d0d0a3d565ecb59a751b19cfdaa4f6da0ab2104c1702
+    # via
+    #   frx-cuda12-plugin
+    #   nvidia-cudnn-cu12
+    #   nvidia-cusolver-cu12
+nvidia-cuda-cccl-cu12==12.9.27 \
+    --hash=sha256:37869e17ce2e1ecec6eddf1927cca0f8c34e64fd848d40453df559091e2d7117 \
+    --hash=sha256:72106f95a9bb3be18472806b4f663ebf0f9248a86d14b4ae3305725b855d9d92 \
+    --hash=sha256:d7898b38aa68beaa234d48f0868273702342a196d6e2e9d0ef058dca2390ebea
+    # via nvidia-nvshmem-cu12
+nvidia-cuda-cupti-cu12==12.9.79 \
+    --hash=sha256:096bcf334f13e1984ba36685ad4c1d6347db214de03dbb6eebb237b41d9d934f \
+    --hash=sha256:1848a9380067560d5bee10ed240eecc22991713e672c0515f9c3d9396adf93c8 \
+    --hash=sha256:791853b030602c6a11d08b5578edfb957cadea06e9d3b26adbf8d036135a4afe
+    # via frx-cuda12-plugin
+nvidia-cuda-nvcc-cu12==12.8.93 \
+    --hash=sha256:2b35ada240938d19398119ca596faaf626ba5e729511be9715842a29d112926d \
+    --hash=sha256:2d6dc36fb7cb5ac9c0b8825bc13d193c35487a315664007287d0126531238011 \
+    --hash=sha256:bb9dc7c291cd105d14f9b220bdcdf6ce6063c2d6ff01a505e358471530a8d226
+    # via
+    #   -r requirements.in
+    #   frx-cuda12-plugin
+nvidia-cuda-nvrtc-cu12==12.9.86 \
+    --hash=sha256:096d4de6bda726415dfaf3198d4f5c522b8e70139c97feef5cd2ca6d4cd9cead \
+    --hash=sha256:210cf05005a447e29214e9ce50851e83fc5f4358df8b453155d5e1918094dcb4 \
+    --hash=sha256:72972ebdcf504d69462d3bcd67e7b81edd25d0fb85a2c46d3ea3517666636349
+    # via
+    #   frx-cuda12-plugin
+    #   nvidia-cublas-cu12
+nvidia-cuda-runtime-cu12==12.9.79 \
+    --hash=sha256:25bba2dfb01d48a9b59ca474a1ac43c6ebf7011f1b0b8cc44f54eb6ac48a96c3 \
+    --hash=sha256:83469a846206f2a733db0c42e223589ab62fd2fabac4432d2f8802de4bded0a4 \
+    --hash=sha256:8e018af8fa02363876860388bd10ccb89eb9ab8fb0aa749aaf58430a9f7c4891
+    # via frx-cuda12-plugin
+nvidia-cudnn-cu12==9.24.0.43 \
+    --hash=sha256:a42996943f0cd78ddfd61c8bf59361672a19b63e0491aa22a53d6fe63a3f854a \
+    --hash=sha256:cbd41a0ab084422c936dc9fb2fc89be5ea9a85bc421c6f23d0243bdfc945fbef \
+    --hash=sha256:f424192dd85e7d29f44be18df2dae4c80d32c67a29c0d42f5c283c40cfdf871c
+    # via frx-cuda12-plugin
+nvidia-cufft-cu12==11.4.1.4 \
+    --hash=sha256:1a28c9b12260a1aa7a8fd12f5ebd82d027963d635ba82ff39a1acfa7c4c0fbcf \
+    --hash=sha256:8e5bfaac795e93f80611f807d42844e8e27e340e0cde270dcb6c65386d795b80 \
+    --hash=sha256:c67884f2a7d276b4b80eb56a79322a95df592ae5e765cf1243693365ccab4e28
+    # via frx-cuda12-plugin
+nvidia-cusolver-cu12==11.7.5.82 \
+    --hash=sha256:15da72d1340d29b5b3cf3fd100e3cd53421dde36002eda6ed93811af63c40d88 \
+    --hash=sha256:62efa83e4ace59a4c734d052bb72158e888aa7b770e1a5f601682f16fe5b4fd2 \
+    --hash=sha256:77666337237716783c6269a658dea310195cddbd80a5b2919b1ba8735cec8efd
+    # via frx-cuda12-plugin
+nvidia-cusparse-cu12==12.5.10.65 \
+    --hash=sha256:221c73e7482dd93eda44e65ce567c031c07e2f93f6fa0ecd3ba876a195023e83 \
+    --hash=sha256:73060ce019ac064a057267c585bf1fd5a353734151f87472ff02b2c5c9984e78 \
+    --hash=sha256:9e487468a22a1eaf1fbd1d2035936a905feb79c4ce5c2f67626764ee4f90227c
+    # via
+    #   frx-cuda12-plugin
+    #   nvidia-cusolver-cu12
+nvidia-nccl-cu12==2.30.7 \
+    --hash=sha256:03ecd776fd1d58fd2c9a0a687dcf8db9ecd0057382dba646fa3d65786d4a9ea1 \
+    --hash=sha256:8ce1b8213f61f2bfac132e6df890af6450b77cbd140c6ce4e98cb0c2d8e678c9
+    # via frx-cuda12-plugin
+nvidia-nvjitlink-cu12==12.9.86 \
+    --hash=sha256:994a05ef08ef4b0b299829cde613a424382aff7efb08a7172c1fa616cc3af2ca \
+    --hash=sha256:cc6fcec260ca843c10e34c936921a1c426b351753587fdd638e8cff7b16bb9db \
+    --hash=sha256:e3f1171dbdc83c5932a45f0f4c99180a70de9bd2718c1ab77d14104f6d7147f9
+    # via
+    #   frx-cuda12-plugin
+    #   nvidia-cufft-cu12
+    #   nvidia-cusolver-cu12
+    #   nvidia-cusparse-cu12
+nvidia-nvshmem-cu12==3.7.2 \
+    --hash=sha256:02b6d3482d90ea8ba214bc400362297f573257763990a98c9846ec5c786a7227 \
+    --hash=sha256:98495de30994f1401a12cc8158ffacbeada44579f54185d75665381468056faa
+    # via frx-cuda12-plugin
 opt-einsum==3.4.0 \
     --hash=sha256:69bb92469f86a1565195ece4ac0323943e83477171b91d24c35afe028a90d7cd \
     --hash=sha256:96ca72f1b886d148241348783498194c577fa30a8faac108586b14f1ba4473ac
