@@ -5,6 +5,11 @@ exports_files(["requirements_lock_3_11.txt"])
 # `bazel run //:requirements.update` recompiles the lock from requirements.in.
 compile_pip_requirements(
     name = "requirements",
+    # Re-resolves the whole graph against two indexes on every run, and the
+    # `[with-cuda]` extra pulls the nvidia-*-cu12 wheels with it. That lands
+    # near the default 60 s locally and past it on a runner whose pip cache
+    # has never seen the pinned versions.
+    timeout = "moderate",
     src = "requirements.in",
     extra_args = ["--extra-index-url=https://fractalyze.github.io/pypi/simple/"],
     requirements_txt = "requirements_lock_3_11.txt",
