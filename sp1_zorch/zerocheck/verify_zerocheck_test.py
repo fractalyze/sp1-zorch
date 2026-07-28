@@ -19,13 +19,13 @@ from zk_dtypes import koalabear_mont as F
 from zk_dtypes import koalabearx4_mont as EF
 from zorch.transcript import sample_challenge
 
-from sp1_zorch.logup_gkr.types import ChipEvaluation
 from sp1_zorch.shard_prover.replay import (
     fresh_transcript,
     load_gkr_cache,
     save_gkr_cache,
     to_u32,
 )
+from sp1_zorch.types import ChipEvaluation
 from sp1_zorch.zerocheck.verify_zerocheck import _parse_phase3
 
 

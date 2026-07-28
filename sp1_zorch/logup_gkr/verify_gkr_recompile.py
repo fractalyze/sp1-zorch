@@ -24,13 +24,13 @@ import time
 from pathlib import Path
 
 import frx
-
 from zorch.logup_gkr.circuit import _jagged_transition_core
 from zorch.logup_gkr.jagged_prover import _jagged_round_zone
+
 from sp1_zorch.logup_gkr.circuit import (
     GkrCapClass,
-    _chip_first_layer,
     _assemble_first_layer,
+    _chip_first_layer,
     build_gkr_chips,
 )
 from sp1_zorch.logup_gkr.prover import _head_zone, open_traces_capped

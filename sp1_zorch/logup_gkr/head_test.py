@@ -9,11 +9,18 @@ rsp byte-match (``verify_gkr_prove``).
 """
 
 from collections.abc import Sequence
+
 import frx.numpy as fnp
 from absl.testing import absltest
 from frx import lax
 from zk_dtypes import koalabear_mont as F
 from zk_dtypes import koalabearx4_mont as EF
+from zorch.logup_gkr.circuit import LogUpGkrOutput
+from zorch.poly.eq import expand_eq_to_hypercube
+from zorch.poly.multilinear import eval_mle
+from zorch.testkit.transcript import cheap_transcript
+from zorch.transcript import sample_challenge
+from zorch.utils.bits import log2_ceil_usize
 
 from sp1_zorch.logup_gkr.head import (
     EF_LIMBS,
@@ -21,12 +28,6 @@ from sp1_zorch.logup_gkr.head import (
     bind_circuit_output,
     sample_head_challenges,
 )
-from zorch.logup_gkr.circuit import LogUpGkrOutput
-from zorch.poly.eq import expand_eq_to_hypercube
-from zorch.poly.multilinear import eval_mle
-from zorch.testkit.transcript import cheap_transcript
-from zorch.transcript import sample_challenge
-from zorch.utils.bits import log2_ceil_usize
 
 
 def _ef(values: Sequence[Sequence[int]]) -> fnp.ndarray:

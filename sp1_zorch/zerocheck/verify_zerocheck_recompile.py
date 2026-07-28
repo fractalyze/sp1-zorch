@@ -39,7 +39,6 @@ from frx import Array
 from zorch.pcs.jagged.region import JaggedRegion
 from zorch.transcript import Transcript
 
-from sp1_zorch.logup_gkr.types import ChipEvaluation
 from sp1_zorch.shard_prover.fixture_loader import load_fixture_shard
 from sp1_zorch.shard_prover.prove_shard import ZerocheckProver
 from sp1_zorch.shard_prover.replay import (
@@ -49,7 +48,8 @@ from sp1_zorch.shard_prover.replay import (
     seed_gkr_outputs_rolled,
     shard_regions,
 )
-from sp1_zorch.shard_prover.types import (
+from sp1_zorch.types import (
+    ChipEvaluation,
     ChipMetadata,
     GkrOutputClaim,
     ShardData,

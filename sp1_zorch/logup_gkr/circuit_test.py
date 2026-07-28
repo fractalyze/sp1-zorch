@@ -6,15 +6,24 @@ placement, chip/interaction ordering — with expected values computed through
 the same field ops. The value-level check is the byte-match against the SP1
 reference dump, which runs against the rsp capture separately (GPU)."""
 
+from collections.abc import Mapping, Sequence
 from types import SimpleNamespace
+from typing import Any
 
 import frx.numpy as fnp
 from absl.testing import absltest
-from rw_constraints import Interaction, VirtualPairCol
+from frx import Array
+from rw_constraints import Chip, Interaction, VirtualPairCol
 from zk_dtypes import koalabear_mont as F
 from zk_dtypes import koalabearx4_mont as EF
-
+from zorch.logup_gkr.circuit import (
+    JaggedGkrLayer,
+    build_jagged_pyramid,
+    jagged_layer_transition,
+)
 from zorch.pcs.jagged.region import JaggedRegion
+from zorch.utils.bits import log2_ceil_usize
+
 from sp1_zorch.logup_gkr.circuit import (
     GkrCapClass,
     GkrChip,
@@ -23,26 +32,14 @@ from sp1_zorch.logup_gkr.circuit import (
     build_gkr_chips,
     generate_first_layer,
     generate_first_layer_capped,
-    pack_gkr_arrival,
     interaction_chip_indices,
+    pack_gkr_arrival,
     sp1_col_h,
     sp1_next_row_counts,
     sp1_schedules,
     traced_slot_counts,
 )
-from collections.abc import Mapping, Sequence
-from typing import Any
-
-from frx import Array
-from rw_constraints import Chip
-
 from sp1_zorch.shard_prover.chip_loader import make_chip_stub
-from zorch.logup_gkr.circuit import (
-    JaggedGkrLayer,
-    jagged_layer_transition,
-    build_jagged_pyramid,
-)
-from zorch.utils.bits import log2_ceil_usize
 
 
 def generate_circuit_layers(

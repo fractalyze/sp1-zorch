@@ -29,9 +29,8 @@ from zorch.transcript import Transcript
 
 from sp1_zorch.logup_gkr.circuit import GkrChip
 from sp1_zorch.logup_gkr.prover import prove_logup_gkr
-from sp1_zorch.logup_gkr.types import ChipEvaluation, LogupGkrProof
 from sp1_zorch.logup_gkr.verifier import verify_logup_gkr, virtual_padding_geq
-from sp1_zorch.shard_prover.types import ShardWitness
+from sp1_zorch.types import ChipEvaluation, LogupGkrProof, ShardWitness
 
 _NUM_BETAS = 3
 _NUM_ROW_VARIABLES = 4

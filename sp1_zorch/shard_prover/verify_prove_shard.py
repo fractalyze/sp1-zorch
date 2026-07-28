@@ -102,7 +102,7 @@ from sp1_zorch.shard_prover.replay import (
 )
 from sp1_zorch.shard_prover.serialize import encode_shard_proof, encode_vk
 from sp1_zorch.shard_prover.sp1_ffi import sp1_verify_shard
-from sp1_zorch.shard_prover.types import (
+from sp1_zorch.types import (
     ChipMetadata,
     JaggedCommitData,
     JaggedOpeningClaim,

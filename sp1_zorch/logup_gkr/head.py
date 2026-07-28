@@ -25,7 +25,6 @@ import frx.numpy as fnp
 from frx import Array
 from zk_dtypes import efinfo
 from zk_dtypes import koalabearx4_mont as EF
-
 from zorch.challenge import ChallengePolicy
 from zorch.logup_gkr.circuit import LogUpGkrOutput
 from zorch.poly.eq import expand_eq_to_hypercube

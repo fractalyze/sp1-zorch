@@ -29,7 +29,7 @@ from zorch.pcs.jagged.region import JaggedRegion
 from zorch.testkit.transcript import cheap_transcript
 from zorch.transcript import sample_challenge
 
-from sp1_zorch.logup_gkr.types import ChipEvaluation
+from sp1_zorch.types import ChipEvaluation
 from sp1_zorch.zerocheck.coeffs import gkr_powers, rlc_coeffs
 from sp1_zorch.zerocheck.jagged import (
     JaggedZerocheckSummand,

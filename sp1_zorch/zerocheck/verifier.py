@@ -40,13 +40,20 @@ from frx import Array
 from rw_constraints import Chip
 from zorch.challenge import ChallengePolicy
 from zorch.poly.eq import eval_eq
+from zorch.stage import VerifierStage, VerifyResult
 from zorch.sumcheck.verifier import CoeffsSumcheckRound
 from zorch.transcript import Transcript
 from zorch.verify import verify
 
 from sp1_zorch.logup_gkr.prover import select_openings
-from sp1_zorch.logup_gkr.types import ChipEvaluation
 from sp1_zorch.logup_gkr.verifier import padding_geqs
+from sp1_zorch.types import (
+    ChipEvaluation,
+    ChipWidths,
+    TraceEvaluationClaim,
+    ZerocheckClaim,
+    ZerocheckProof,
+)
 from sp1_zorch.zerocheck.coeffs import constraint_rlc, rlc_coeffs
 from sp1_zorch.zerocheck.jagged import DEGREE
 from sp1_zorch.zerocheck.prover import (
@@ -56,13 +63,6 @@ from sp1_zorch.zerocheck.prover import (
     probe_num_constraints,
     sample_stage_challenges,
 )
-from zorch.stage import VerifierStage, VerifyResult
-from sp1_zorch.shard_prover.types import (
-    ChipWidths,
-    TraceEvaluationClaim,
-    ZerocheckClaim,
-)
-from sp1_zorch.zerocheck.types import ZerocheckProof
 
 
 def verify_shard_zerocheck(

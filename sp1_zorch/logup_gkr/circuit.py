@@ -24,9 +24,8 @@ import frx
 import frx.numpy as fnp
 from frx import Array, lax
 from rw_constraints import Chip, Interaction, InteractionInfo, VirtualPairCol
-
-from zorch.pcs.jagged.region import JaggedRegion
 from zorch.logup_gkr.circuit import JaggedGkrLayer, _gather_pad
+from zorch.pcs.jagged.region import JaggedRegion
 from zorch.utils.bits import log2_ceil_usize
 
 

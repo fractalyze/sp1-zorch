@@ -31,15 +31,13 @@ from sp1_zorch.logup_gkr.prover import (
     num_beta_values,
     prove_logup_gkr,
 )
-from sp1_zorch.logup_gkr.types import (
-    ChipEvaluation,
-    LogupGkrProof,
-)
 from sp1_zorch.poseidon2.koalabear16 import koalabear16_params
 from sp1_zorch.shard_prover.fixture_loader import _parse_int_list, _parse_kv_lines
 from sp1_zorch.shard_prover.prove_shard import absorb_preamble
-from sp1_zorch.shard_prover.types import (
+from sp1_zorch.types import (
+    ChipEvaluation,
     ChipMetadata,
+    LogupGkrProof,
     ShardData,
     ShardWitness,
 )

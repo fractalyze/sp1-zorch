@@ -45,7 +45,6 @@ from sp1_zorch.logup_gkr.prover import (
     open_traces_capped,
     prove_logup_gkr,
 )
-from sp1_zorch.logup_gkr.types import ChipEvaluation
 from sp1_zorch.poseidon2.koalabear16 import koalabear16_params
 from sp1_zorch.shard_prover.prove_shard import (
     LogupGkrProver,
@@ -55,8 +54,9 @@ from sp1_zorch.shard_prover.prove_shard import (
     bind_commitment,
 )
 from sp1_zorch.shard_prover.replay import JitPermutation
-from sp1_zorch.shard_prover.types import (
+from sp1_zorch.types import (
     BoundRoots,
+    ChipEvaluation,
     ChipMetadata,
     GkrOutputClaim,
     JaggedCommitData,

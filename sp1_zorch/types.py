@@ -22,12 +22,13 @@ from frx import Array
 
 if TYPE_CHECKING:
     from rw_constraints import Chip
+    from zorch.logup_gkr.circuit import LogUpGkrOutput
+    from zorch.logup_gkr.jagged_prover import JaggedLayerProof
+    from zorch.pcs.jagged.open import StackedOpenProof
+    from zorch.pcs.jagged.prover import JaggedEvalMsg
+    from zorch.sumcheck.prover import RoundMsg
     from zorch.pcs.jagged.region import JaggedRegion
     from zorch.transcript import Transcript
-
-    from sp1_zorch.jagged_pcs.types import JaggedPcsProof
-    from sp1_zorch.logup_gkr.types import ChipEvaluation, LogupGkrProof
-    from sp1_zorch.zerocheck.types import ZerocheckProof
 
 # SP1 v1: every shard's public-values vector is padded to this length on both
 # the prover and verifier side; PV-aware chips index fixed slots in the padded
@@ -372,3 +373,92 @@ class ShardProof:
     gkr: LogupGkrProof
     zerocheck: ZerocheckProof
     jagged: JaggedPcsProof
+
+
+# Pytree: both evals are array leaves (preprocessed is None for prep-less
+# chips), so a carry holding these openings stays an arrays-only pytree.
+@partial(
+    frx.tree_util.register_dataclass,
+    data_fields=["main", "preprocessed"],
+    meta_fields=[],
+)
+@dataclass(frozen=True)
+class ChipEvaluation:
+    """One chip's trace openings at the final GKR point."""
+
+    main: Array  # (width,) EF, one eval per main column
+    preprocessed: Array | None  # (prep width,) EF, when the chip has prep
+
+    def all_evals(self) -> Array:
+        """The ``[main | prep]`` evaluation vector — the column order of the
+        beta-power batching shared by the GKR opening claims and the
+        zerocheck column batch."""
+        if self.preprocessed is not None:
+            return fnp.concatenate([self.main, self.preprocessed])
+        return self.main
+
+
+@dataclass(frozen=True)
+class LogupGkrProof:
+    """Reduces the shard's LogUp bus-balance statement to a `GkrOutputClaim`.
+
+    A verifier replays the layer chain from output to input — grind witness,
+    circuit output, one round proof per layer — and arrives at the evaluation
+    point and per-chip openings the next Stage takes as its hypothesis. What
+    it proves is that those openings are the trace's; what it leaves open is
+    everything about the constraints.
+
+    Each layer's sumcheck point rides on its ``JaggedLayerProof.point``
+    (zorch retains it at prove time); the shard wire serializes it per layer
+    (``point_and_eval``).
+    """
+
+    pow_witness: Array
+    circuit_output: LogUpGkrOutput
+    round_proofs: list[JaggedLayerProof]
+    eval_point: Array
+    chip_openings: dict[str, ChipEvaluation]
+
+
+@dataclass(frozen=True)
+class ZerocheckProof:
+    """Reduces "every chip's constraints vanish" to a `TraceEvaluationClaim`.
+
+    A verifier replays the multi-chip sumcheck in ``msgs`` — whose
+    ``challenge`` accumulates into the point the next Stage opens at — and is
+    left owing only that the values folded along the way are the committed
+    trace's.
+
+    Several fields are retained rather than re-derived, because their only
+    other source is state the consumer does not hold: the three challenges and
+    the eq point, because neither the byte-match harness nor the jagged
+    opening keeps the pre-stage transcript to re-sample them; the claimed sum
+    (the lambda-Horner fold of the per-chip GKR opening claims, SP1's
+    zerocheck RLC), because only this Stage sees those claims; and the
+    per-chip final folded traces, whose split ``opened_values`` view is both
+    the evaluation Stage's per-column claims and the wire's
+    ShardOpenedValues.
+    """
+
+    batching_challenge: Array
+    gkr_opening_batch_challenge: Array
+    lambda_: Array
+    zeta: Array
+    claimed_sum: Array
+    finals: list[Array]
+    opened_values: dict[str, ChipEvaluation]
+    msgs: RoundMsg
+
+
+@dataclass(frozen=True)
+class JaggedPcsProof:
+    """Discharges a `JaggedOpeningClaim`, leaving nothing to prove.
+
+    Two legs: the outer/inner sumcheck reducing the committed trace to a
+    single value ``D(z_final)``, then the stacked BaseFold open showing that
+    value really is the commitment's, at that point.
+    """
+
+    eval: JaggedEvalMsg
+    open: StackedOpenProof
+    smcs_commitments: SmcsCommitments

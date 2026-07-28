@@ -48,7 +48,6 @@ from zorch.pcs.jagged.region import JaggedRegion
 from zorch.poly.univariate import eval_coeffs
 from zorch.transcript import Transcript
 
-from sp1_zorch.logup_gkr.types import ChipEvaluation
 from sp1_zorch.shard_prover.fixture_loader import (
     _parse_ef_list,
     _parse_kv_lines,
@@ -65,13 +64,12 @@ from sp1_zorch.shard_prover.replay import (
     shard_regions,
     to_u32,
 )
-from sp1_zorch.shard_prover.types import ShardData
+from sp1_zorch.types import ChipEvaluation, ShardData, ZerocheckProof
 from sp1_zorch.zerocheck.jagged import TotalCapClass, pack_flat_arrival
 from sp1_zorch.zerocheck.prover import (
     chip_traces,
     prove_shard_zerocheck,
 )
-from sp1_zorch.zerocheck.types import ZerocheckProof
 
 _SHARD_DIR = flags.DEFINE_string(
     "shard_dir", None, "rsp shard dump directory (e.g. .../rsp_dump/shard1)."

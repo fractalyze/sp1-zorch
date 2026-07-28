@@ -36,11 +36,11 @@ from zorch.stage import ProveResult, ProverStage, TrivialClaim
 from zorch.transcript import Transcript
 from zorch.utils.bits import log2_ceil_usize
 
-from sp1_zorch.jagged_pcs.types import JaggedPcsProof
-from sp1_zorch.shard_prover.types import (
+from sp1_zorch.types import (
     JaggedCommitData,
     JaggedOpeningClaim,
     JaggedOpeningWitness,
+    JaggedPcsProof,
     ShardWitness,
     SmcsCommitments,
 )

@@ -85,7 +85,6 @@ import frx
 import frx.numpy as fnp
 from frx import Array, lax
 from zk_dtypes import efinfo
-
 from zorch.constraint_eval import constraint_eval
 from zorch.poly.eq import contract_hypercube_step, eq_factor, expand_eq_to_hypercube
 from zorch.poly.geq import VirtualGeq

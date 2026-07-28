@@ -9,11 +9,11 @@ py_library(
     srcs = [
         "__init__.py",
         "prover.py",
-        "types.py",
         "verifier.py",
     ],
     visibility = ["//visibility:public"],
     deps = [
+        "//sp1_zorch:types",
         "//sp1_zorch/shard_prover",
         "@zorch//zorch:stage",
         "@zorch//zorch:transcript",

@@ -21,11 +21,6 @@ from zorch.pcs.jagged.prover import JaggedEvalMsg
 from zorch.pcs.jagged.region import JaggedRegion
 from zorch.sumcheck.prover import RoundMsg
 
-from sp1_zorch.jagged_pcs.types import JaggedPcsProof
-from sp1_zorch.logup_gkr.types import (
-    ChipEvaluation,
-    LogupGkrProof,
-)
 from sp1_zorch.shard_prover.serialize import (
     _encode_basefold_proof,
     _encode_chip_opened_values,
@@ -46,17 +41,20 @@ from sp1_zorch.shard_prover.serialize import (
     encode_shard_proof,
     encode_vk,
 )
-from sp1_zorch.shard_prover.types import (
+from sp1_zorch.types import (
+    ChipEvaluation,
     ChipMetadata,
     ChipOpenedValues,
+    JaggedPcsProof,
+    LogupGkrProof,
     MachineVerifyingKey,
     ShardClaim,
     ShardProof,
     ShardWitness,
     SmcsCommitments,
     TraceEvaluationClaim,
+    ZerocheckProof,
 )
-from sp1_zorch.zerocheck.types import ZerocheckProof
 
 
 class BincodePrimitivesTest(absltest.TestCase):

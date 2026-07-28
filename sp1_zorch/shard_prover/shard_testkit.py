@@ -30,7 +30,7 @@ from zorch.testkit.transcript import cheap_transcript
 from sp1_zorch.logup_gkr.circuit import GkrChip
 from sp1_zorch.poseidon2.koalabear16 import koalabear16_params
 from sp1_zorch.shard_prover.prove_shard import ShardProver
-from sp1_zorch.shard_prover.types import (
+from sp1_zorch.types import (
     ChipMetadata,
     ChipWidths,
     MachineVerifyingKey,

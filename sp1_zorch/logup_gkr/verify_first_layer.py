@@ -50,7 +50,7 @@ from sp1_zorch.shard_prover.fixture_loader import (
     check_match,
     load_fixture_shard,
 )
-from sp1_zorch.shard_prover.types import ShardData, Traces
+from sp1_zorch.types import ShardData, Traces
 
 _SHARD_DIR = flags.DEFINE_string(
     "shard_dir", None, "rsp shard dump directory (e.g. .../rsp_dump/shard1)."

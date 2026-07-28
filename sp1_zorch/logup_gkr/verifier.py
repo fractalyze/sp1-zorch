@@ -34,9 +34,8 @@ from zorch.logup_gkr.jagged_verifier import JaggedGkrLayerRound
 from zorch.poly.geq import VirtualGeq
 from zorch.poly.multilinear import eval_mle
 from zorch.round import verify_rounds
-from zorch.transcript import Transcript
 from zorch.stage import VerifierStage, VerifyResult
-from sp1_zorch.shard_prover.types import GkrOutputClaim, ShardClaim
+from zorch.transcript import Transcript
 from zorch.utils.bits import log2_ceil_usize
 
 from sp1_zorch.logup_gkr.circuit import GkrChip, generate_interaction_vals_batch
@@ -47,9 +46,11 @@ from sp1_zorch.logup_gkr.head import (
 )
 from sp1_zorch.logup_gkr.prover import ChipOpeningsRound
 from sp1_zorch.logup_gkr.public_values import eval_public_values
-from sp1_zorch.logup_gkr.types import (
+from sp1_zorch.types import (
     ChipEvaluation,
+    GkrOutputClaim,
     LogupGkrProof,
+    ShardClaim,
 )
 
 

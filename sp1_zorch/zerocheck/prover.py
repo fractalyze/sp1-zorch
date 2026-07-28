@@ -20,38 +20,37 @@ Stage / dump vocabulary: ``docs/architecture.md``.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
+import frx
 import frx.numpy as fnp
 from frx import Array
 from rw_constraints import Chip
 from zk_dtypes import efinfo
 from zorch.pcs.jagged.region import JaggedRegion
 from zorch.round import ProverRound
+from zorch.stage import ProveResult, ProverStage
 from zorch.transcript import Transcript, sample_challenge
 
 from sp1_zorch.logup_gkr.prover import (
     flat_openings_absorb,
     select_openings,
 )
-from sp1_zorch.logup_gkr.types import ChipEvaluation
+from sp1_zorch.types import (
+    ChipEvaluation,
+    ShardWitness,
+    TraceEvaluationClaim,
+    ZerocheckClaim,
+    ZerocheckProof,
+)
 from sp1_zorch.zerocheck.coeffs import gkr_powers, rlc_coeffs
 from sp1_zorch.zerocheck.jagged import (
     JaggedZerocheckSummand,
     TotalCapClass,
+    pack_flat_arrival,
     prove_jagged_zerocheck,
 )
-from functools import partial
-
-import frx
-from zorch.stage import ProveResult, ProverStage
-from sp1_zorch.zerocheck.jagged import pack_flat_arrival
-from sp1_zorch.shard_prover.types import (
-    ShardWitness,
-    TraceEvaluationClaim,
-    ZerocheckClaim,
-)
-from sp1_zorch.zerocheck.types import ZerocheckProof
 
 
 def chip_traces(

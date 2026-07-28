@@ -27,7 +27,7 @@ from zorch.pcs.jagged.region import JaggedRegion
 from sp1_zorch.shard_prover.chip_loader import rw_name_to_sp1
 from sp1_zorch.shard_prover.fixture_loader import resolve_chips
 from sp1_zorch.shard_prover.replay import shard_regions
-from sp1_zorch.shard_prover.types import (
+from sp1_zorch.types import (
     MachineVerifyingKey,
     MainTraceData,
     ShardData,

@@ -29,7 +29,7 @@ from sp1_zorch.shard_prover.chip_loader import (
     rw_names_for_chips,
     sp1_name_to_rw,
 )
-from sp1_zorch.shard_prover.types import (
+from sp1_zorch.types import (
     MachineVerifyingKey,
     MainTraceData,
     ShardData,

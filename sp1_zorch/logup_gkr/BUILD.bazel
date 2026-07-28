@@ -12,11 +12,11 @@ py_library(
         "head.py",
         "prover.py",
         "public_values.py",
-        "types.py",
         "verifier.py",
     ],
     visibility = ["//visibility:public"],
     deps = [
+        "//sp1_zorch:types",
         "//sp1_zorch/shard_prover",
         "@zorch//zorch:round",
         "@zorch//zorch:stage",

@@ -30,9 +30,8 @@ from zorch.testkit.transcript import cheap_transcript
 from zorch.transcript import Transcript
 
 from sp1_zorch.logup_gkr.prover import _open_chip
-from sp1_zorch.logup_gkr.types import ChipEvaluation
+from sp1_zorch.types import ChipEvaluation, ZerocheckProof
 from sp1_zorch.zerocheck.prover import prove_shard_zerocheck
-from sp1_zorch.zerocheck.types import ZerocheckProof
 from sp1_zorch.zerocheck.verifier import verify_shard_zerocheck
 
 _MAX_LOG_ROW_COUNT = 3

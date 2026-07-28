@@ -26,9 +26,11 @@ from zorch.stage import (
 )
 from zorch.transcript import Transcript
 
+from sp1_zorch.jagged_pcs.verifier import JaggedPcsVerifier
 from sp1_zorch.logup_gkr.circuit import GkrChip
+from sp1_zorch.logup_gkr.verifier import LogupGkrVerifier
 from sp1_zorch.shard_prover.prove_shard import bind_commitment
-from sp1_zorch.shard_prover.types import (
+from sp1_zorch.types import (
     ChipWidths,
     JaggedOpeningClaim,
     ShardClaim,
@@ -36,8 +38,6 @@ from sp1_zorch.shard_prover.types import (
     ZerocheckClaim,
 )
 from sp1_zorch.zerocheck.verifier import ZerocheckVerifier
-from sp1_zorch.logup_gkr.verifier import LogupGkrVerifier
-from sp1_zorch.jagged_pcs.verifier import JaggedPcsVerifier
 
 
 class ShardVerifier(VerifierStage[ShardClaim, TrivialClaim, ShardProof]):

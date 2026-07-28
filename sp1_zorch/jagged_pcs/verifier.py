@@ -22,8 +22,7 @@ from zorch.stage import TrivialClaim, VerifierStage, VerifyResult
 from zorch.transcript import Transcript
 from zorch.utils.bits import log2_ceil_usize
 
-from sp1_zorch.jagged_pcs.types import JaggedPcsProof
-from sp1_zorch.shard_prover.types import ChipWidths, JaggedOpeningClaim
+from sp1_zorch.types import ChipWidths, JaggedOpeningClaim, JaggedPcsProof
 
 
 class JaggedPcsVerifier(

@@ -14,7 +14,7 @@ from sp1_zorch.shard_prover.fixture_loader import (
     load_fixture_shard,
     read_dump,
 )
-from sp1_zorch.shard_prover.types import ShardData
+from sp1_zorch.types import ShardData
 
 _VK_TEXT = """\
 preprocessed_commit=[1, 2, 3, 4, 5, 6, 7, 8]

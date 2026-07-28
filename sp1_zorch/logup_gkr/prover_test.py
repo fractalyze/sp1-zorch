@@ -42,12 +42,12 @@ from sp1_zorch.logup_gkr.prover import (
     prove_logup_gkr,
     resolve_witness_and_grind,
 )
-from sp1_zorch.logup_gkr.types import (
+from sp1_zorch.shard_prover.chip_loader import make_chip_stub
+from sp1_zorch.types import (
     ChipEvaluation,
     LogupGkrProof,
+    ShardWitness,
 )
-from sp1_zorch.shard_prover.chip_loader import make_chip_stub
-from sp1_zorch.shard_prover.types import ShardWitness
 
 
 def _interaction(mult_col: int, val_col: int, *, kind: int = 3) -> Interaction:

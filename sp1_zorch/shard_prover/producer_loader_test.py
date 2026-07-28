@@ -2,16 +2,16 @@
 """Producer ingest: fixture-loader parity and ingest-time failure modes."""
 
 from collections.abc import Mapping
-from typing import Any
-from frx import Array
-from rw_constraints import Chip
-from zorch.pcs.jagged.region import JaggedRegion
 from pathlib import Path
+from typing import Any
 
 import frx.numpy as fnp
 import numpy as np
 from absl.testing import absltest
+from frx import Array
+from rw_constraints import Chip
 from zk_dtypes import koalabear_mont as F
+from zorch.pcs.jagged.region import JaggedRegion
 
 from sp1_zorch.shard_prover.chip_loader import (
     load_sp1_chips,
@@ -21,7 +21,7 @@ from sp1_zorch.shard_prover.chip_loader import (
 from sp1_zorch.shard_prover.fixture_loader import load_fixture_shard
 from sp1_zorch.shard_prover.producer_loader import regions_from_producer
 from sp1_zorch.shard_prover.replay import shard_regions
-from sp1_zorch.shard_prover.types import MachineVerifyingKey
+from sp1_zorch.types import MachineVerifyingKey
 
 _VK_TEXT = """\
 preprocessed_commit=[1, 2, 3, 4, 5, 6, 7, 8]

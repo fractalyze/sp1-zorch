@@ -39,6 +39,7 @@ from zorch.logup_gkr.jagged_prover import (
     RoundWidthCaps,
 )
 from zorch.round import ProverRound, prove_rounds
+from zorch.stage import ProveResult, ProverStage
 from zorch.transcript import Transcript
 
 from sp1_zorch.logup_gkr.circuit import (
@@ -58,10 +59,13 @@ from sp1_zorch.logup_gkr.head import (
     bind_circuit_output,
     sample_head_challenges,
 )
-from zorch.stage import ProveResult, ProverStage
-from sp1_zorch.logup_gkr.types import ChipEvaluation, LogupGkrProof
-from sp1_zorch.shard_prover.types import GkrOutputClaim, ShardClaim
-from sp1_zorch.shard_prover.types import ShardWitness
+from sp1_zorch.types import (
+    ChipEvaluation,
+    GkrOutputClaim,
+    LogupGkrProof,
+    ShardClaim,
+    ShardWitness,
+)
 
 
 def num_beta_values(chips: Mapping[str, Chip]) -> int:

@@ -30,7 +30,7 @@ from sp1_zorch.shard_prover.shard_testkit import (
     MAX_LOG_ROW_COUNT,
     small_shard_fixture,
 )
-from sp1_zorch.shard_prover.types import ChipWidths, ZerocheckClaim
+from sp1_zorch.types import ChipWidths, ZerocheckClaim
 from sp1_zorch.shard_prover.verify_shard import (
     ZerocheckVerifier,
 )

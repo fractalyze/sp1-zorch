@@ -41,7 +41,6 @@ from sp1_zorch.logup_gkr.head import (
 )
 from sp1_zorch.logup_gkr.prover import num_beta_values
 from sp1_zorch.logup_gkr.public_values import eval_public_values
-from sp1_zorch.logup_gkr.types import LogupGkrProof
 from sp1_zorch.shard_prover.fixture_loader import (
     _parse_ef_list,
     _parse_kv_lines,
@@ -54,7 +53,7 @@ from sp1_zorch.shard_prover.replay import (
     replay_gkr,
     shard_regions,
 )
-from sp1_zorch.shard_prover.types import ShardData
+from sp1_zorch.types import LogupGkrProof, ShardData
 
 _SHARD_DIR = flags.DEFINE_string(
     "shard_dir", None, "rsp shard dump directory (e.g. .../rsp_dump/shard1)."
