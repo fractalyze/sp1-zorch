@@ -11,7 +11,11 @@ numpy
 frx==0.10.0.dev20260725093147
 frxlib==0.10.0.dev20260725093147
 frx-cuda12-pjrt==0.10.0.dev20260725093147
-frx-cuda12-plugin==0.10.0.dev20260725093147
+# [with-cuda] carries the nvidia-*-cu12 wheels; the plugin loads CUDA only from
+# installed `nvidia.*` packages, never a host toolkit (#310).
+frx-cuda12-plugin[with-cuda]==0.10.0.dev20260725093147
+# 12.9.x ptxas SIGSEGVs shard0's GKR cold compile (#210); the extra only floors.
+nvidia-cuda-nvcc-cu12==12.8.93
 zk-dtypes==0.0.10
 
 # SP1 chip definitions (constraints + LogUp interactions) exported from
