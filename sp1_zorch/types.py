@@ -182,9 +182,10 @@ class ShardData:
 @dataclass(frozen=True)
 class ChipOpenedValues:
     """SP1 mirror: ``ChipOpenedValues<F, EF>`` — one chip's zerocheck
-    openings as the shard-proof wire carries them. ``degree`` is the chip's
-    padded height; the wire stores its bits MSB-first over
-    ``max_log_row_count + 1`` positions."""
+    openings as the shard-proof wire carries them, converted from the
+    in-flight `ChipEvaluation`. ``degree`` is the chip's padded height, the
+    field the in-flight form has no need of; the wire stores its bits
+    MSB-first over ``max_log_row_count + 1`` positions."""
 
     preprocessed_evals: Array | None
     main_evals: Array
@@ -200,7 +201,13 @@ class ChipOpenedValues:
 )
 @dataclass(frozen=True)
 class ChipEvaluation:
-    """One chip's trace openings at the final GKR point."""
+    """One chip's trace openings at the final GKR point.
+
+    The in-flight form: a pytree, so it threads the jitted opens as a carry.
+    `ChipOpenedValues` is the same openings in the shard wire's shape, which
+    additionally spells out the chip's row count; `serialize.chip_opened_values`
+    is the one conversion between them.
+    """
 
     main: Array  # (width,) EF, one eval per main column
     preprocessed: Array | None  # (prep width,) EF, when the chip has prep
