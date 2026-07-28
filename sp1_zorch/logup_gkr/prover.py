@@ -275,16 +275,11 @@ def _pyramid_zone(
 ]:
     """Fold the pyramid, extract SP1's floor outputs, and bind them.
 
-    Eagerly this span is ~200 executables of sub-microsecond work, and being a
-    serial chain none of it overlaps device work -- it lands as stream idle.
+    Unrolls rather than scans: the per-level widths differ. Do not extend the
+    zone up into the first-layer build -- that is a fan-in, not a chain, and
+    blows the wide-shard memory budget (``_head_zone``).
 
-    Unrolled rather than scanned because the per-level widths differ. Fusing
-    here is safe on memory where fusing the first-layer build is not
-    (``_head_zone``): the levels are a chain, not a fan-in, so peak live
-    buffers stay the ~2x capacity the pyramid already holds.
-
-    Returns the output MLEs as a bare pair -- ``LogUpGkrOutput`` is not a
-    registered pytree, so it cannot cross a jit boundary.
+    Outputs ride as a bare pair; ``LogUpGkrOutput`` is not a registered pytree.
     """
     schedules = list(
         zip(
@@ -441,10 +436,6 @@ def _prove_from_first_layer(
     )
     output = LogUpGkrOutput(numerator=out_num, denominator=out_den)
 
-    # Per layer, not per pyramid: one shared cap would run every layer at the
-    # first layer's width, making total round work depth x cap instead of
-    # ~2 x cap. The width is the round zone's compile key, so this costs one
-    # executable per distinct width -- a handful, since `_row_cap` quantizes.
     layer_widths = [capacity, *transition_widths]
     layer_caps = [
         RoundWidthCaps(
