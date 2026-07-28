@@ -17,7 +17,7 @@ builds.
 python3.11 -m venv .venv && . .venv/bin/activate
 pip install -r requirements.in \
     --extra-index-url https://fractalyze.github.io/pypi/simple/
-bazel test //...                 # hermetic, sandboxed; JAX_PLATFORMS=cpu default
+bazel test //...                 # hermetic, sandboxed; FRX_PLATFORMS=cpu default
 ```
 
 For iterative dev outside Bazel — source the venv, then put the sp1-zorch and a
@@ -44,7 +44,7 @@ main` is the reference for the matching `(zorch pin, frx)` pair.
 
 **GPU-plugin gotcha.** A `py_binary` GPU runnable must dep
 `requirement("frx_cuda12_plugin")` + `requirement("frx_cuda12_pjrt")` or frx
-**silently falls back to CPU**. Run with `JAX_PLATFORMS=cuda` so a missing plugin
+**silently falls back to CPU**. Run with `FRX_PLATFORMS=cuda` so a missing plugin
 errors instead of silently degrading (`gpu` is wrong: it also initializes rocm
 and dies). The Fractalyze XLA plugin loader takes no plugin-path env var; to
 measure a locally built plugin you overwrite the wheel's bundled
@@ -67,7 +67,7 @@ measure a locally built plugin you overwrite the wheel's bundled
 
 ## Testing
 
-Tests default to `JAX_PLATFORMS=cpu`. The SP1 FFI byte-match path needs a CUDA
+Tests default to `FRX_PLATFORMS=cpu`. The SP1 FFI byte-match path needs a CUDA
 GPU and is exercised through the `verify_*` `py_binary` tools, not the unit
 suite.
 
@@ -129,11 +129,15 @@ same computation.
 #### sp1-zorch side — `verify_prove_shard` (per-phase + golden)
 
 ```bash
-JAX_PLATFORMS=cuda \
+FRX_PLATFORMS=cuda,cpu \
   XLA_FLAGS="--xla_gpu_enable_command_buffer=FUSION,CUSTOM_CALL" \
   bazel run //sp1_zorch/shard_prover:verify_prove_shard -- \
     --shard_dir=/data/sp1_dumps/rsp_21740136_sp1/shard17 --ffi_verify --runs=5
 ```
+
+`FRX_PLATFORMS=cuda,cpu`, not `cuda` alone: the long Fiat-Shamir absorbs run on
+the host sponge, which needs a CPU backend registered. Without it the run dies
+in `frx.devices("cpu")` with `Unknown backend cpu`.
 
 Use `--runs=5`, not `--runs=2`: the **first** warm pass (pass 2) has not fully
 settled and overstates a phase by ~10–15%, so take a converged pass (3–5).
@@ -153,9 +157,9 @@ from ~175 s to ~28 s (measured, shard17) and does **not** move the warm pass, so
 it is safe for the numbers this tool exists to produce:
 
 ```bash
-JAX_COMPILATION_CACHE_DIR=/data/<you>/jax_cc_gkr \
-  JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS=0 \
-  JAX_RAISE_PERSISTENT_CACHE_ERRORS=true
+FRX_COMPILATION_CACHE_DIR=/data/<you>/frx-compile-cache \
+  FRX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS=0 \
+  FRX_RAISE_PERSISTENT_CACHE_ERRORS=true
 ```
 
 Both extra flags matter. `min_compile_time` defaults to **1.0 s** and admits
