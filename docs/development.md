@@ -208,31 +208,27 @@ an ELF + stdin) the tool uses `CpuShardProver`: useful as the injection-validity
 
 | Phase | SP1 GPU | sp1-zorch GPU | spread | ratio | golden |
 |---|---|---|---|---|---|
-| trace commit | 16.6 ms | 18.5 ms | 18.4–18.7 | 1.11× | byte-match |
-| LogUp-GKR | 19.9 ms | 32.9 ms | 30.0–37.1 | 1.65× | byte-match |
-| zerocheck | 156.9 ms | **53.3 ms** | 51.8–56.1 | **0.34×** | byte-match |
-| jagged eval (PCS open) | 41.1 ms | **41.0 ms** | 39.7–53.2 | **1.00×** | byte-match |
-| full chain | 234.8 ms | **158.2 ms** | 148.4–180.5 | **0.67×** | `sp1_verify_shard` ACCEPTED |
+| trace commit | 16.6 ms | 17.6 ms | 17.5–17.6 | 1.06× | byte-match |
+| LogUp-GKR | 19.9 ms | **20.4 ms** | 20.4–20.6 | **1.03×** | byte-match |
+| zerocheck | 156.9 ms | **50.8 ms** | 50.4–51.0 | **0.32×** | byte-match |
+| jagged eval (PCS open) | 41.1 ms | **37.8 ms** | 36.3–37.9 | **0.92×** | byte-match |
+| full chain | 234.8 ms | **134.0 ms** | 132.8–136.3 | **0.57×** | byte-match |
+
+**A `--max_phase` run reads a phase faster than the full chain does.** Truncated
+runs are fine for A/B iteration, where both arms are truncated equally; they are
+not comparable against the SP1 column, which is always full-chain.
 
 The SP1 column is the SP1 GPU NoExec run. The sp1-zorch column is the median
 of the six converged warm passes — passes 3–5 of two separate `--runs=5`
 invocations — with the observed min–max beside it, on an RTX 5090, published
 `frx` wheels (no locally built plugin), shard-invariant class routes on GKR,
-zerocheck and the jagged open. Every phase byte-matches on every pass and
-`--ffi_verify` reports `sp1_verify_shard: ACCEPTED`.
+zerocheck and the jagged open. Every phase byte-matches on every pass. Add
+`--ffi_verify` to also byte-verify the assembled proof through SP1's
+`sp1_verify_shard`; these figures do not include that leg.
 
-**Read the spread before quoting a ratio.** Two phases are stable to well
-under a millisecond across runs and two are not. Zerocheck is the solid result
-— roughly a third of SP1's time, reproduced across both runs with a 4 ms
-spread — earned by the jagged-packed shared round buffer with the shrink
-prefix and in-kernel folds. The PCS open sits at parity, and its one outlying
-53.2 ms pass is the first converged pass of a run, not a steady-state number.
-
-LogUp-GKR is the remaining gap and also the noisiest line: 30.0 ms and 37.1 ms
-both appear among converged passes, a 21% swing with nothing changed. Its
-eager host-dispatch orchestration is what varies, so a single pass is not
-evidence about it in either direction — take several, and treat the chain
-total (which inherits that variance) the same way.
+**Read the spread before quoting a ratio.** A single pass is not evidence in
+either direction; take several and quote the median with its min-max, and treat
+the chain total the same way since it inherits every phase's variance.
 
 ### Measure shipped code
 
@@ -249,8 +245,9 @@ shipped path, not a stale local one:
   measure a locally built Fractalyze XLA plugin, overwrite that bundled `.so` (back it up)
   and run the **prebuilt** binary directly — `bazel run` re-extracts the wheel
   and reverts the swap. Confirm which ran with
-  `strings -a <.so> | grep service/hlo_verifier.cc` (`external/xla/…` = wheel,
-  `xla/service/…` = your build).
+  `ldd <.so> | grep -c "not found"`: a published wheel reports 0, a locally
+  built plugin reports 4 (nvshmem x3 + nccl). The `strings … hlo_verifier.cc`
+  test does NOT discriminate — a pristine wheel prints `xla/service/…` too.
 
 (sp1-zorch#153: a first encode baseline was taken against a `zorch` override
 weeks behind `origin/main` and misread as the shipped number — the whole reason
