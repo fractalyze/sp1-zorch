@@ -26,10 +26,18 @@ caller (the layer-replay unit test) passes ``None`` to skip it.
 
 from __future__ import annotations
 
-from typing import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 
 import frx.numpy as fnp
 from frx import Array
+from zorch.logup_gkr.jagged_verifier import JaggedGkrLayerRound
+from zorch.poly.geq import VirtualGeq
+from zorch.poly.multilinear import eval_mle
+from zorch.round import verify_rounds
+from zorch.transcript import Transcript
+from zorch.stage import VerifierStage, VerifyResult
+from sp1_zorch.shard_prover.types import GkrOutputClaim, ShardClaim
+from zorch.utils.bits import log2_ceil_usize
 
 from sp1_zorch.logup_gkr.circuit import GkrChip, generate_interaction_vals_batch
 from sp1_zorch.logup_gkr.head import (
@@ -37,18 +45,12 @@ from sp1_zorch.logup_gkr.head import (
     bind_circuit_output,
     sample_head_challenges,
 )
-from sp1_zorch.logup_gkr.prover import (
+from sp1_zorch.logup_gkr.prover import ChipOpeningsRound
+from sp1_zorch.logup_gkr.public_values import eval_public_values
+from sp1_zorch.logup_gkr.types import (
     ChipEvaluation,
-    ChipOpeningsRound,
     LogupGkrProof,
 )
-from sp1_zorch.logup_gkr.public_values import eval_public_values
-from zorch.logup_gkr.jagged_verifier import JaggedGkrLayerRound
-from zorch.poly.geq import VirtualGeq
-from zorch.poly.multilinear import eval_mle
-from zorch.round import verify_rounds
-from zorch.transcript import Transcript
-from zorch.utils.bits import log2_ceil_usize
 
 
 def virtual_padding_geq(threshold: Array | int, point: Array) -> Array:
@@ -245,3 +247,49 @@ def verify_logup_gkr(
         ok = ok & ok_bus & ok_accumulator
 
     return transcript, eval_point, ok
+
+
+class LogupGkrVerifier(VerifierStage[ShardClaim, GkrOutputClaim, LogupGkrProof]):
+    """Dual of ``LogupGkrProver``: verifies the LogUp-GKR proof via
+    ``verify_logup_gkr`` and writes the derived evaluation point plus the
+    proof's leaf-checked chip openings as its reduced claim — the same seams the
+    prover role reduces to for the zerocheck stage."""
+
+    def __init__(
+        self,
+        gkr_chips: Sequence[GkrChip],
+        *,
+        chip_names: Sequence[str],
+        num_betas: int,
+        num_row_variables: int,
+        pow_bits: int = 0,
+        verify_public_values: bool = True,
+    ) -> None:
+        self._gkr_chips = gkr_chips
+        self._chip_names = chip_names
+        self._num_betas = num_betas
+        self._num_row_variables = num_row_variables
+        self._pow_bits = pow_bits
+        self._verify_public_values = verify_public_values
+
+    def verify(
+        self,
+        claim: ShardClaim,
+        reduction_proof: LogupGkrProof,
+        transcript: Transcript,
+    ) -> VerifyResult[GkrOutputClaim]:
+        msg = reduction_proof
+        transcript, eval_point, ok = verify_logup_gkr(
+            self._gkr_chips,
+            self._chip_names,
+            claim.chip_metadata.by_chip(),
+            msg,
+            transcript,
+            claim.public_values if self._verify_public_values else None,
+            num_betas=self._num_betas,
+            num_row_variables=self._num_row_variables,
+            pow_bits=self._pow_bits,
+        )
+        return VerifyResult(
+            GkrOutputClaim(eval_point, msg.chip_openings), transcript, ok
+        )

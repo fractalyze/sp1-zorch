@@ -12,26 +12,26 @@ without it the tamper would only surface downstream.
 
 from __future__ import annotations
 
-from frx import Array
-from sp1_zorch.shard_prover.types import ShardWitness
-from sp1_zorch.logup_gkr.prover import LogupGkrProof
-from zorch.transcript import Transcript
 from dataclasses import replace
 
 import frx
 import frx.numpy as fnp
 from absl.testing import absltest
+from frx import Array
 from rw_constraints import Interaction, VirtualPairCol
 from zk_dtypes import koalabear_mont as F
 from zk_dtypes import koalabearx4_mont as EF
-
-from zorch.pcs.jagged.region import JaggedRegion
-from sp1_zorch.logup_gkr.circuit import GkrChip
-from sp1_zorch.logup_gkr.prover import ChipEvaluation, prove_logup_gkr
-from sp1_zorch.logup_gkr.verifier import verify_logup_gkr, virtual_padding_geq
 from zorch.logup_gkr.circuit import LogUpGkrOutput
+from zorch.pcs.jagged.region import JaggedRegion
 from zorch.poly.multilinear import eval_mle
 from zorch.testkit.transcript import cheap_transcript
+from zorch.transcript import Transcript
+
+from sp1_zorch.logup_gkr.circuit import GkrChip
+from sp1_zorch.logup_gkr.prover import prove_logup_gkr
+from sp1_zorch.logup_gkr.types import ChipEvaluation, LogupGkrProof
+from sp1_zorch.logup_gkr.verifier import verify_logup_gkr, virtual_padding_geq
+from sp1_zorch.shard_prover.types import ShardWitness
 
 _NUM_BETAS = 3
 _NUM_ROW_VARIABLES = 4

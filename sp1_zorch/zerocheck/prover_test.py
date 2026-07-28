@@ -17,30 +17,29 @@ Reference: whir-zorch ``sp1/shard_prover/prover.py``, its zerocheck (SP1
 from __future__ import annotations
 
 from typing import Any
-from frx import Array
+
 import frx
 import frx.numpy as fnp
 import numpy as np
 from absl.testing import absltest
+from frx import Array
 from zk_dtypes import koalabear_mont as F
 from zk_dtypes import koalabearx4_mont as EF
-
+from zorch.pcs.jagged.region import JaggedRegion
 from zorch.testkit.transcript import cheap_transcript
 from zorch.transcript import sample_challenge
 
-from zorch.pcs.jagged.region import JaggedRegion
-from sp1_zorch.logup_gkr.prover import ChipEvaluation
+from sp1_zorch.logup_gkr.types import ChipEvaluation
+from sp1_zorch.zerocheck.coeffs import gkr_powers, rlc_coeffs
 from sp1_zorch.zerocheck.jagged import (
     JaggedZerocheckSummand,
     prove_jagged_zerocheck,
 )
-from sp1_zorch.zerocheck.coeffs import gkr_powers, rlc_coeffs
 from sp1_zorch.zerocheck.prover import (
     OpenedValuesRound,
     prove_shard_zerocheck,
     split_opened_values,
 )
-
 
 _MAX_LOG_ROW_COUNT = 3
 

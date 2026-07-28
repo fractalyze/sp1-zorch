@@ -12,8 +12,8 @@ exists to prevent.
 
 from __future__ import annotations
 
-from pathlib import Path
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 import frx
@@ -22,27 +22,27 @@ import numpy as np
 from frx import Array
 from zk_dtypes import koalabear_mont as F
 from zk_dtypes import koalabearx4_mont as EF
-
+from zorch.hash.poseidon2.poseidon2 import Poseidon2
 from zorch.pcs.jagged.region import JaggedRegion
+from zorch.transcript import DuplexState, DuplexTranscript, Transcript
+
 from sp1_zorch.logup_gkr.circuit import GkrCapClass, build_gkr_chips
-from sp1_zorch.shard_prover.types import ShardWitness
 from sp1_zorch.logup_gkr.prover import (
-    ChipEvaluation,
-    LogupGkrProof,
     num_beta_values,
     prove_logup_gkr,
 )
+from sp1_zorch.logup_gkr.types import (
+    ChipEvaluation,
+    LogupGkrProof,
+)
 from sp1_zorch.poseidon2.koalabear16 import koalabear16_params
 from sp1_zorch.shard_prover.fixture_loader import _parse_int_list, _parse_kv_lines
+from sp1_zorch.shard_prover.prove_shard import absorb_preamble
 from sp1_zorch.shard_prover.types import (
     ChipMetadata,
+    ShardData,
+    ShardWitness,
 )
-from sp1_zorch.shard_prover.prove_shard import (
-    absorb_preamble,
-)
-from sp1_zorch.shard_prover.types import ShardData
-from zorch.hash.poseidon2.poseidon2 import Poseidon2
-from zorch.transcript import DuplexState, DuplexTranscript, Transcript
 
 # SP1 core machine parameters.
 LOG_STACKING_HEIGHT = 21

@@ -33,29 +33,36 @@ replay and the oracle check here are statement-shaped already.
 
 from __future__ import annotations
 
-from typing import Mapping, Sequence
+from collections.abc import Mapping, Sequence
 
 import frx.numpy as fnp
 from frx import Array
 from rw_constraints import Chip
+from zorch.challenge import ChallengePolicy
+from zorch.poly.eq import eval_eq
+from zorch.sumcheck.verifier import CoeffsSumcheckRound
+from zorch.transcript import Transcript
+from zorch.verify import verify
 
-from sp1_zorch.logup_gkr.prover import ChipEvaluation, select_openings
+from sp1_zorch.logup_gkr.prover import select_openings
+from sp1_zorch.logup_gkr.types import ChipEvaluation
 from sp1_zorch.logup_gkr.verifier import padding_geqs
-from sp1_zorch.zerocheck.jagged import DEGREE
 from sp1_zorch.zerocheck.coeffs import constraint_rlc, rlc_coeffs
+from sp1_zorch.zerocheck.jagged import DEGREE
 from sp1_zorch.zerocheck.prover import (
     OpenedValuesRound,
-    ZerocheckProof,
     export_order_eval_fn,
     gkr_opening_claims,
     probe_num_constraints,
     sample_stage_challenges,
 )
-from zorch.poly.eq import eval_eq
-from zorch.challenge import ChallengePolicy
-from zorch.sumcheck.verifier import CoeffsSumcheckRound
-from zorch.transcript import Transcript
-from zorch.verify import verify
+from zorch.stage import VerifierStage, VerifyResult
+from sp1_zorch.shard_prover.types import (
+    ChipWidths,
+    TraceEvaluationClaim,
+    ZerocheckClaim,
+)
+from sp1_zorch.zerocheck.types import ZerocheckProof
 
 
 def verify_shard_zerocheck(
@@ -179,3 +186,78 @@ def verify_shard_zerocheck(
 
     ok = ok_wire & ok_rounds & ok_point & ok_eval
     return transcript, point, ok
+
+
+class ZerocheckVerifier(
+    VerifierStage[ZerocheckClaim, TraceEvaluationClaim, ZerocheckProof]
+):
+    """Stage-3 dual of ``ZerocheckStage``: verifies the zerocheck proof
+    via ``verify_shard_zerocheck``, consuming the GKR point and openings off
+    its source claim, and reduces to the dual's own sumcheck point plus the
+    proof's oracle-checked opened values — the same seams the prover
+    role reduces to for the jagged-eval stage.
+
+    The proof's opened values are checked against the statement's column
+    counts
+    before anything consumes them (SP1's ``verify_opening_shape`` inside
+    ``verify_zerocheck``, ``crates/hypercube/src/verifier/shard.rs``) — the
+    verifier absorbs the proof's opened values, so a shape lie never
+    desyncs Fiat-Shamir and only a statement check rejects it. Downstream
+    later duals reading those opened values may trust their shapes."""
+
+    def __init__(
+        self,
+        chips: Mapping[str, Chip],
+        *,
+        chip_names: Sequence[str],
+        chip_widths: Mapping[str, ChipWidths],
+        max_log_row_count: int,
+    ) -> None:
+        self._chips = chips
+        self._chip_names = chip_names
+        self._chip_widths = chip_widths
+        self._max_log_row_count = max_log_row_count
+
+    def verify(
+        self,
+        claim: ZerocheckClaim,
+        reduction_proof: ZerocheckProof,
+        transcript: Transcript,
+    ) -> VerifyResult[TraceEvaluationClaim]:
+        msg = reduction_proof
+        opened = msg.opened_values
+        for n in self._chip_names:
+            widths = self._chip_widths[n]
+            if int(opened[n].main.shape[0]) != widths.main:
+                raise ValueError(
+                    f"chip {n!r}: need one main claim per statement column "
+                    f"({widths.main}), got {int(opened[n].main.shape[0])}"
+                )
+            prep_open = opened[n].preprocessed
+            if widths.prep is not None:
+                if prep_open is None or int(prep_open.shape[0]) != widths.prep:
+                    got = "none" if prep_open is None else int(prep_open.shape[0])
+                    raise ValueError(
+                        f"chip {n!r}: need one preprocessed claim per "
+                        f"statement column ({widths.prep}), got {got}"
+                    )
+            elif prep_open is not None:
+                raise ValueError(
+                    f"chip {n!r}: the statement has no preprocessed trace, "
+                    f"but the proof opens {int(prep_open.shape[0])} "
+                    f"preprocessed columns"
+                )
+        transcript, point, ok = verify_shard_zerocheck(
+            self._chips,
+            self._chip_names,
+            claim.chip_metadata.by_chip(),
+            claim.public_values,
+            claim.gkr.eval_point,
+            claim.gkr.chip_openings,
+            msg,
+            transcript,
+            max_log_row_count=self._max_log_row_count,
+        )
+        return VerifyResult(
+            TraceEvaluationClaim(point, msg.opened_values), transcript, ok
+        )

@@ -15,26 +15,25 @@ openings tamper would only surface downstream).
 
 from __future__ import annotations
 
-from typing import Any
-from sp1_zorch.zerocheck.prover import ZerocheckProof
-from zorch.transcript import Transcript
-from frx import Array
 from dataclasses import replace
+from typing import Any
 
 import frx
 import frx.numpy as fnp
 import numpy as np
 from absl.testing import absltest
+from frx import Array
 from zk_dtypes import koalabear_mont as F
 from zk_dtypes import koalabearx4_mont as EF
-
-from zorch.testkit.transcript import cheap_transcript
-
 from zorch.pcs.jagged.region import JaggedRegion
-from sp1_zorch.logup_gkr.prover import ChipEvaluation, _open_chip
-from sp1_zorch.zerocheck.prover import prove_shard_zerocheck
-from sp1_zorch.zerocheck.verifier import verify_shard_zerocheck
+from zorch.testkit.transcript import cheap_transcript
+from zorch.transcript import Transcript
 
+from sp1_zorch.logup_gkr.prover import _open_chip
+from sp1_zorch.logup_gkr.types import ChipEvaluation
+from sp1_zorch.zerocheck.prover import prove_shard_zerocheck
+from sp1_zorch.zerocheck.types import ZerocheckProof
+from sp1_zorch.zerocheck.verifier import verify_shard_zerocheck
 
 _MAX_LOG_ROW_COUNT = 3
 _CHIP_NAMES = ("alpha", "lookup")

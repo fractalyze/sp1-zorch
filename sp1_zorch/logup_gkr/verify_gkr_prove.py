@@ -31,6 +31,7 @@ from pathlib import Path
 
 import frx.numpy as fnp
 from absl import app, flags
+from zorch.transcript import Transcript
 
 from sp1_zorch.logup_gkr.circuit import GkrCapClass, build_gkr_chips
 from sp1_zorch.logup_gkr.head import (
@@ -38,9 +39,9 @@ from sp1_zorch.logup_gkr.head import (
     bind_circuit_output,
     sample_head_challenges,
 )
-from sp1_zorch.logup_gkr.prover import LogupGkrProof, num_beta_values
+from sp1_zorch.logup_gkr.prover import num_beta_values
 from sp1_zorch.logup_gkr.public_values import eval_public_values
-from sp1_zorch.shard_prover.types import ShardData
+from sp1_zorch.logup_gkr.types import LogupGkrProof
 from sp1_zorch.shard_prover.fixture_loader import (
     _parse_ef_list,
     _parse_kv_lines,
@@ -53,7 +54,7 @@ from sp1_zorch.shard_prover.replay import (
     replay_gkr,
     shard_regions,
 )
-from zorch.transcript import Transcript
+from sp1_zorch.shard_prover.types import ShardData
 
 _SHARD_DIR = flags.DEFINE_string(
     "shard_dir", None, "rsp shard dump directory (e.g. .../rsp_dump/shard1)."

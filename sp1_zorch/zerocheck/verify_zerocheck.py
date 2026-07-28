@@ -33,11 +33,10 @@ Exits non-zero on any gating mismatch.
 
 from __future__ import annotations
 
+import json
 import sys
 from collections.abc import Sequence
 from pathlib import Path
-
-import json
 
 import frx
 import frx.numpy as fnp
@@ -45,13 +44,18 @@ import numpy as np
 from absl import app, flags
 from frx import Array
 from zk_dtypes import koalabearx4_mont as EF
+from zorch.pcs.jagged.region import JaggedRegion
+from zorch.poly.univariate import eval_coeffs
+from zorch.transcript import Transcript
 
+from sp1_zorch.logup_gkr.types import ChipEvaluation
 from sp1_zorch.shard_prover.fixture_loader import (
     _parse_ef_list,
     _parse_kv_lines,
     check_match,
     load_fixture_shard,
 )
+from sp1_zorch.shard_prover.prove_shard import ZerocheckProver
 from sp1_zorch.shard_prover.replay import (
     MAX_LOG_ROW_COUNT,
     clone_diag,
@@ -61,18 +65,13 @@ from sp1_zorch.shard_prover.replay import (
     shard_regions,
     to_u32,
 )
-from sp1_zorch.logup_gkr.prover import ChipEvaluation
-from sp1_zorch.shard_prover.prove_shard import ZerocheckProver
 from sp1_zorch.shard_prover.types import ShardData
-from zorch.pcs.jagged.region import JaggedRegion
-from zorch.transcript import Transcript
 from sp1_zorch.zerocheck.jagged import TotalCapClass, pack_flat_arrival
 from sp1_zorch.zerocheck.prover import (
-    ZerocheckProof,
     chip_traces,
     prove_shard_zerocheck,
 )
-from zorch.poly.univariate import eval_coeffs
+from sp1_zorch.zerocheck.types import ZerocheckProof
 
 _SHARD_DIR = flags.DEFINE_string(
     "shard_dir", None, "rsp shard dump directory (e.g. .../rsp_dump/shard1)."

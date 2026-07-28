@@ -18,18 +18,29 @@ until then ``witness`` is required when ``pow_bits > 0``.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping, Sequence
 from functools import partial
-from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, Mapping, Sequence
+from typing import TYPE_CHECKING, Any
 
 import frx
 import frx.numpy as fnp
 from frx import Array, lax
 from rw_constraints import Chip
 from zk_dtypes import efinfo
+from zorch.logup_gkr.circuit import (
+    JaggedGkrLayer,
+    LogUpGkrOutput,
+    build_jagged_pyramid,
+    extract_jagged_outputs,
+    jagged_layer_transition,
+)
+from zorch.logup_gkr.jagged_prover import (
+    JaggedGkrLayerRound,
+    RoundWidthCaps,
+)
+from zorch.round import ProverRound, prove_rounds
+from zorch.transcript import Transcript
 
-from sp1_zorch.shard_prover.types import ShardWitness
 from sp1_zorch.logup_gkr.circuit import (
     GkrCapClass,
     GkrChip,
@@ -47,65 +58,10 @@ from sp1_zorch.logup_gkr.head import (
     bind_circuit_output,
     sample_head_challenges,
 )
-from zorch.logup_gkr.circuit import (
-    JaggedGkrLayer,
-    LogUpGkrOutput,
-    build_jagged_pyramid,
-    extract_jagged_outputs,
-    jagged_layer_transition,
-)
-from zorch.logup_gkr.jagged_prover import (
-    JaggedGkrLayerRound,
-    JaggedLayerProof,
-    RoundWidthCaps,
-)
-from zorch.round import ProverRound, prove_rounds
-from zorch.transcript import Transcript
-
-
-# Pytree: both evals are array leaves (preprocessed is None for prep-less
-# chips), so a carry holding these openings stays an arrays-only pytree.
-@partial(
-    frx.tree_util.register_dataclass,
-    data_fields=["main", "preprocessed"],
-    meta_fields=[],
-)
-@dataclass(frozen=True)
-class ChipEvaluation:
-    """One chip's trace openings at the final GKR point."""
-
-    main: Array  # (width,) EF, one eval per main column
-    preprocessed: Array | None  # (prep width,) EF, when the chip has prep
-
-    def all_evals(self) -> Array:
-        """The ``[main | prep]`` evaluation vector — the column order of the
-        beta-power batching shared by the GKR opening claims and the
-        zerocheck column batch."""
-        if self.preprocessed is not None:
-            return fnp.concatenate([self.main, self.preprocessed])
-        return self.main
-
-
-@dataclass(frozen=True)
-class LogupGkrProof:
-    """Reduces the shard's LogUp bus-balance statement to a `GkrOutputClaim`.
-
-    A verifier replays the layer chain from output to input — grind witness,
-    circuit output, one round proof per layer — and arrives at the evaluation
-    point and per-chip openings the next Stage takes as its hypothesis. What
-    it proves is that those openings are the trace's; what it leaves open is
-    everything about the constraints.
-
-    Each layer's sumcheck point rides on its ``JaggedLayerProof.point``
-    (zorch retains it at prove time); the shard wire serializes it per layer
-    (``point_and_eval``).
-    """
-
-    pow_witness: Array
-    circuit_output: LogUpGkrOutput
-    round_proofs: list[JaggedLayerProof]
-    eval_point: Array
-    chip_openings: dict[str, ChipEvaluation]
+from zorch.stage import ProveResult, ProverStage
+from sp1_zorch.logup_gkr.types import ChipEvaluation, LogupGkrProof
+from sp1_zorch.shard_prover.types import GkrOutputClaim, ShardClaim
+from sp1_zorch.shard_prover.types import ShardWitness
 
 
 def num_beta_values(chips: Mapping[str, Chip]) -> int:
@@ -578,3 +534,67 @@ def prove_logup_gkr(
 if TYPE_CHECKING:
     # mypy-enforced seam conformance -- driven by `prove_rounds`.
     _: type[ProverRound] = ChipOpeningsRound
+
+
+class LogupGkrProver(
+    ProverStage[ShardClaim, ShardWitness, GkrOutputClaim, LogupGkrProof]
+):
+    """LogUp-GKR stage over ``prove_logup_gkr``; writes the final
+    evaluation point and per-chip openings as the claim zerocheck consumes.
+
+    Eager orchestration, not one ``@jit`` body: a whole-body jit keeps
+    every pyramid layer live at once (OOM on wide shards) and the grind's
+    host-side ``pow_bits`` verdict cannot be traced. Every traced zone
+    underneath keys its compile on (chip set, ``GkrCapClass``) — shards of
+    one class share every executable; no pinned class means
+    the shard's own tight class (per-shard compile, same body)."""
+
+    def __init__(
+        self,
+        gkr_chips: Sequence[GkrChip],
+        *,
+        num_betas: int,
+        num_row_variables: int,
+        pow_bits: int = 0,
+        pow_witness: Array | None = None,
+        gkr_cap_class: GkrCapClass | None = None,
+    ) -> None:
+        self._gkr_chips = tuple(gkr_chips)
+        self._num_betas = num_betas
+        self._num_row_variables = num_row_variables
+        self._pow_bits = pow_bits
+        self._pow_witness = pow_witness
+        self._gkr_cap_class = gkr_cap_class
+
+    def prove(
+        self,
+        claim: ShardClaim,
+        witness: ShardWitness,
+        transcript: Transcript,
+    ) -> ProveResult[GkrOutputClaim, LogupGkrProof]:
+        # The verifier dual reads the row counts off the claim while the
+        # prover has them in the witness's regions; a claim that disagrees
+        # would otherwise only surface later, as a transcript divergence.
+        assert claim.chip_metadata.by_chip() == {
+            n: int(h)
+            for n, h in zip(
+                witness.main_region.chip_names,
+                witness.main_region.chip_heights,
+                strict=True,
+            )
+        }, "claim's chip metadata does not match the witness's main region"
+        transcript, proof = prove_logup_gkr(
+            self._gkr_chips,
+            witness,
+            transcript,
+            num_betas=self._num_betas,
+            num_row_variables=self._num_row_variables,
+            pow_bits=self._pow_bits,
+            pow_witness=self._pow_witness,
+            cap_class=self._gkr_cap_class,
+        )
+        return ProveResult(
+            GkrOutputClaim(proof.eval_point, proof.chip_openings),
+            proof,
+            transcript,
+        )

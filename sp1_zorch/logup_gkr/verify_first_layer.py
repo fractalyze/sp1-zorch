@@ -32,8 +32,10 @@ from absl import app, flags
 from frx import Array
 from zk_dtypes import koalabear_mont as F
 from zk_dtypes import koalabearx4_mont as EF
-
 from zorch.pcs.jagged.region import JaggedRegion
+from zorch.poly.eq import expand_eq_to_hypercube
+from zorch.utils.bits import log2_ceil_usize
+
 from sp1_zorch.logup_gkr.circuit import (
     GkrChip,
     build_gkr_chips,
@@ -41,7 +43,6 @@ from sp1_zorch.logup_gkr.circuit import (
     sp1_col_h,
     sp1_next_row_counts,
 )
-from sp1_zorch.shard_prover.types import ShardData, Traces
 from sp1_zorch.shard_prover.fixture_loader import (
     _parse_ef_list,
     _parse_int_list,
@@ -49,8 +50,7 @@ from sp1_zorch.shard_prover.fixture_loader import (
     check_match,
     load_fixture_shard,
 )
-from zorch.poly.eq import expand_eq_to_hypercube
-from zorch.utils.bits import log2_ceil_usize
+from sp1_zorch.shard_prover.types import ShardData, Traces
 
 _SHARD_DIR = flags.DEFINE_string(
     "shard_dir", None, "rsp shard dump directory (e.g. .../rsp_dump/shard1)."

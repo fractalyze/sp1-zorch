@@ -14,29 +14,25 @@ dual's opening-shape statement checks.
 
 from __future__ import annotations
 
-from frx import Array
 from dataclasses import replace
 
 import frx
 import frx.numpy as fnp
 import numpy as np
 from absl.testing import absltest
+from frx import Array
 from zk_dtypes import koalabear_mont as F
-
 from zorch.testkit.transcript import cheap_transcript
 
-from sp1_zorch.shard_prover.types import ChipWidths
-from sp1_zorch.shard_prover.verify_shard import (
-    ZerocheckVerifier,
-)
-
-
-from sp1_zorch.shard_prover.prove_shard import ZerocheckClaim, bind_commitment
-
+from sp1_zorch.shard_prover.prove_shard import bind_commitment
 from sp1_zorch.shard_prover.shard_testkit import (
     CHIP_WIDTH,
     MAX_LOG_ROW_COUNT,
     small_shard_fixture,
+)
+from sp1_zorch.shard_prover.types import ChipWidths, ZerocheckClaim
+from sp1_zorch.shard_prover.verify_shard import (
+    ZerocheckVerifier,
 )
 
 

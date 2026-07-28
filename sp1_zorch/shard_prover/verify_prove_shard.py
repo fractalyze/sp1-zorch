@@ -60,13 +60,12 @@ mismatch aborts in ~one trace-commit, not after the whole chain.
 
 from __future__ import annotations
 
+import dataclasses
 import gc
 import json
 import sys
-from collections.abc import Callable, Mapping, Sequence
-
-import dataclasses
 import time
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -75,8 +74,13 @@ import frx.numpy as fnp
 from absl import app, flags
 from frx import Array
 from zk_dtypes import koalabear_mont as F
-
 from zorch.commit.smcs import SingleMatrixCommitmentScheme
+from zorch.hash.compression import Compression, CompressionParams
+from zorch.hash.poseidon2.poseidon2 import Poseidon2
+from zorch.hash.sponge import Sponge, SpongeParams
+from zorch.poly.univariate import eval_coeffs
+from zorch.transcript import DuplexTranscript
+
 from sp1_zorch.logup_gkr.circuit import GkrCapClass, build_gkr_chips
 from sp1_zorch.logup_gkr.prover import num_beta_values
 from sp1_zorch.poseidon2.koalabear16 import koalabear16_params
@@ -87,18 +91,8 @@ from sp1_zorch.shard_prover.fixture_loader import (
     check_match,
     load_fixture_shard,
 )
-from sp1_zorch.shard_prover.types import (
-    ChipMetadata,
-    JaggedCommitData,
-    JaggedOpeningClaim,
-    JaggedOpeningWitness,
-    ShardWitness,
-)
 from sp1_zorch.shard_prover.prove_shard import (
-    ShardClaim,
-    ShardProof,
     ShardProver,
-    ZerocheckClaim,
     bind_commitment,
 )
 from sp1_zorch.shard_prover.replay import (
@@ -108,12 +102,17 @@ from sp1_zorch.shard_prover.replay import (
 )
 from sp1_zorch.shard_prover.serialize import encode_shard_proof, encode_vk
 from sp1_zorch.shard_prover.sp1_ffi import sp1_verify_shard
+from sp1_zorch.shard_prover.types import (
+    ChipMetadata,
+    JaggedCommitData,
+    JaggedOpeningClaim,
+    JaggedOpeningWitness,
+    ShardClaim,
+    ShardProof,
+    ShardWitness,
+    ZerocheckClaim,
+)
 from sp1_zorch.zerocheck.jagged import TotalCapClass
-from zorch.hash.compression import Compression, CompressionParams
-from zorch.hash.poseidon2.poseidon2 import Poseidon2
-from zorch.hash.sponge import Sponge, SpongeParams
-from zorch.poly.univariate import eval_coeffs
-from zorch.transcript import DuplexTranscript
 
 # A phase's golden check: takes that phase's proof section, prints OK/MISMATCH.
 PhaseCheck = Callable[[Any], bool]

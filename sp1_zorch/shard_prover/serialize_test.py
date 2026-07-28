@@ -7,33 +7,24 @@ KoalaBear serializes as canonical u32, never Montgomery raw; extension
 fields flatten to their base-field limbs.
 """
 
-from typing import Any
 import struct
+from typing import Any
 
 import frx.numpy as fnp
 from absl.testing import absltest
 from zk_dtypes import koalabear_mont as F
 from zk_dtypes import koalabearx4_mont as EF
-
 from zorch.logup_gkr.circuit import LogUpGkrOutput
 from zorch.logup_gkr.jagged_prover import JaggedLayerProof
+from zorch.pcs.jagged.open import StackedOpenProof
+from zorch.pcs.jagged.prover import JaggedEvalMsg
+from zorch.pcs.jagged.region import JaggedRegion
 from zorch.sumcheck.prover import RoundMsg
 
-from zorch.pcs.jagged.region import JaggedRegion
-from zorch.pcs.jagged.prover import JaggedEvalMsg
-
-from zorch.pcs.jagged.open import StackedOpenProof
-from sp1_zorch.logup_gkr.prover import ChipEvaluation, LogupGkrProof
-from sp1_zorch.jagged_pcs.prover import JaggedPcsProof
-from sp1_zorch.shard_prover.types import (
-    ChipMetadata,
-    ShardWitness,
-    SmcsCommitments,
-    TraceEvaluationClaim,
-)
-from sp1_zorch.shard_prover.prove_shard import (
-    ShardClaim,
-    ShardProof,
+from sp1_zorch.jagged_pcs.types import JaggedPcsProof
+from sp1_zorch.logup_gkr.types import (
+    ChipEvaluation,
+    LogupGkrProof,
 )
 from sp1_zorch.shard_prover.serialize import (
     _encode_basefold_proof,
@@ -55,8 +46,17 @@ from sp1_zorch.shard_prover.serialize import (
     encode_shard_proof,
     encode_vk,
 )
-from sp1_zorch.shard_prover.types import ChipOpenedValues, MachineVerifyingKey
-from sp1_zorch.zerocheck.prover import ZerocheckProof
+from sp1_zorch.shard_prover.types import (
+    ChipMetadata,
+    ChipOpenedValues,
+    MachineVerifyingKey,
+    ShardClaim,
+    ShardProof,
+    ShardWitness,
+    SmcsCommitments,
+    TraceEvaluationClaim,
+)
+from sp1_zorch.zerocheck.types import ZerocheckProof
 
 
 class BincodePrimitivesTest(absltest.TestCase):

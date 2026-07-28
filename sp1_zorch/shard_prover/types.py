@@ -22,10 +22,12 @@ from frx import Array
 
 if TYPE_CHECKING:
     from rw_constraints import Chip
-
-    from sp1_zorch.logup_gkr.prover import ChipEvaluation
     from zorch.pcs.jagged.region import JaggedRegion
     from zorch.transcript import Transcript
+
+    from sp1_zorch.jagged_pcs.types import JaggedPcsProof
+    from sp1_zorch.logup_gkr.types import ChipEvaluation, LogupGkrProof
+    from sp1_zorch.zerocheck.types import ZerocheckProof
 
 # SP1 v1: every shard's public-values vector is padded to this length on both
 # the prover and verifier side; PV-aware chips index fixed slots in the padded
@@ -106,9 +108,7 @@ class Traces:
     chip_order: tuple[str, ...]
 
     @classmethod
-    def from_arrays(
-        cls, arrays: dict[str, Array], num_reals: dict[str, int]
-    ) -> "Traces":
+    def from_arrays(cls, arrays: dict[str, Array], num_reals: dict[str, int]) -> Traces:
         names = tuple(arrays.keys())
         return cls(
             per_chip={
@@ -125,7 +125,7 @@ class MainTraceData:
 
     traces: Traces
     public_values: Array
-    chips: dict[str, "Chip"]
+    chips: dict[str, Chip]
 
 
 @dataclass(frozen=True)
@@ -309,3 +309,66 @@ class JaggedOpeningWitness:
 
     trace: ShardWitness
     commit_data: JaggedCommitData
+
+
+@dataclass(frozen=True)
+class ShardClaim:
+    """Some trace of this shape is a valid execution of the shard.
+
+    Spelled out: there exists a trace holding `chip_metadata`'s chips at its
+    row counts, whose preprocessed part is the one `vk` commits to, on which
+    every chip's AIR constraints vanish and whose LogUp bus balances against
+    `public_values`. Nothing here names that trace — it is existentially
+    quantified, and the prover exhibits one by committing to it, which is why
+    the commitment is proof data rather than a field of the statement.
+    """
+
+    vk: MachineVerifyingKey
+    public_values: Array
+    chip_metadata: ChipMetadata
+
+
+@dataclass(frozen=True)
+class GkrOutputClaim:
+    """The trace's LogUp columns take `chip_openings` at `eval_point`.
+
+    What LogUp-GKR reduces the bus-balance statement to: checking a whole
+    logarithmic-derivative argument becomes checking a handful of column
+    values at one point. Both roles derive it — the prover from its own layer
+    chain, the verifier by replaying the proof — so neither has to be trusted
+    for it.
+    """
+
+    eval_point: Array
+    chip_openings: Mapping[str, ChipEvaluation]
+
+
+@dataclass(frozen=True)
+class ZerocheckClaim:
+    """Every chip's AIR constraints vanish on the trace — conditionally on
+    `gkr`, whose column openings the constraint sum folds in.
+
+    Conditional because zerocheck never re-proves the LogUp leg: it inherits
+    `gkr` as a hypothesis and discharges only the constraint half, so the two
+    together are what pin the trace. `public_values` supplies the operands the
+    PV-reading constraint circuits index.
+    """
+
+    public_values: Array
+    gkr: GkrOutputClaim
+    chip_metadata: ChipMetadata
+
+
+@dataclass(frozen=True)
+class ShardProof:
+    """What a verifier needs to check a `ShardClaim` without the trace.
+
+    The commitment fixes which trace is being talked about; the three
+    reduction proofs then carry the verifier along the same chain the prover
+    walked, one section per Stage, ending at the trivial claim.
+    """
+
+    commitment: Array  # structure-bound main root; see JaggedCommitData
+    gkr: LogupGkrProof
+    zerocheck: ZerocheckProof
+    jagged: JaggedPcsProof

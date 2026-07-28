@@ -9,7 +9,6 @@ implementation-agnostic rule keeps out of its own scheme code.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
 from functools import partial
 from typing import Any
 
@@ -17,12 +16,10 @@ import frx
 import frx.numpy as fnp
 from frx import Array
 from zk_dtypes import koalabearx4_mont as EF
-
 from zorch.coding.reed_solomon import BitReversedReedSolomon
 from zorch.commit.smcs import SingleMatrixCommitmentScheme
 from zorch.pcs.jagged.commit import commit_region
 from zorch.pcs.jagged.open import (
-    StackedOpenProof,
     StackedRound,
     stacked_basefold_open,
 )
@@ -39,6 +36,7 @@ from zorch.stage import ProveResult, ProverStage, TrivialClaim
 from zorch.transcript import Transcript
 from zorch.utils.bits import log2_ceil_usize
 
+from sp1_zorch.jagged_pcs.types import JaggedPcsProof
 from sp1_zorch.shard_prover.types import (
     JaggedCommitData,
     JaggedOpeningClaim,
@@ -46,20 +44,6 @@ from sp1_zorch.shard_prover.types import (
     ShardWitness,
     SmcsCommitments,
 )
-
-
-@dataclass(frozen=True)
-class JaggedPcsProof:
-    """Discharges a `JaggedOpeningClaim`, leaving nothing to prove.
-
-    Two legs: the outer/inner sumcheck reducing the committed trace to a
-    single value ``D(z_final)``, then the stacked BaseFold open showing that
-    value really is the commitment's, at that point.
-    """
-
-    eval: JaggedEvalMsg
-    open: StackedOpenProof
-    smcs_commitments: SmcsCommitments
 
 
 @partial(frx.jit, static_argnames=("rc_rounds", "cc_rounds", "target", "dtype"))

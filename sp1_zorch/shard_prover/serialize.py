@@ -25,16 +25,16 @@ from zk_dtypes import efinfo
 from sp1_zorch.shard_prover.types import ChipOpenedValues, MachineVerifyingKey
 
 if TYPE_CHECKING:
-    from zorch.pcs.jagged.prover import JaggedEvalMsg
-
     from zorch.pcs.jagged.open import Opening, StackedOpenProof
+    from zorch.pcs.jagged.prover import JaggedEvalMsg
     from zorch.pcs.jagged.region import JaggedRegion
-    from sp1_zorch.logup_gkr.prover import LogupGkrProof
+
+    from sp1_zorch.logup_gkr.types import LogupGkrProof
     from sp1_zorch.shard_prover.types import (
         ShardWitness,
         TraceEvaluationClaim,
     )
-from sp1_zorch.shard_prover.prove_shard import (
+from sp1_zorch.shard_prover.types import (
     ShardClaim,
     ShardProof,
 )

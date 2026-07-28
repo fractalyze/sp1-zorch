@@ -11,66 +11,66 @@ streams and fails loudly.
 
 from __future__ import annotations
 
-from typing import Any
-from frx import Array
 import dataclasses
 from dataclasses import replace
+from typing import Any
 
 import frx
 import frx.numpy as fnp
 import numpy as np
 from absl.testing import absltest
+from frx import Array
 from rw_constraints import Interaction, VirtualPairCol
 from zk_dtypes import koalabear_mont as F
 from zk_dtypes import koalabearx4_mont as EF
-
+from zorch.commit.smcs import SingleMatrixCommitmentScheme
 from zorch.hash.compression import Compression, CompressionParams
 from zorch.hash.poseidon2.poseidon2 import Poseidon2
 from zorch.hash.sponge import Sponge, SpongeParams
-from zorch.testkit.transcript import cheap_transcript
-
-from zorch.pcs.jagged.region import JaggedRegion
-from zorch.commit.smcs import SingleMatrixCommitmentScheme
 from zorch.pcs.jagged.commit import commit_region
+from zorch.pcs.jagged.region import JaggedRegion
+from zorch.testkit.transcript import cheap_transcript
+from zorch.utils.bits import log2_ceil_usize
+
+from sp1_zorch.jagged_pcs.prover import (
+    JaggedPcsProver,
+    _jagged_eval_jit,
+)
 from sp1_zorch.logup_gkr.circuit import (
     GkrCapClass,
     GkrChip,
     _chip_first_layer,
 )
 from sp1_zorch.logup_gkr.prover import (
-    ChipEvaluation,
     open_traces_capped,
     prove_logup_gkr,
 )
+from sp1_zorch.logup_gkr.types import ChipEvaluation
 from sp1_zorch.poseidon2.koalabear16 import koalabear16_params
-
-from sp1_zorch.jagged_pcs.prover import JaggedPcsProver, _jagged_eval_jit
+from sp1_zorch.shard_prover.prove_shard import (
+    LogupGkrProver,
+    ShardProver,
+    ZerocheckProver,
+    absorb_preamble,
+    bind_commitment,
+)
+from sp1_zorch.shard_prover.replay import JitPermutation
 from sp1_zorch.shard_prover.types import (
     BoundRoots,
     ChipMetadata,
+    GkrOutputClaim,
     JaggedCommitData,
     JaggedOpeningClaim,
     JaggedOpeningWitness,
+    MachineVerifyingKey,
+    ShardClaim,
     ShardWitness,
     SmcsCommitments,
     TraceEvaluationClaim,
-)
-from sp1_zorch.shard_prover.prove_shard import (
-    LogupGkrProver,
-    absorb_preamble,
-    bind_commitment,
-    ShardClaim,
-    ShardProver,
-    GkrOutputClaim,
     ZerocheckClaim,
-    ZerocheckProver,
 )
-from sp1_zorch.shard_prover.replay import JitPermutation
-from sp1_zorch.shard_prover.types import MachineVerifyingKey
 from sp1_zorch.zerocheck.jagged import TotalCapClass
 from sp1_zorch.zerocheck.prover import prove_shard_zerocheck
-from zorch.utils.bits import log2_ceil_usize
-
 
 _MAX_LOG_ROW_COUNT = 5
 _NUM_ROW_VARIABLES = _MAX_LOG_ROW_COUNT - 1
