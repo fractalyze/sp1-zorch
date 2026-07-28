@@ -159,7 +159,7 @@ class VerifyLogupGkrTest(absltest.TestCase):
         failing = next(
             w
             for w in (fnp.array(i, F) for i in range(16))
-            if not bool(cheap_transcript(F).check_witness(1, w)[1])
+            if not bool(cheap_transcript(F).check_witness(w, pow_bits=1)[1])
         )
 
         _, proof = _prove(pow_bits=1, pow_witness=passing)

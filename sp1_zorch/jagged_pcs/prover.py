@@ -36,7 +36,7 @@ from zorch.pcs.jagged.prover import (
 )
 from zorch.poly.eq import expand_eq_to_hypercube
 from zorch.stage import ProveResult, ProverStage, TrivialClaim
-from zorch.transcript import GrindingTranscript
+from zorch.transcript import Transcript
 from zorch.utils.bits import log2_ceil_usize
 
 from sp1_zorch.shard_prover.types import (
@@ -90,11 +90,11 @@ def _jagged_eval_jit(
     all_claims: Array,
     dense: Array,
     zc_sumcheck_point: Array,
-    transcript: GrindingTranscript,
+    transcript: Transcript,
     *,
     num_columns: int,
     dtype: Any,
-) -> tuple[GrindingTranscript, JaggedEvalMsg]:
+) -> tuple[Transcript, JaggedEvalMsg]:
     """The eval half (outer/inner sumcheck) as one shard-invariant ``@jit``
     zone: per-shard column heights ride only as the VALUES of the traced
     ``offsets``/``merged`` arrays and ``dense`` arrives pre-padded to its
@@ -199,7 +199,7 @@ class JaggedPcsProver(
         self,
         claim: JaggedOpeningClaim,
         witness: JaggedOpeningWitness,
-        transcript: GrindingTranscript,
+        transcript: Transcript,
     ) -> ProveResult[TrivialClaim, JaggedPcsProof]:
         main = witness.trace.main_region
         openings = claim.evaluation.opened_values

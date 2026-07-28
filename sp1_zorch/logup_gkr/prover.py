@@ -60,7 +60,7 @@ from zorch.logup_gkr.jagged_prover import (
     RoundWidthCaps,
 )
 from zorch.round import ProverRound, prove_rounds
-from zorch.transcript import GrindingTranscript, Transcript
+from zorch.transcript import Transcript
 
 
 # Pytree: both evals are array leaves (preprocessed is None for prep-less
@@ -305,7 +305,7 @@ def extract_sp1_outputs(floor: JaggedGkrLayer) -> LogUpGkrOutput:
 
 
 def resolve_witness_and_grind(
-    transcript: GrindingTranscript,
+    transcript: Transcript,
     *,
     pow_bits: int,
     pow_witness: Array | None,

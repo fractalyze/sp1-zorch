@@ -106,7 +106,7 @@ V.check_match = lambda *a, **k: True
 
 
 def _grind_no_pow(transcript: Any, pow_witness: Any, *, pow_bits: int = 0) -> Any:
-    transcript, _ = transcript.check_witness(pow_bits, pow_witness)
+    transcript, _ = transcript.check_witness(pow_witness, pow_bits=pow_bits)
     return transcript
 
 

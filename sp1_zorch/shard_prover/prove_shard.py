@@ -51,7 +51,7 @@ from zorch.stage import (
     ProverStage,
     TrivialClaim,
 )
-from zorch.transcript import GrindingTranscript, Transcript
+from zorch.transcript import Transcript
 
 
 @dataclass(frozen=True)
@@ -477,7 +477,7 @@ class ShardProver(ProverStage[ShardClaim, ShardWitness, TrivialClaim, ShardProof
         self,
         claim: ShardClaim,
         witness: ShardWitness,
-        transcript: GrindingTranscript,
+        transcript: Transcript,
     ) -> ProveResult[TrivialClaim, ShardProof]:
         commitment, commit_data = self.opening.commit(witness)
         transcript, roots = bind_commitment(transcript, claim, commitment)

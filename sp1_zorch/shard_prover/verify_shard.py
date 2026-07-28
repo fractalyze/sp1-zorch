@@ -50,7 +50,7 @@ from zorch.stage import (
     VerifierStage,
     VerifyResult,
 )
-from zorch.transcript import GrindingTranscript, Transcript
+from zorch.transcript import Transcript
 from zorch.utils.bits import log2_ceil_usize
 
 
@@ -81,7 +81,7 @@ class LogupGkrVerifier(VerifierStage[ShardClaim, GkrOutputClaim, LogupGkrProof])
         self,
         claim: ShardClaim,
         reduction_proof: LogupGkrProof,
-        transcript: GrindingTranscript,
+        transcript: Transcript,
     ) -> VerifyResult[GkrOutputClaim]:
         msg = reduction_proof
         transcript, eval_point, ok = verify_logup_gkr(
@@ -216,7 +216,7 @@ class JaggedPcsVerifier(
         self,
         claim: JaggedOpeningClaim,
         reduction_proof: JaggedPcsProof,
-        transcript: GrindingTranscript,
+        transcript: Transcript,
     ) -> VerifyResult[TrivialClaim]:
         msg = reduction_proof
         opened = claim.evaluation.opened_values
@@ -398,7 +398,7 @@ class ShardVerifier(VerifierStage[ShardClaim, TrivialClaim, ShardProof]):
         self,
         claim: ShardClaim,
         reduction_proof: ShardProof,
-        transcript: GrindingTranscript,
+        transcript: Transcript,
     ) -> VerifyResult[TrivialClaim]:
         transcript, roots = bind_commitment(
             transcript, claim, reduction_proof.commitment

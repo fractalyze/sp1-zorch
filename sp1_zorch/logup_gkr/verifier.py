@@ -47,7 +47,7 @@ from zorch.logup_gkr.jagged_verifier import JaggedGkrLayerRound
 from zorch.poly.geq import VirtualGeq
 from zorch.poly.multilinear import eval_mle
 from zorch.round import verify_rounds
-from zorch.transcript import GrindingTranscript
+from zorch.transcript import Transcript
 from zorch.utils.bits import log2_ceil_usize
 
 
@@ -148,13 +148,13 @@ def verify_logup_gkr(
     chip_names: Sequence[str],
     chip_heights: Mapping[str, int],
     proof: LogupGkrProof,
-    transcript: GrindingTranscript,
+    transcript: Transcript,
     public_values: Array | None,
     *,
     num_betas: int,
     num_row_variables: int,
     pow_bits: int = 0,
-) -> tuple[GrindingTranscript, Array, Array]:
+) -> tuple[Transcript, Array, Array]:
     """Verify a LogUp-GKR stage proof on a transcript positioned after the
     shard preamble; returns ``(transcript, eval_point, ok)``.
 
@@ -188,7 +188,7 @@ def verify_logup_gkr(
     # Grind gate. The prover's `absorb_grind` judges host-side and raises; the
     # dual needs the verdict as a traced leg of ok, so it calls the same
     # one-definition predicate directly.
-    transcript, ok_pow = transcript.check_witness(pow_bits, proof.pow_witness)
+    transcript, ok_pow = transcript.check_witness(proof.pow_witness, pow_bits=pow_bits)
 
     transcript, head = sample_head_challenges(transcript, num_betas)
     transcript, carry = bind_circuit_output(transcript, proof.circuit_output)
