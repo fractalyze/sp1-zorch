@@ -115,18 +115,11 @@ def sample_head_challenges(
     return transcript, HeadChallenges(alpha, beta_seeds, betas, pv_challenge)
 
 
-# Message length, in base-field elements, above which an absorb is worth
-# relocating to the CPU sponge. A device sponge runs one warp-cooperative
-# permutation per rate-block and its shuffle latency, ~5.4 us, swamps the few
-# hundred field ops; the host pays ~1.0 us. Below this the host crossing and the
-# eager dispatch cost more than they save. Both long GKR messages -- the output
-# MLEs and the chip openings -- scale with interaction count, so this trips on an
-# interaction-heavy shard (a 33-chip core shard absorbs ~2048 rate-blocks per
-# message) and never on a narrow one.
+# Base-field elements above which the host sponge beats the device one. Below
+# it the crossing costs more than the serial permutations it saves.
 _HOST_ABSORB_MIN_ELEMENTS = 512
 
-# The transcript flattens every message to its base field before absorbing, so a
-# message's real length is its element count times its width in base elements.
+# `observe` flattens to the base field first, so length is elements x width.
 _BASE_ITEMSIZE = efinfo(EF).base_field_dtype.itemsize
 
 
@@ -135,16 +128,11 @@ def _base_length(messages: Sequence[Array]) -> int:
 
 
 def absorb_long_message(transcript: Transcript, *messages: Array) -> Transcript:
-    """Absorb `messages` in order, relocating to the host sponge when they are
-    long enough to be worth the crossing.
+    """Absorb `messages` in order, on the host sponge when they are long enough.
 
-    The whole sequence goes in ONE host excursion: a Fiat-Shamir step is
-    several messages in a fixed order (a length prefix, then its payload), and
-    absorbing them one at a time would hand the sponge state back to the device
-    between each. Falls back to the device path below the threshold, for a
-    transcript with no scoped host absorb, or under a trace -- the prove path
-    calls this eagerly, but the byte-match harness and the verifier dual trace
-    it.
+    Pass the whole sequence at once -- absorbing one at a time hands the sponge
+    state back to the device between each. Falls back to the device path under
+    a trace, which the verifier dual and the byte-match harness need.
     """
     host = _base_length(messages) >= _HOST_ABSORB_MIN_ELEMENTS and (
         hasattr(transcript, "absorb_on_host")
@@ -167,11 +155,6 @@ def bind_circuit_output(
     this is the seam between the head and the layers. The length prefixes
     absorb as elements of the MLEs' base field, matching SP1's serialization
     of the extension-field MLEs.
-
-    A long MLE absorbs through the host sponge (``absorb_on_host``), which is
-    byte-identical and several milliseconds cheaper on an interaction-heavy
-    shard — the sponge is serial by construction, and that is the one shape a
-    GPU is worse at than a CPU. The evaluations and z1 stay on the device.
     """
     num = output.numerator
     den = output.denominator
@@ -192,10 +175,8 @@ def _bind_tail_zone(
 ) -> tuple[Transcript, tuple[Array, Array, Array]]:
     """z1 and the two output evaluations as one dispatch.
 
-    Its own zone because the absorbs above may run eagerly on the host: without
-    it the per-variable EF squeezes and the two ``eval_mle`` folds scatter back
-    into ~180 single-op dispatches, which costs far more than the absorb saves.
-    Inside a traced caller this inlines, leaving that path unchanged.
+    Kept a zone because the absorbs above may run eagerly; inlining it here
+    scatters the EF squeezes and both ``eval_mle`` folds into ~180 dispatches.
     """
     transcript, z1 = _sample_ef_point(transcript, log2_strict_usize(num.shape[0]))
     return transcript, (eval_mle(num, z1), eval_mle(den, z1), z1)

@@ -245,13 +245,8 @@ def open_traces_capped(
 def absorb_chip_openings(
     transcript: Transcript, opened: tuple[dict[str, ChipEvaluation], Array]
 ) -> tuple[Transcript, dict[str, ChipEvaluation]]:
-    """Absorb what ``open_traces_capped`` opened, outside its zone.
-
-    Split out so the absorb can be relocated: the openings message scales with
-    interaction count, and on a 33-chip core shard it is thousands of
-    rate-blocks of serial sponge -- the same shape as the output-MLE observe,
-    and the same reason it does not belong on the accelerator.
-    """
+    """Absorb what ``open_traces_capped`` opened, outside its zone -- a traced
+    region cannot reach the host sponge."""
     openings, flat = opened
     return absorb_long_message(transcript, flat), openings
 
