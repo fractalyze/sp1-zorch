@@ -63,22 +63,6 @@ class MachineVerifyingKey:
 
 
 @dataclass(frozen=True)
-class ChipWidths:
-    """One chip's column counts — SP1's ``chip.width()`` /
-    ``chip.preprocessed_width()`` (``crates/hypercube/src/verifier/shard.rs``).
-
-    A static property of the AIR, identical on every shard, so it is role
-    configuration rather than claim data. `prep` is None when the chip carries
-    no preprocessed trace, which keeps a half-stated preprocessed trace
-    unrepresentable. The other axis — how many rows each chip holds — varies
-    shard to shard and rides `ChipMetadata` on the claim.
-    """
-
-    main: int
-    prep: int | None = None
-
-
-@dataclass(frozen=True)
 class ChipMetadata:
     """Which chips this shard holds and how many real rows each one has, in
     SP1's chip order.
@@ -120,6 +104,22 @@ class ChipMetadata:
             metadata.append(len(name))
             metadata.extend(name.encode("ascii"))
         return fnp.array(metadata, dtype)
+
+
+@dataclass(frozen=True)
+class ChipWidths:
+    """One chip's column counts — SP1's ``chip.width()`` /
+    ``chip.preprocessed_width()`` (``crates/hypercube/src/verifier/shard.rs``).
+
+    A static property of the AIR, identical on every shard, so it is role
+    configuration rather than claim data. `prep` is None when the chip carries
+    no preprocessed trace, which keeps a half-stated preprocessed trace
+    unrepresentable. The other axis — how many rows each chip holds — varies
+    shard to shard and rides `ChipMetadata` on the claim.
+    """
+
+    main: int
+    prep: int | None = None
 
 
 @dataclass(frozen=True)
@@ -180,90 +180,6 @@ class ShardData:
 
 
 @dataclass(frozen=True)
-class ChipOpenedValues:
-    """SP1 mirror: ``ChipOpenedValues<F, EF>`` — one chip's zerocheck
-    openings as the shard-proof wire carries them, converted from the
-    in-flight `ChipEvaluation`. ``degree`` is the chip's padded height, the
-    field the in-flight form has no need of; the wire stores its bits
-    MSB-first over ``max_log_row_count + 1`` positions."""
-
-    preprocessed_evals: Array | None
-    main_evals: Array
-    degree: int
-
-
-# Pytree: both evals are array leaves (preprocessed is None for prep-less
-# chips), so a carry holding these openings stays an arrays-only pytree.
-@partial(
-    frx.tree_util.register_dataclass,
-    data_fields=["main", "preprocessed"],
-    meta_fields=[],
-)
-@dataclass(frozen=True)
-class ChipEvaluation:
-    """One chip's trace openings at the final GKR point.
-
-    The in-flight form: a pytree, so it threads the jitted opens as a carry.
-    `ChipOpenedValues` is the same openings in the shard wire's shape, which
-    additionally spells out the chip's row count; `serialize.chip_opened_values`
-    is the one conversion between them.
-    """
-
-    main: Array  # (width,) EF, one eval per main column
-    preprocessed: Array | None  # (prep width,) EF, when the chip has prep
-
-    def all_evals(self) -> Array:
-        """The ``[main | prep]`` evaluation vector — the column order of the
-        beta-power batching shared by the GKR opening claims and the
-        zerocheck column batch."""
-        if self.preprocessed is not None:
-            return fnp.concatenate([self.main, self.preprocessed])
-        return self.main
-
-
-@dataclass(frozen=True, kw_only=True)
-class BoundRoots:
-    """The structure-bound Merkle roots an opening is checked against.
-
-    Both roles derive these — the verifier from the vk and the proof's
-    commitment — so they are claim data. The raw `SmcsCommitments` the prover
-    also holds are the same two arrays before structure binding, so only a
-    distinct type stops the two being passed to each other's slot; the fields
-    are keyword-only for the same reason.
-    """
-
-    preprocessed: Array
-    main: Array
-
-    def in_round_order(self, has_preprocessed: bool) -> list[Array]:
-        """The roots the opening binds against, in SP1's round order."""
-        return [self.preprocessed, self.main] if has_preprocessed else [self.main]
-
-
-@dataclass(frozen=True, kw_only=True)
-class SmcsCommitments:
-    """Per-round SMCS commitments before structure binding — the wire's
-    ``original_commitments``.
-
-    Prover output the verifier cannot derive, so this is proof data, not claim
-    data. `preprocessed` is absent when the shard commits no preprocessed
-    region, which is why the arity varies where `BoundRoots` is fixed: SP1's
-    verifier always carries the vk's preprocessed commitment even when the
-    prover has no preprocessed region to commit.
-    """
-
-    preprocessed: Array | None = None
-    main: Array
-
-    def in_round_order(self) -> list[Array]:
-        return (
-            [self.preprocessed, self.main]
-            if self.preprocessed is not None
-            else [self.main]
-        )
-
-
-@dataclass(frozen=True)
 class ShardClaim:
     """Some trace of this shape is a valid execution of the shard.
 
@@ -297,6 +213,35 @@ class ShardWitness:
 
     main_region: JaggedRegion
     prep_region: JaggedRegion | None = None
+
+
+# Pytree: both evals are array leaves (preprocessed is None for prep-less
+# chips), so a carry holding these openings stays an arrays-only pytree.
+@partial(
+    frx.tree_util.register_dataclass,
+    data_fields=["main", "preprocessed"],
+    meta_fields=[],
+)
+@dataclass(frozen=True)
+class ChipEvaluation:
+    """One chip's trace openings at the final GKR point.
+
+    The in-flight form: a pytree, so it threads the jitted opens as a carry.
+    `ChipOpenedValues` is the same openings in the shard wire's shape, which
+    additionally spells out the chip's row count; `serialize.chip_opened_values`
+    is the one conversion between them.
+    """
+
+    main: Array  # (width,) EF, one eval per main column
+    preprocessed: Array | None  # (prep width,) EF, when the chip has prep
+
+    def all_evals(self) -> Array:
+        """The ``[main | prep]`` evaluation vector — the column order of the
+        beta-power batching shared by the GKR opening claims and the
+        zerocheck column batch."""
+        if self.preprocessed is not None:
+            return fnp.concatenate([self.main, self.preprocessed])
+        return self.main
 
 
 @dataclass(frozen=True)
@@ -383,6 +328,19 @@ class ZerocheckProof:
 
 
 @dataclass(frozen=True)
+class ChipOpenedValues:
+    """SP1 mirror: ``ChipOpenedValues<F, EF>`` — one chip's zerocheck
+    openings as the shard-proof wire carries them, converted from the
+    in-flight `ChipEvaluation`. ``degree`` is the chip's padded height, the
+    field the in-flight form has no need of; the wire stores its bits
+    MSB-first over ``max_log_row_count + 1`` positions."""
+
+    preprocessed_evals: Array | None
+    main_evals: Array
+    degree: int
+
+
+@dataclass(frozen=True)
 class TraceEvaluationClaim:
     """The trace evaluates to `opened_values` at `point`.
 
@@ -395,28 +353,46 @@ class TraceEvaluationClaim:
     opened_values: Mapping[str, ChipEvaluation]
 
 
-@dataclass(frozen=True)
-class JaggedOpeningClaim:
-    """The trace committed under `roots` evaluates to
-    `evaluation.opened_values` at `evaluation.point`.
+@dataclass(frozen=True, kw_only=True)
+class BoundRoots:
+    """The structure-bound Merkle roots an opening is checked against.
 
-    `TraceEvaluationClaim` asserts this of *the* trace; binding it to `roots`
-    is what ties the assertion to the one the prover actually committed to, so
-    discharging this claim leaves nothing to prove.
+    Both roles derive these — the verifier from the vk and the proof's
+    commitment — so they are claim data. The raw `SmcsCommitments` the prover
+    also holds are the same two arrays before structure binding, so only a
+    distinct type stops the two being passed to each other's slot; the fields
+    are keyword-only for the same reason.
     """
 
-    evaluation: TraceEvaluationClaim
-    roots: BoundRoots
-    chip_metadata: ChipMetadata
+    preprocessed: Array
+    main: Array
+
+    def in_round_order(self, has_preprocessed: bool) -> list[Array]:
+        """The roots the opening binds against, in SP1's round order."""
+        return [self.preprocessed, self.main] if has_preprocessed else [self.main]
 
 
-@dataclass(frozen=True)
-class JaggedOpeningWitness:
-    """What discharging a `JaggedOpeningClaim` takes: the trace itself, and
-    the prover data the PCS kept from committing it."""
+@dataclass(frozen=True, kw_only=True)
+class SmcsCommitments:
+    """Per-round SMCS commitments before structure binding — the wire's
+    ``original_commitments``.
 
-    trace: ShardWitness
-    commit_data: JaggedCommitData
+    Prover output the verifier cannot derive, so this is proof data, not claim
+    data. `preprocessed` is absent when the shard commits no preprocessed
+    region, which is why the arity varies where `BoundRoots` is fixed: SP1's
+    verifier always carries the vk's preprocessed commitment even when the
+    prover has no preprocessed region to commit.
+    """
+
+    preprocessed: Array | None = None
+    main: Array
+
+    def in_round_order(self) -> list[Array]:
+        return (
+            [self.preprocessed, self.main]
+            if self.preprocessed is not None
+            else [self.main]
+        )
 
 
 @dataclass(frozen=True)
@@ -444,6 +420,30 @@ class JaggedCommitData:
 
     digest_layers: tuple[list[Array], ...]
     commitments: SmcsCommitments
+
+
+@dataclass(frozen=True)
+class JaggedOpeningClaim:
+    """The trace committed under `roots` evaluates to
+    `evaluation.opened_values` at `evaluation.point`.
+
+    `TraceEvaluationClaim` asserts this of *the* trace; binding it to `roots`
+    is what ties the assertion to the one the prover actually committed to, so
+    discharging this claim leaves nothing to prove.
+    """
+
+    evaluation: TraceEvaluationClaim
+    roots: BoundRoots
+    chip_metadata: ChipMetadata
+
+
+@dataclass(frozen=True)
+class JaggedOpeningWitness:
+    """What discharging a `JaggedOpeningClaim` takes: the trace itself, and
+    the prover data the PCS kept from committing it."""
+
+    trace: ShardWitness
+    commit_data: JaggedCommitData
 
 
 @dataclass(frozen=True)
