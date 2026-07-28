@@ -17,7 +17,7 @@ builds.
 python3.11 -m venv .venv && . .venv/bin/activate
 pip install -r requirements.in \
     --extra-index-url https://fractalyze.github.io/pypi/simple/
-bazel test //...                 # hermetic, sandboxed; JAX_PLATFORMS=cpu default
+bazel test //...                 # hermetic, sandboxed; FRX_PLATFORMS=cpu default
 ```
 
 For iterative dev outside Bazel — source the venv, then put the sp1-zorch and a
@@ -44,7 +44,7 @@ main` is the reference for the matching `(zorch pin, frx)` pair.
 
 **GPU-plugin gotcha.** A `py_binary` GPU runnable must dep
 `requirement("frx_cuda12_plugin")` + `requirement("frx_cuda12_pjrt")` or frx
-**silently falls back to CPU**. Run with `JAX_PLATFORMS=cuda` so a missing plugin
+**silently falls back to CPU**. Run with `FRX_PLATFORMS=cuda` so a missing plugin
 errors instead of silently degrading (`gpu` is wrong: it also initializes rocm
 and dies). The Fractalyze XLA plugin loader takes no plugin-path env var; to
 measure a locally built plugin you overwrite the wheel's bundled
@@ -67,7 +67,7 @@ measure a locally built plugin you overwrite the wheel's bundled
 
 ## Testing
 
-Tests default to `JAX_PLATFORMS=cpu`. The SP1 FFI byte-match path needs a CUDA
+Tests default to `FRX_PLATFORMS=cpu`. The SP1 FFI byte-match path needs a CUDA
 GPU and is exercised through the `verify_*` `py_binary` tools, not the unit
 suite.
 
@@ -129,18 +129,44 @@ same computation.
 #### sp1-zorch side — `verify_prove_shard` (per-phase + golden)
 
 ```bash
-JAX_PLATFORMS=cuda \
+FRX_PLATFORMS=cuda,cpu \
   XLA_FLAGS="--xla_gpu_enable_command_buffer=FUSION,CUSTOM_CALL" \
   bazel run //sp1_zorch/shard_prover:verify_prove_shard -- \
     --shard_dir=/data/sp1_dumps/rsp_21740136_sp1/shard17 --ffi_verify --runs=5
 ```
 
+`FRX_PLATFORMS=cuda,cpu`, not `cuda` alone: the long Fiat-Shamir absorbs run on
+the host sponge, which needs a CPU backend registered. Without it the run dies
+in `frx.devices("cpu")` with `Unknown backend cpu`.
+
 Use `--runs=5`, not `--runs=2`: the **first** warm pass (pass 2) has not fully
-settled — LogUp-GKR's eager host-dispatch driver reads ~38 ms on pass 2 but
-converges to ~34 ms by passes 3–5, so reading pass 2 overstates it ~10–15%.
-Take a converged steady-state pass. Pin to an idle card on a shared box
+settled and overstates a phase by ~10–15%, so take a converged pass (3–5).
+Pin to an idle card on a shared box
 (`CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=<idx>`) — contending with
 another prove during CUDA init can hard-kill the run.
+
+**Host load is part of the measurement.** Warm LogUp-GKR inflates badly above
+load ~5 — the same build reads 17 ms on an idle box and 27 ms at load 50 — and
+one shard varies 134–151 ms across sessions at comparable load. Record the load
+beside any number you quote, and never compare two arms measured in separate
+sessions: interleave them in one run, alternating which arm goes first, or the
+load trend becomes your result.
+
+**Use the persistent compile cache while iterating.** It cuts the cold pass
+from ~175 s to ~28 s (measured, shard17) and does **not** move the warm pass, so
+it is safe for the numbers this tool exists to produce:
+
+```bash
+FRX_COMPILATION_CACHE_DIR=/data/<you>/frx-compile-cache \
+  FRX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS=0 \
+  FRX_RAISE_PERSISTENT_CACHE_ERRORS=true
+```
+
+Both extra flags matter. `min_compile_time` defaults to **1.0 s** and admits
+nothing here, so a cache dir on its own caches zero modules and silently
+changes nothing; and cache errors are swallowed as warnings by default, so a
+broken cache looks exactly like a working one. Check the dir is non-empty
+before trusting that it did anything.
 
 The `--xla_gpu_enable_command_buffer=...` flag captures each fused region (the
 whole-layer LogUp-GKR zone, the trace-commit tail) as a CUDA graph so the warm
@@ -151,6 +177,15 @@ double-allocates the pyramid intermediate on the warm pass and OOMs a wide shard
 `shard18 --runs≥2` dies with `RESOURCE_EXHAUSTED: allocate 3.77 GiB` on pass 2,
 while a fresh single-pass prove succeeds. It also gives no speedup, since the
 LogUp-GKR zone is already captured as one big graph.
+
+**A wide shard needs `XLA_PYTHON_CLIENT_ALLOCATOR=cuda_async`.** Under the
+default BFC allocator, shard0 (33 chips, `slot_cap` 77.3M) dies in the GKR phase
+with `RESOURCE_EXHAUSTED: allocate 11.62GiB` while peak usage is only 10.57 GiB
+on a 32 GiB card — fragmentation, not capacity. With `cuda_async` the same shard
+runs clean at 21.4 GiB peak and byte-matches. This is separate from throughput:
+on a narrow shard `cuda_async` measured slightly *slower*, which is why it was
+once written off — but on a wide shard it is the difference between proving and
+not.
 
 `--ffi_verify` byte-verifies the assembled bincode proof through SP1's
 `sp1_verify_shard` FFI; point `SP1_JAX_FFI_LIB` at `libsp1_gpu_jax_ffi.so`

@@ -56,6 +56,7 @@ from sp1_zorch.logup_gkr.circuit import (
 from sp1_zorch.logup_gkr.head import (
     EF_CHALLENGES,
     absorb_grind,
+    absorb_long_message,
     bind_circuit_output,
     sample_head_challenges,
 )
@@ -194,7 +195,6 @@ def open_traces_capped(
     main_flat: Array,
     prep_flat: Array | None,
     eval_point: Array,
-    transcript: Transcript,
     *,
     trace_dimension: int,
     cap_class: GkrCapClass,
@@ -203,9 +203,9 @@ def open_traces_capped(
     prep_names: tuple[str, ...],
     prep_widths: tuple[int, ...],
     prep_heights: tuple[int, ...],
-) -> tuple[Transcript, dict[str, ChipEvaluation]]:
-    """Open every shard chip's trace at the final GKR point and absorb via
-    ``ChipOpeningsRound``, on the class-shaped flat arrival — static slices
+) -> tuple[dict[str, ChipEvaluation], Array]:
+    """Open every shard chip's trace at the final GKR point and build its
+    absorb message, on the class-shaped flat arrival — static slices
     at the class bounds, so the compile keys on the chip set + class alone.
     SP1 opens ALL shard chips; prep opens at its keygen height.
     Byte-identical at any admitted class: the arrival's zero rows fold into
@@ -231,8 +231,24 @@ def open_traces_capped(
             prep_eval = _open_chip(p_view, rev_point, p_h)
         openings[name] = ChipEvaluation(main=main_eval, preprocessed=prep_eval)
 
-    _, transcript, _ = ChipOpeningsRound(openings, chip_names)(None, transcript)
-    return transcript, openings
+    # The absorb itself stays outside the zone: on an interaction-heavy shard
+    # this message is thousands of rate-blocks of serial sponge, which the
+    # caller relocates to the host. `flat_openings_absorb` is still the one
+    # definition of the message, shared with `ChipOpeningsRound` (the verifier
+    # dual's path), so the two Fiat-Shamir streams cannot drift.
+    flat = flat_openings_absorb(
+        select_openings(openings, chip_names), empty_prep_absorbs_zero=False
+    )
+    return openings, flat
+
+
+def absorb_chip_openings(
+    transcript: Transcript, opened: tuple[dict[str, ChipEvaluation], Array]
+) -> tuple[Transcript, dict[str, ChipEvaluation]]:
+    """Absorb what ``open_traces_capped`` opened, outside its zone -- a traced
+    region cannot reach the host sponge."""
+    openings, flat = opened
+    return absorb_long_message(transcript, flat), openings
 
 
 def extract_sp1_outputs(floor: JaggedGkrLayer) -> LogUpGkrOutput:
@@ -266,18 +282,16 @@ def extract_sp1_outputs(floor: JaggedGkrLayer) -> LogUpGkrOutput:
 
 @partial(frx.jit, static_argnames=("out_widths",))
 def _pyramid_zone(
-    first: JaggedGkrLayer, transcript: Transcript, *, out_widths: tuple[int, ...]
-) -> tuple[
-    list[JaggedGkrLayer],
-    tuple[Array, Array],
-    tuple[Array, Array, Array],
-    Transcript,
-]:
-    """Fold the pyramid, extract SP1's floor outputs, and bind them.
+    first: JaggedGkrLayer, *, out_widths: tuple[int, ...]
+) -> tuple[list[JaggedGkrLayer], tuple[Array, Array]]:
+    """Fold the pyramid and extract SP1's floor outputs.
 
     Unrolls rather than scans: the per-level widths differ. Do not extend the
     zone up into the first-layer build -- that is a fan-in, not a chain, and
     blows the wide-shard memory budget (``_head_zone``).
+
+    The bind stays outside: its absorbs may run on the host sponge, which a
+    traced region cannot do.
 
     Outputs ride as a bare pair; ``LogUpGkrOutput`` is not a registered pytree.
     """
@@ -290,8 +304,7 @@ def _pyramid_zone(
     )
     layers = build_jagged_pyramid(first, schedules)
     out = extract_sp1_outputs(layers[-1])
-    transcript, carry = bind_circuit_output(transcript, out)
-    return layers, (out.numerator, out.denominator), carry, transcript
+    return layers, (out.numerator, out.denominator)
 
 
 def resolve_witness_and_grind(
@@ -431,10 +444,11 @@ def _prove_from_first_layer(
     transition_widths = capped_pyramid_widths(
         slot_cap, num_segments, num_row_variables - 1
     )
-    layers, (out_num, out_den), carry, transcript = _pyramid_zone(
-        first, transcript, out_widths=tuple(transition_widths)
+    layers, (out_num, out_den) = _pyramid_zone(
+        first, out_widths=tuple(transition_widths)
     )
     output = LogUpGkrOutput(numerator=out_num, denominator=out_den)
+    transcript, carry = bind_circuit_output(transcript, output)
 
     layer_widths = [capacity, *transition_widths]
     layer_caps = [
@@ -547,18 +561,20 @@ def prove_logup_gkr(
         transcript,
         pow_witness,
         num_row_variables=num_row_variables,
-        open_fn=lambda eval_point, t: open_traces_capped(
-            main_flat,
-            prep_flat,
-            eval_point,
+        open_fn=lambda eval_point, t: absorb_chip_openings(
             t,
-            trace_dimension=num_row_variables + 1,
-            cap_class=cap_class,
-            chip_names=chip_names,
-            main_widths=main_widths,
-            prep_names=prep_names,
-            prep_widths=prep_widths,
-            prep_heights=prep_heights,
+            open_traces_capped(
+                main_flat,
+                prep_flat,
+                eval_point,
+                trace_dimension=num_row_variables + 1,
+                cap_class=cap_class,
+                chip_names=chip_names,
+                main_widths=main_widths,
+                prep_names=prep_names,
+                prep_widths=prep_widths,
+                prep_heights=prep_heights,
+            ),
         ),
     )
 

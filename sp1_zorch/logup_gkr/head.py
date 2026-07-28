@@ -19,8 +19,10 @@ site passed `None` for a carry it then discarded.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
+import frx
 import frx.numpy as fnp
 from frx import Array
 from zk_dtypes import efinfo
@@ -113,6 +115,36 @@ def sample_head_challenges(
     return transcript, HeadChallenges(alpha, beta_seeds, betas, pv_challenge)
 
 
+# Base-field elements above which the host sponge beats the device one. Below
+# it the crossing costs more than the serial permutations it saves.
+_HOST_ABSORB_MIN_ELEMENTS = 512
+
+# `observe` flattens to the base field first, so length is elements x width.
+_BASE_ITEMSIZE = efinfo(EF).base_field_dtype.itemsize
+
+
+def _base_length(messages: Sequence[Array]) -> int:
+    return sum(m.size * (m.dtype.itemsize // _BASE_ITEMSIZE) for m in messages)
+
+
+def absorb_long_message(transcript: Transcript, *messages: Array) -> Transcript:
+    """Absorb `messages` in order, on the host sponge when they are long enough.
+
+    Pass the whole sequence at once -- absorbing one at a time hands the sponge
+    state back to the device between each. Falls back to the device path under
+    a trace, which the verifier dual and the byte-match harness need.
+    """
+    host = _base_length(messages) >= _HOST_ABSORB_MIN_ELEMENTS and (
+        hasattr(transcript, "absorb_on_host")
+        and not any(isinstance(m, frx.core.Tracer) for m in messages)
+    )
+    if host:
+        return transcript.absorb_on_host(*messages)
+    for m in messages:
+        transcript = transcript.observe(m)
+    return transcript
+
+
 def bind_circuit_output(
     transcript: Transcript, output: LogUpGkrOutput
 ) -> tuple[Transcript, tuple[Array, Array, Array]]:
@@ -127,9 +159,24 @@ def bind_circuit_output(
     num = output.numerator
     den = output.denominator
     prefix_dtype = efinfo(num.dtype).base_field_dtype
-    transcript = transcript.observe(fnp.array(num.shape[0], prefix_dtype))
-    transcript = transcript.observe(num)
-    transcript = transcript.observe(fnp.array(den.shape[0], prefix_dtype))
-    transcript = transcript.observe(den)
+    transcript = absorb_long_message(
+        transcript,
+        fnp.array(num.shape[0], prefix_dtype),
+        num,
+        fnp.array(den.shape[0], prefix_dtype),
+        den,
+    )
+    return _bind_tail_zone(transcript, num, den)
+
+
+@frx.jit
+def _bind_tail_zone(
+    transcript: Transcript, num: Array, den: Array
+) -> tuple[Transcript, tuple[Array, Array, Array]]:
+    """z1 and the two output evaluations as one dispatch.
+
+    Kept a zone because the absorbs above may run eagerly; inlining it here
+    scatters the EF squeezes and both ``eval_mle`` folds into ~180 dispatches.
+    """
     transcript, z1 = _sample_ef_point(transcript, log2_strict_usize(num.shape[0]))
     return transcript, (eval_mle(num, z1), eval_mle(den, z1), z1)
