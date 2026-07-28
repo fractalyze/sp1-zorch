@@ -1,9 +1,13 @@
 # Copyright 2026 The sp1-zorch Authors. SPDX-License-Identifier: Apache-2.0
-"""SP1 shard-prover input types, mirroring sp1-hypercube's ``ShardData`` /
-``MainTraceData``
+"""The shard's claims, witnesses and wire types, mirroring sp1-hypercube's
+``ShardData`` / ``MainTraceData``
 (https://github.com/fractalyze/sp1/blob/e2c02f376/crates/hypercube/src/prover/shard.rs)
 and ``MachineVerifyingKey``
 (https://github.com/fractalyze/sp1/blob/e2c02f376/crates/hypercube/src/verifier/config.rs).
+
+Both roles of a reduction read these, so neither imports the other to do it;
+the zorch imports stay TYPE_CHECKING-only for the same reason `shard_prover`
+takes no zorch dep (#60).
 
 Field-element arrays carry raw Montgomery u32 (``koalabear_mont`` views) so
 downstream byte-match stages compare bytes directly.
@@ -34,8 +38,6 @@ if TYPE_CHECKING:
 # the prover and verifier side; PV-aware chips index fixed slots in the padded
 # layout (sp1-hypercube ``PROOF_MAX_NUM_PVS``).
 PROOF_MAX_NUM_PVS = 187
-
-# --- Vocabulary: the leaves every claim and proof is built from. ----------
 
 
 @dataclass(frozen=True)
@@ -254,9 +256,6 @@ class SmcsCommitments:
         )
 
 
-# --- The shard statement and the trace that satisfies it. -----------------
-
-
 @dataclass(frozen=True)
 class ShardClaim:
     """Some trace of this shape is a valid execution of the shard.
@@ -291,9 +290,6 @@ class ShardWitness:
 
     main_region: JaggedRegion
     prep_region: JaggedRegion | None = None
-
-
-# --- Reduction 1: LogUp-GKR — bus balance to column openings. -------------
 
 
 @dataclass(frozen=True)
@@ -331,9 +327,6 @@ class LogupGkrProof:
     round_proofs: list[JaggedLayerProof]
     eval_point: Array
     chip_openings: dict[str, ChipEvaluation]
-
-
-# --- Reduction 2: zerocheck — constraints to a trace evaluation. ----------
 
 
 @dataclass(frozen=True)
@@ -380,9 +373,6 @@ class ZerocheckProof:
     finals: list[Array]
     opened_values: dict[str, ChipEvaluation]
     msgs: RoundMsg
-
-
-# --- Reduction 3: jagged opening — trace evaluation to nothing. -----------
 
 
 @dataclass(frozen=True)
@@ -461,9 +451,6 @@ class JaggedPcsProof:
     eval: JaggedEvalMsg
     open: StackedOpenProof
     smcs_commitments: SmcsCommitments
-
-
-# --- The composite, naming each reduction's proof. ------------------------
 
 
 @dataclass(frozen=True)
