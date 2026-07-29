@@ -12,7 +12,7 @@ exists to prevent.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -72,10 +72,17 @@ class JitPermutation:
         self.width: int = inner.width
         self.dtype: Any = inner.dtype
         self.has_dedicated_fusion: bool = inner.has_dedicated_fusion
+        self.fused_region_name: str = inner.fused_region_name
+        self.fused_region_version: int = inner.fused_region_version
         self._permute = frx.jit(inner.permute)
 
     def permute(self, state: Array) -> Array:
         return self._permute(state)
+
+    def fused_region_spec(
+        self, leading: Array
+    ) -> tuple[tuple[Array, ...], Callable[..., Array], dict[str, Any]]:
+        return self._inner.fused_region_spec(leading)
 
     # Value identity from the wrapped permutation. JitPermutation rides as a
     # static meta_field in DuplexTranscript, so it keys the jit cache whenever a
