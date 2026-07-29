@@ -639,6 +639,46 @@ def capped_pyramid_widths(
     return widths
 
 
+# Right-size the fixed-width round buffer (xla#179) to a shared compile class.
+# The cap pins ONE round-buffer width so the FS-less round kernels compile once
+# per class. It must span the FULL shard range: every shard the driver hands
+# us, from a tiny shard 0 (or a CPU test fixture) up to an arbitrarily wide
+# one, gets a cap that tracks its own floor, never a fixed machine constant
+# that would over-allocate a small shard (a 4M floor OOMs a 32-row layout) or
+# cap out a big one.
+#
+# The class is the smallest multiple of the stacking height (2^21) that holds
+# the shard's even-padded round-0 layout. 2^21 is SP1's
+# CORE_LOG_STACKING_HEIGHT -- the granularity its jagged commit stacks the
+# trace at -- so the classes line up with SP1's own sizing (shard17 ~3M -> 4M,
+# shard18 ~16.9M -> 18M, both exact multiples) and over-allocation stays below
+# one stacking height (~2M), avoiding the 2^25 = 32M power of two that doubled
+# the EF plane buffers to ~2.1 GB and OOM'd the widest shard. Below one
+# stacking height, snapping up would grossly over-allocate a tiny shard, so
+# there the class is the next power of two instead (still a multiple of 4, as
+# the boundary handoff's two stride-2 halvings need row % 4 == 0).
+_LOG_STACKING_HEIGHT = 21
+_STACKING_HEIGHT = 1 << _LOG_STACKING_HEIGHT
+
+
+def row_cap(floor_padded: int) -> int:
+    """The shard's round-buffer class: the smallest multiple of the stacking
+    height (2^21) holding its even-padded round-0 layout, or -- below one
+    stacking height -- the next power of two. Shards in the same class share
+    the round-kernel compile; a bigger shard lands in a higher class and
+    proves at its own size, so there is no fixed ceiling to OOM against.
+
+    Every plane producer (first-layer assembly, pyramid transitions) emits at
+    this width directly, so the round zone's lay-in pad no-ops instead of
+    copying whole planes to grow them by the class slack."""
+    if floor_padded < _STACKING_HEIGHT:
+        cap = 4
+        while cap < floor_padded:
+            cap <<= 1
+        return cap
+    return -(-floor_padded // _STACKING_HEIGHT) * _STACKING_HEIGHT
+
+
 def _arrival_offsets(widths: Sequence[int], heights: Sequence[int]) -> tuple[int, ...]:
     """Chip offsets into a flat chip-major column-major arrival:
     ``cumsum(width * height)``. ``pack_gkr_arrival`` and the class-shaped
@@ -749,12 +789,19 @@ def generate_first_layer_capped(
     prep_names: tuple[str, ...],
     prep_widths: tuple[int, ...],
     prep_heights: tuple[int, ...],
+    out_width: int | None = None,
 ) -> JaggedGkrLayer:
     """The first layer at the shard's tight traced layout: one class-bound
     block per chip (``_chip_first_layer``), compacted and assembled by
     ``_assemble_first_layer`` — the class-layout planes exist only as XLA
     temporaries inside it. Compiles once per (chip set, class); live prefix
-    byte-identical to ``generate_first_layer``'s exact build."""
+    byte-identical to ``generate_first_layer``'s exact build.
+
+    ``out_width`` (>= the tight capacity) sizes the plane buffers; the slots
+    past the live prefix land zero. The prover passes its round-buffer class
+    width so the round zone's lay-in pad no-ops instead of copying whole
+    planes; the default keeps the exact tight layout ``generate_first_layer``
+    promises."""
     name_to_idx = {name: i for i, name in enumerate(chip_names)}
     prep_name_to_idx = {name: i for i, name in enumerate(prep_names)}
     main_offsets = _arrival_offsets(main_widths, cap_class.chip_heights)
@@ -788,12 +835,18 @@ def generate_first_layer_capped(
             )
         )
 
+    if out_width is None:
+        out_width = capacity
+    elif out_width < capacity:
+        raise ValueError(
+            f"out_width {out_width} cannot hold the class capacity {capacity}"
+        )
     (n0, n1, d0, d1), tight_counts = _assemble_first_layer(
         tuple(blocks),
         heights,
         class_counts=cap_class.slot_counts(gkr_chips, chip_names),
         seg_chip_idx=seg_chip_idx,
-        out_width=capacity,
+        out_width=out_width,
     )
     return JaggedGkrLayer(
         numerator_0=n0,
