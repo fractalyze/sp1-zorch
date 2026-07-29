@@ -406,10 +406,7 @@ def _prove_from_first_layer(
         )
 
     capacity = slot_cap + slot_cap % 2
-    # Transitions emit at the round-buffer class widths directly: the zone
-    # lays planes into row_cap-wide buffers, so class-width producer outputs
-    # turn its lay-in pad into a no-op instead of a whole-plane copy per
-    # layer (the copies measured ~13.5 ms/pass on rsp shard0).
+    # Class widths, so the zone's lay-in pad no-ops instead of copying planes.
     transition_widths = [
         _row_cap(w)
         for w in capped_pyramid_widths(slot_cap, num_segments, num_row_variables - 1)
@@ -524,9 +521,7 @@ def prove_logup_gkr(
         prep_names=prep_names,
         prep_widths=prep_widths,
         prep_heights=prep_heights,
-        # Round-buffer class width: the round zone lays planes into
-        # row_cap-wide buffers, so emitting that width here turns its lay-in
-        # pad into a no-op instead of a whole-plane copy per plane.
+        # Class width, so the zone's lay-in pad no-ops instead of copying.
         out_width=_row_cap(slot_cap + slot_cap % 2),
     )
     return _prove_from_first_layer(

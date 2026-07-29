@@ -666,11 +666,7 @@ def row_cap(floor_padded: int) -> int:
     height (2^21) holding its even-padded round-0 layout, or -- below one
     stacking height -- the next power of two. Shards in the same class share
     the round-kernel compile; a bigger shard lands in a higher class and
-    proves at its own size, so there is no fixed ceiling to OOM against.
-
-    Every plane producer (first-layer assembly, pyramid transitions) emits at
-    this width directly, so the round zone's lay-in pad no-ops instead of
-    copying whole planes to grow them by the class slack."""
+    proves at its own size, so there is no fixed ceiling to OOM against."""
     if floor_padded < _STACKING_HEIGHT:
         cap = 4
         while cap < floor_padded:
@@ -797,11 +793,8 @@ def generate_first_layer_capped(
     temporaries inside it. Compiles once per (chip set, class); live prefix
     byte-identical to ``generate_first_layer``'s exact build.
 
-    ``out_width`` (>= the tight capacity) sizes the plane buffers; the slots
-    past the live prefix land zero. The prover passes its round-buffer class
-    width so the round zone's lay-in pad no-ops instead of copying whole
-    planes; the default keeps the exact tight layout ``generate_first_layer``
-    promises."""
+    ``out_width`` (>= the tight capacity) sizes the plane buffers; slots past
+    the live prefix land zero. Default keeps the exact tight layout."""
     name_to_idx = {name: i for i, name in enumerate(chip_names)}
     prep_name_to_idx = {name: i for i, name in enumerate(prep_names)}
     main_offsets = _arrival_offsets(main_widths, cap_class.chip_heights)
