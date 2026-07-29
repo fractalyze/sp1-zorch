@@ -639,6 +639,27 @@ def capped_pyramid_widths(
     return widths
 
 
+# SP1's CORE_LOG_STACKING_HEIGHT: the granularity its jagged commit stacks
+# the trace at, so round-buffer classes line up with SP1's own sizing.
+_LOG_STACKING_HEIGHT = 21
+_STACKING_HEIGHT = 1 << _LOG_STACKING_HEIGHT
+
+
+def row_cap(floor_padded: int) -> int:
+    """The shard's round-buffer class (xla#179): the smallest multiple of the
+    stacking height holding its even-padded round-0 layout — a power-of-two
+    class would over-allocate up to 2x and OOM'd the widest shard. Below one
+    stacking height, the next power of two instead (still % 4 == 0 for the
+    boundary handoff's two stride-2 halvings). Shards in a class share the
+    round-kernel compile; there is no fixed ceiling to OOM against."""
+    if floor_padded < _STACKING_HEIGHT:
+        cap = 4
+        while cap < floor_padded:
+            cap <<= 1
+        return cap
+    return -(-floor_padded // _STACKING_HEIGHT) * _STACKING_HEIGHT
+
+
 def _arrival_offsets(widths: Sequence[int], heights: Sequence[int]) -> tuple[int, ...]:
     """Chip offsets into a flat chip-major column-major arrival:
     ``cumsum(width * height)``. ``pack_gkr_arrival`` and the class-shaped
@@ -749,12 +770,16 @@ def generate_first_layer_capped(
     prep_names: tuple[str, ...],
     prep_widths: tuple[int, ...],
     prep_heights: tuple[int, ...],
+    out_width: int | None = None,
 ) -> JaggedGkrLayer:
     """The first layer at the shard's tight traced layout: one class-bound
     block per chip (``_chip_first_layer``), compacted and assembled by
     ``_assemble_first_layer`` — the class-layout planes exist only as XLA
     temporaries inside it. Compiles once per (chip set, class); live prefix
-    byte-identical to ``generate_first_layer``'s exact build."""
+    byte-identical to ``generate_first_layer``'s exact build.
+
+    ``out_width`` (>= the tight capacity) sizes the plane buffers; slots past
+    the live prefix land zero. Default keeps the exact tight layout."""
     name_to_idx = {name: i for i, name in enumerate(chip_names)}
     prep_name_to_idx = {name: i for i, name in enumerate(prep_names)}
     main_offsets = _arrival_offsets(main_widths, cap_class.chip_heights)
@@ -788,12 +813,18 @@ def generate_first_layer_capped(
             )
         )
 
+    if out_width is None:
+        out_width = capacity
+    elif out_width < capacity:
+        raise ValueError(
+            f"out_width {out_width} cannot hold the class capacity {capacity}"
+        )
     (n0, n1, d0, d1), tight_counts = _assemble_first_layer(
         tuple(blocks),
         heights,
         class_counts=cap_class.slot_counts(gkr_chips, chip_names),
         seg_chip_idx=seg_chip_idx,
-        out_width=capacity,
+        out_width=out_width,
     )
     return JaggedGkrLayer(
         numerator_0=n0,

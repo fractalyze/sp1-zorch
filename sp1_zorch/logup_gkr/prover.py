@@ -50,6 +50,7 @@ from sp1_zorch.logup_gkr.circuit import (
     generate_first_layer_capped,
     pack_gkr_arrival,
     region_statics,
+    row_cap as _row_cap,
     sp1_next_row_counts,
     sp1_schedule_counts,
 )
@@ -357,42 +358,6 @@ def resolve_witness_and_grind(
     return transcript, pow_witness
 
 
-# Right-size the fixed-width round buffer (xla#179) to a shared compile class.
-# The cap pins ONE round-buffer width so the FS-less round kernels compile once
-# per class -- the per-layer lay-in pads each layer to it. It must span the FULL
-# shard range: every shard the driver hands us, from a tiny shard 0 (or a CPU
-# test fixture) up to an arbitrarily wide one, gets a cap that tracks its own
-# floor, never a fixed machine constant that would over-allocate a small shard
-# (a 4M floor OOMs a 32-row layout) or cap out a big one.
-#
-# The class is the smallest multiple of the stacking height (2^21) that holds the
-# shard's even-padded round-0 layout. 2^21 is SP1's CORE_LOG_STACKING_HEIGHT --
-# the granularity its jagged commit stacks the trace at -- so the classes line up
-# with SP1's own sizing (shard17 ~3M -> 4M, shard18 ~16.9M -> 18M, both exact
-# multiples) and over-allocation stays below one stacking height (~2M), avoiding
-# the 2^25 = 32M power of two that doubled the EF plane buffers to ~2.1 GB and
-# OOM'd the widest shard. Below one stacking height, snapping up would grossly
-# over-allocate a tiny shard, so there the class is the next power of two instead
-# (still a multiple of 4, as the boundary handoff's two stride-2 halvings need
-# row % 4 == 0).
-_LOG_STACKING_HEIGHT = 21
-_STACKING_HEIGHT = 1 << _LOG_STACKING_HEIGHT
-
-
-def _row_cap(floor_padded: int) -> int:
-    """The shard's round-buffer class: the smallest multiple of the stacking
-    height (2^21) holding its even-padded round-0 layout, or -- below one
-    stacking height -- the next power of two. Shards in the same class share the
-    round-kernel compile; a bigger shard lands in a higher class and proves at
-    its own size, so there is no fixed ceiling to OOM against."""
-    if floor_padded < _STACKING_HEIGHT:
-        cap = 4
-        while cap < floor_padded:
-            cap <<= 1
-        return cap
-    return -(-floor_padded // _STACKING_HEIGHT) * _STACKING_HEIGHT
-
-
 def _prove_from_first_layer(
     first: JaggedGkrLayer,
     class_counts: tuple[int, ...],
@@ -441,9 +406,11 @@ def _prove_from_first_layer(
         )
 
     capacity = slot_cap + slot_cap % 2
-    transition_widths = capped_pyramid_widths(
-        slot_cap, num_segments, num_row_variables - 1
-    )
+    # Class widths, so the zone's lay-in pad no-ops instead of copying planes.
+    transition_widths = [
+        _row_cap(w)
+        for w in capped_pyramid_widths(slot_cap, num_segments, num_row_variables - 1)
+    ]
     layers, (out_num, out_den) = _pyramid_zone(
         first, out_widths=tuple(transition_widths)
     )
@@ -540,6 +507,7 @@ def prove_logup_gkr(
     )
 
     transcript, alpha, betas = _head_zone(transcript, num_betas=num_betas)
+    slot_cap = cap_class.resolved_slot_cap(gkr_chips, chip_names)
     first = generate_first_layer_capped(
         tuple(gkr_chips),
         main_flat,
@@ -553,6 +521,8 @@ def prove_logup_gkr(
         prep_names=prep_names,
         prep_widths=prep_widths,
         prep_heights=prep_heights,
+        # Class width, so the zone's lay-in pad no-ops instead of copying.
+        out_width=_row_cap(slot_cap + slot_cap % 2),
     )
     return _prove_from_first_layer(
         first,
