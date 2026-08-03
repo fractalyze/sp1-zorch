@@ -20,10 +20,8 @@ Stage / dump vocabulary: ``docs/architecture.md``.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from functools import partial
 from typing import TYPE_CHECKING, Any
 
-import frx
 import frx.numpy as fnp
 from frx import Array
 from rw_constraints import Chip
@@ -33,6 +31,7 @@ from zorch.round import ProverRound
 from zorch.stage import ProveResult, ProverStage
 from zorch.transcript import Transcript, sample_challenge
 
+from sp1_zorch.aot_zone import aot_zone
 from sp1_zorch.logup_gkr.prover import (
     flat_openings_absorb,
     select_openings,
@@ -489,9 +488,11 @@ class ZerocheckProver(
         self._max_log_row_count = max_log_row_count
         self._total_cap_class = total_cap_class
 
+    # An :class:`AotZone` rather than a plain jit: a prover that has to shed
+    # this zone's executable to fit the next class would otherwise re-trace
+    # and re-lower it on the way back, which is the bulk of the reload.
     @staticmethod
-    @partial(
-        frx.jit,
+    @aot_zone(
         static_argnames=(
             "chips",
             "max_log_row_count",
