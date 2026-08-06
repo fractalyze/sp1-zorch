@@ -11,11 +11,8 @@ host — every reshape/ravel/row-index/EF->BF reinterpret is a numpy op over a
 chunk list — and the one field-semantic step, the Mont->canonical convert
 (plus the wire's derived final-poly evals, which need field arithmetic),
 runs as a single jitted zone over one concatenated flat
-(:func:`_canonical_zone`). Eagerly per-array, the old fnp/lax forms compiled
-a shape-keyed tiny program per call — hundreds per proof, a top slice of the
-bring-up jit swarm; the chunk design leaves exactly one program per proof
-shape. Byte-identity with the eager form is pinned by the goldens in
-``serialize_test``.
+(:func:`_canonical_zone`) — exactly one compiled program per proof shape.
+The wire bytes are pinned by the goldens in ``serialize_test``.
 """
 
 from __future__ import annotations

@@ -142,16 +142,14 @@ def flat_openings_absorb(
     one builder is what stops them drifting apart.
 
     Eagerly the message assembles in host numpy — the openings are tiny and
-    already materialized, and the eager fnp form compiled ~5 tiny programs
-    per chip (prefix build, EF->BF bitcast, reshape) per shape, a real slice
-    of the bring-up jit swarm. The numpy ``.view`` is the same
-    reinterpretation as ``lax.bitcast_convert_type`` (both read the EF
-    element's base limbs in memory order), so the byte stream is unchanged
-    — pinned by the absorb goldens in ``prover_test`` / the zerocheck
-    ``prover_test``. One ``device_put`` at the end keeps the return an
-    ``Array``, exactly what the eager fnp build produced. Under a trace
-    (the verifier dual sits inside one ``@jit``) the fnp form still runs,
-    where it fuses into the enclosing program instead of swarming.
+    already materialized, and byte framing carries no field semantics. The
+    numpy ``.view`` is the same reinterpretation as
+    ``lax.bitcast_convert_type`` (both read the EF element's base limbs in
+    memory order); the byte stream is pinned by the absorb goldens in
+    ``prover_test`` / the zerocheck ``prover_test``. One ``device_put`` at
+    the end keeps the return an ``Array``. Under a trace (the verifier dual
+    sits inside one ``@jit``) the fnp branch runs instead — numpy cannot
+    consume tracers, and traced ops fuse into the enclosing program.
     """
     bf_dtype = efinfo(evaluations[0].main.dtype).base_field_dtype
     traced = any(
