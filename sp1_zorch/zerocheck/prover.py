@@ -97,6 +97,15 @@ def chip_traces(
     return traces
 
 
+# Value-keyed memo so a chip's 2-ary eval_fn has a STABLE identity across
+# prove calls: the identity is the jit-zone static key of the round body's
+# cached `constraint_eval` trace (`jagged._round_constraint_eval_cached`) and
+# the probe memo key below — a fresh closure per prove call would bust both
+# caches process-wide. Chips live for the process (the loader registry), so
+# identity-keying is sound; strong refs match that lifetime.
+_EVAL_FN_MEMO: dict[tuple[Chip, int, int], Callable[[Array, Array], Array]] = {}
+
+
 def export_order_eval_fn(
     chip: Chip, main_width: int, num_cols: int
 ) -> Callable[[Array, Array], Array]:
@@ -112,8 +121,14 @@ def export_order_eval_fn(
     (``num_cols == main_width``) needs no rotation; the closure carries only
     static widths, so it is legal under the jitted stage bodies.
     """
+    key = (chip, main_width, num_cols)
+    hit = _EVAL_FN_MEMO.get(key)
+    if hit is not None:
+        return hit
+
     fn = chip.eval_constraints
     if num_cols == main_width:
+        _EVAL_FN_MEMO[key] = fn
         return fn
 
     def eval_fn(rows: Array, public_values: Array) -> Array:
@@ -122,6 +137,7 @@ def export_order_eval_fn(
         )
         return fn(export_rows, public_values)
 
+    _EVAL_FN_MEMO[key] = eval_fn
     return eval_fn
 
 
@@ -131,6 +147,14 @@ def bind_pv(chip: Chip, public_values: Array) -> Callable[[Array], Array]:
     verifier dual — the one definition of how a chip's constraint circuit
     sees the statement."""
     return lambda trace: chip.eval_constraints(trace, public_values)
+
+
+# Host-side memo: the count depends only on the circuit and the probe SHAPES,
+# never the statement's values, and the un-memoized probe re-traced the whole
+# constraint circuit into the ENCLOSING jit trace (dead equations — only
+# .shape[-1] is read) on every stage trace. Keyed on the eval_fn identity
+# (stable via _EVAL_FN_MEMO / bound-method equality) + the probe avals.
+_PROBE_MEMO: dict[tuple[Any, int, Any, tuple[int, ...], Any], int] = {}
 
 
 def probe_num_constraints(
@@ -143,8 +167,28 @@ def probe_num_constraints(
     functions may emit several columns each, so the count is not readable
     off the manifest. One definition: it sizes the constraint-RLC fold on
     both the prover and the verifier dual. ``eval_fn`` is the chip's 2-ary
-    ``eval_constraints``; the statement is threaded, not closed over."""
-    return eval_fn(fnp.zeros((1, width), dtype=ef), public_values).shape[-1]
+    ``eval_constraints``; the statement is threaded, not closed over.
+
+    The probe runs under ``frx.eval_shape`` on abstract inputs (memoized on
+    the eval_fn + probe avals), so the circuit never enters an enclosing
+    trace — the count is shape metadata, not a computation."""
+    key = (
+        eval_fn,
+        width,
+        ef,
+        tuple(public_values.shape),
+        public_values.dtype,
+    )
+    hit = _PROBE_MEMO.get(key)
+    if hit is None:
+        out = frx.eval_shape(
+            eval_fn,
+            frx.ShapeDtypeStruct((1, width), ef),
+            frx.ShapeDtypeStruct(tuple(public_values.shape), public_values.dtype),
+        )
+        hit = int(out.shape[-1])
+        _PROBE_MEMO[key] = hit
+    return hit
 
 
 def sample_stage_challenges(

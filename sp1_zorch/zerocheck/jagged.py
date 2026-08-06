@@ -195,6 +195,53 @@ def _column_term(
 _TermFn = Callable[[Array, Array, Array, Array], Array]
 
 
+# Module-level jit zone so a chip's round-body `constraint_eval` traces once
+# per (eval_fn, window/num_cols statics, operand avals) process-wide:
+# `lax.composite` re-traces its decomposition on every emission (see
+# zorch._composite's module docstring), and the 3 sumcheck t-points per chip
+# per round body are aval-identical — only the alpha VALUE (round-0 masking)
+# and the fold coefficient VALUE differ, neither of which enters the trace
+# cache key. The poseidon2 `_permute_body` zone is the sanctioned precedent
+# (zorch#216/#214): statics compared by value/identity, `inline=True` splices
+# the cached jaxpr into the enclosing trace, so the emitted module — one
+# `zorch.constraint_eval` composite marker per t-point, each carrying its own
+# per-column `dynamic_slice` decomposition body — is unchanged.
+@partial(
+    frx.jit,
+    static_argnames=("eval_fn", "window_rows", "num_cols"),
+    inline=True,
+)
+def _round_constraint_eval_cached(
+    eval_fn: Callable[[Array, Array], Array] | None,
+    rows: Array,
+    alpha: Array,
+    live_width: Array,
+    start_offset: Array,
+    col_stride: Array,
+    delta: Array,
+    fold_coeff: Array,
+    column_weights: Array,
+    aux_operands: tuple[Array, ...],
+    *,
+    window_rows: int,
+    num_cols: int,
+) -> Array:
+    return constraint_eval(
+        eval_fn,
+        rows,
+        alpha,
+        live_width=live_width,
+        start_offset=start_offset,
+        window_rows=window_rows,
+        col_stride=col_stride,
+        num_cols=num_cols,
+        delta=delta,
+        fold_coeff=fold_coeff,
+        column_weights=column_weights,
+        aux_operands=aux_operands,
+    )
+
+
 @dataclass(frozen=True)
 class JaggedZerocheckSummand:
     """SP1's jagged zerocheck summand — the protocol, separated from the
@@ -914,21 +961,26 @@ def _prove_total_cap(
                 # A lookup-only chip (no transition constraints) takes the
                 # constraint-free form — empty alpha, eval_fn None — whose per-row
                 # value is just the masked GKR column term; one call serves both
-                # chip kinds.
+                # chip kinds. Routed through the module-level jit zone
+                # (`_round_constraint_eval_cached`): the 3 t-points are
+                # aval-identical (alpha masking and the fold coefficient differ
+                # only in VALUE), so the constraint circuit traces once per
+                # (chip, round-body shape) and the cached jaxpr splices 3x —
+                # still one composite marker per t-point in the emitted module.
                 vals = tuple(
-                    constraint_eval(
+                    _round_constraint_eval_cached(
                         summand.eval_fns[i] if constrained else None,
                         p0h,
                         a0 if k == 0 else alpha,
-                        live_width=live_pair,
-                        start_offset=off_i,
+                        live_pair,
+                        off_i,
+                        stride_i,
+                        diffh,
+                        t_coeffs[k],
+                        chip_gkr[i],
+                        (summand.public_values,) if constrained else (),
                         window_rows=w_in,
-                        col_stride=stride_i,
                         num_cols=cols_arr[i],
-                        delta=diffh,
-                        fold_coeff=t_coeffs[k],
-                        column_weights=chip_gkr[i],
-                        aux_operands=((summand.public_values,) if constrained else ()),
                     )
                     for k in range(3)
                 )
