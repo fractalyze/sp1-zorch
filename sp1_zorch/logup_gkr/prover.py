@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any
 
 import frx
 import frx.numpy as fnp
+import numpy as np
 from frx import Array, lax
 from rw_constraints import Chip
 from zk_dtypes import efinfo
@@ -139,20 +140,53 @@ def flat_openings_absorb(
     opened values) and nothing at all otherwise (SP1's GKR chip-openings
     framing). The two wire schedules share everything else; keeping them in
     one builder is what stops them drifting apart.
+
+    Eagerly the message assembles in host numpy — the openings are tiny and
+    already materialized, and the eager fnp form compiled ~5 tiny programs
+    per chip (prefix build, EF->BF bitcast, reshape) per shape, a real slice
+    of the bring-up jit swarm. The numpy ``.view`` is the same
+    reinterpretation as ``lax.bitcast_convert_type`` (both read the EF
+    element's base limbs in memory order), so the byte stream is unchanged
+    — pinned by the absorb goldens in ``prover_test`` / the zerocheck
+    ``prover_test``. One ``device_put`` at the end keeps the return an
+    ``Array``, exactly what the eager fnp build produced. Under a trace
+    (the verifier dual sits inside one ``@jit``) the fnp form still runs,
+    where it fuses into the enclosing program instead of swarming.
     """
     bf_dtype = efinfo(evaluations[0].main.dtype).base_field_dtype
-    flat_parts: list[Array] = [fnp.array([len(evaluations)], bf_dtype)]
+    traced = any(
+        isinstance(a, frx.core.Tracer)
+        for ev in evaluations
+        for a in (ev.preprocessed, ev.main)
+        if a is not None
+    )
+    if traced:
+        flat_parts: list[Array] = [fnp.array([len(evaluations)], bf_dtype)]
+        for ev in evaluations:
+            if ev.preprocessed is not None:
+                flat_parts.append(fnp.array([ev.preprocessed.shape[0]], bf_dtype))
+                flat_parts.append(
+                    lax.bitcast_convert_type(ev.preprocessed, bf_dtype).reshape(-1)
+                )
+            elif empty_prep_absorbs_zero:
+                flat_parts.append(fnp.array([0], bf_dtype))
+            flat_parts.append(fnp.array([ev.main.shape[0]], bf_dtype))
+            flat_parts.append(lax.bitcast_convert_type(ev.main, bf_dtype).reshape(-1))
+        return fnp.concatenate(flat_parts)
+
+    def limbs(arr: Array) -> np.ndarray:
+        return np.ascontiguousarray(np.asarray(arr)).view(bf_dtype).reshape(-1)
+
+    host_parts: list[np.ndarray] = [np.array([len(evaluations)], bf_dtype)]
     for ev in evaluations:
         if ev.preprocessed is not None:
-            flat_parts.append(fnp.array([ev.preprocessed.shape[0]], bf_dtype))
-            flat_parts.append(
-                lax.bitcast_convert_type(ev.preprocessed, bf_dtype).reshape(-1)
-            )
+            host_parts.append(np.array([ev.preprocessed.shape[0]], bf_dtype))
+            host_parts.append(limbs(ev.preprocessed))
         elif empty_prep_absorbs_zero:
-            flat_parts.append(fnp.array([0], bf_dtype))
-        flat_parts.append(fnp.array([ev.main.shape[0]], bf_dtype))
-        flat_parts.append(lax.bitcast_convert_type(ev.main, bf_dtype).reshape(-1))
-    return fnp.concatenate(flat_parts)
+            host_parts.append(np.array([0], bf_dtype))
+        host_parts.append(np.array([ev.main.shape[0]], bf_dtype))
+        host_parts.append(limbs(ev.main))
+    return frx.device_put(np.concatenate(host_parts))
 
 
 class ChipOpeningsRound:

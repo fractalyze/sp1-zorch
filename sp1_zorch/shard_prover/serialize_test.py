@@ -7,6 +7,7 @@ KoalaBear serializes as canonical u32, never Montgomery raw; extension
 fields flatten to their base-field limbs.
 """
 
+import hashlib
 import struct
 from typing import Any
 
@@ -615,6 +616,38 @@ class EncodeShardProofTest(absltest.TestCase):
                 max_log_row_count=3,
             ),
             expected,
+        )
+
+    def test_full_proof_bytes_sha_golden(self) -> None:
+        """Absolute regression golden: sha256 of the full assembled proof,
+        captured before the encoders moved their structural ops to host
+        numpy (one canonical-zone dispatch per proof). The structural test
+        above composes its expectation from the same encoders, so it cannot
+        catch a change that shifts every encoder identically; this hash is
+        implementation-independent."""
+        proof_bytes = encode_shard_proof(
+            ShardClaim(None, fnp.arange(1, 6, dtype=F), ChipMetadata((), ())),  # type: ignore[arg-type]
+            ShardWitness(*_regions()),
+            ShardProof(
+                fnp.arange(50, 58, dtype=F),
+                _gkr_proof(),
+                _zerocheck_proof(),
+                JaggedPcsProof(
+                    eval=_eval_msg(),
+                    open=_open_proof(num_rounds=2),
+                    smcs_commitments=SmcsCommitments(
+                        main=_COMMITMENTS[1], preprocessed=_COMMITMENTS[0]
+                    ),
+                ),
+            ),
+            _evaluation(),
+            (_digest_layers(100), _digest_layers(400)),
+            max_log_row_count=3,
+        )
+        self.assertEqual(len(proof_bytes), 1859)
+        self.assertEqual(
+            hashlib.sha256(proof_bytes).hexdigest(),
+            "18cefdb234fda927e9220995b560e332717b58263315dcafcc1b675b037f5aff",
         )
 
 

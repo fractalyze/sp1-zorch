@@ -279,6 +279,36 @@ class OpenedValuesRoundGuardTest(absltest.TestCase):
             OpenedValuesRound(opened, ("alpha",))(None, cheap_transcript(F))
 
 
+class OpenedValuesRoundGoldenTest(absltest.TestCase):
+    """Absolute Fiat-Shamir golden for the empty-Vec framing
+    (``empty_prep_absorbs_zero=True``), captured before
+    ``flat_openings_absorb`` moved its eager path to host numpy. A chip with
+    no preprocessed trace absorbs a bare zero length here — the one knob on
+    the shared builder — so this pins the zerocheck wire schedule's byte
+    stream against the GKR framing's golden in ``logup_gkr.prover_test``."""
+
+    def test_absorb_challenge_golden(self) -> None:
+        prep = fnp.arange(3, dtype=fnp.uint32).view(F).astype(EF)
+        opened = {
+            "A": ChipEvaluation(
+                main=fnp.arange(10, 12, dtype=fnp.uint32).view(F).astype(EF),
+                preprocessed=prep,
+            ),
+            "B": ChipEvaluation(
+                main=fnp.arange(20, 24, dtype=fnp.uint32).view(F).astype(EF),
+                preprocessed=None,
+            ),
+        }
+        _, transcript, _ = OpenedValuesRound(opened, ("A", "B"))(
+            None, cheap_transcript(F)
+        )
+        _, challenge = transcript.sample(8)
+        self.assertEqual(
+            np.asarray(challenge).view(np.uint32).tobytes().hex(),
+            "e66dd04ee66dd04e29fedf1658a3243f" "e6060231e6060231566f011579a0725e",
+        )
+
+
 class SplitOpenedValuesTest(absltest.TestCase):
     """Pins the finals split directly: position 0 of each ``[main | prep]``
     column stack is the column's evaluation at the sumcheck point, sliced
