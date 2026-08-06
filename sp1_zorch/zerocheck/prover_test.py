@@ -37,6 +37,8 @@ from sp1_zorch.zerocheck.jagged import (
 )
 from sp1_zorch.zerocheck.prover import (
     OpenedValuesRound,
+    export_order_eval_fn,
+    probe_num_constraints,
     prove_shard_zerocheck,
     split_opened_values,
 )
@@ -262,6 +264,50 @@ class ProveZerocheckTest(absltest.TestCase):
         _assert_bytes_equal(opened["alpha"].preprocessed, self.want_finals[0][3:5, 0])
         _assert_bytes_equal(opened["lookup"].main, self.want_finals[1][:1, 0])
         self.assertIsNone(opened["lookup"].preprocessed)
+
+
+class EvalFnIdentityAndProbeMemoTest(absltest.TestCase):
+    """The stage-side identity contract behind the jagged round-body trace
+    cache: `export_order_eval_fn` returns the SAME callable for the same
+    (chip, widths) — a fresh closure per prove would bust the zone and the
+    probe memo process-wide — and `probe_num_constraints` keys on that
+    identity (never shapes alone) while probing under abstract avals, so the
+    constraint circuit never lands in an enclosing trace."""
+
+    def test_export_order_eval_fn_identity_is_stable(self) -> None:
+        chip: Any = _WitnessChip()
+        rotated = export_order_eval_fn(chip, 3, 5)
+        self.assertIs(rotated, export_order_eval_fn(chip, 3, 5))
+        # The main-only path memoizes too: `chip.eval_constraints` is a fresh
+        # bound-method object per attribute access, so without the memo even
+        # the rotation-free branch would hand out a new identity per prove.
+        lookup: Any = _LookupChip()
+        self.assertIs(
+            export_order_eval_fn(lookup, 1, 1), export_order_eval_fn(lookup, 1, 1)
+        )
+        # A different width split is a different rotation — never shared.
+        self.assertIsNot(rotated, export_order_eval_fn(chip, 4, 5))
+
+    def test_probe_memo_keys_on_fn_identity_not_avals(self) -> None:
+        probes: list[int] = []
+
+        def two_constraints(rows: Array, public_values: Array) -> Array:
+            probes.append(2)
+            return rows[:, :2]
+
+        def three_constraints(rows: Array, public_values: Array) -> Array:
+            probes.append(3)
+            return rows[:, :3]
+
+        pv = fnp.zeros((8,), F)
+        self.assertEqual(probe_num_constraints(two_constraints, 5, EF, pv), 2)
+        # Memo hit: same fn identity + same probe avals never re-probes.
+        self.assertEqual(probe_num_constraints(two_constraints, 5, EF, pv), 2)
+        self.assertEqual(probes.count(2), 1)
+        # Adversarial keying: identical probe avals, different circuit — a
+        # shape-only key would serve the first circuit's count (2, sizing the
+        # constraint-RLC fold one short).
+        self.assertEqual(probe_num_constraints(three_constraints, 5, EF, pv), 3)
 
 
 class OpenedValuesRoundGuardTest(absltest.TestCase):

@@ -19,6 +19,7 @@ driver and reference, seeding the claims from the columns' MLE openings at
 
 from __future__ import annotations
 
+import collections
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -426,15 +427,15 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
 
     def _tail_dot_count(self, num_vars: int, num_reals: Sequence[int]) -> int:
         """``dot_general`` op count in the lowered prove. The GKR column term
-        rides ``constraint_eval``'s ``column_weights``, so the per-chip dots
-        are the column dot inside each t-point's composite decomposition
-        (each composite call emits its own decomposition func — three per
-        constrained chip, shape-divergent by design) plus, since the
-        ``variant=sp1-zerocheck`` round marker (sp1-zorch#242), the per-chip
-        Gruen interpolation dot inside each live chip's own
-        `zerocheck_round_poly` decomposition (one more per constrained
-        chip) — the cross-chip λ-RLC (`combine_chips`) stays a single batched
-        dot regardless of chip count."""
+        rides ``constraint_eval``'s ``column_weights``, so the column dot
+        lives inside each t-point's composite decomposition — deduped by
+        `_round_constraint_eval_cached` across the t-points and across chips
+        that share one eval_fn identity at equal statics/avals (as every chip
+        here does). The per-chip dot is, since the ``variant=sp1-zerocheck``
+        round marker (sp1-zorch#242), the Gruen interpolation dot inside each
+        live chip's own `zerocheck_round_poly` decomposition — the cross-chip
+        λ-RLC (`combine_chips`) stays a single batched dot regardless of chip
+        count."""
         nchips = len(num_reals)
         traces = [_witness_trace(i, nr) for i, nr in enumerate(num_reals)]
         alphas = [rlc_coeffs(_rand(99 + i, ()), _K) for i in range(nchips)]
@@ -471,14 +472,16 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
         # live chip's own `zerocheck_round_poly` decomposition, not one
         # shared [num_chips, ...] matmul — required so the round reduce has
         # a per-chip marker boundary (`jagged.py`'s `round_step`). Each added
-        # constrained chip therefore brings its three t-point composite
-        # decompositions (the in-body column dot, 3 dots/chip, by design)
-        # PLUS one Gruen dot inside its own round marker: 4 dots/chip per
-        # compiled round body (each unrolled shrink round plus the rolled
-        # tail), always growing linearly with the chip count (never O(1),
-        # unlike the old batched tail this replaces). The cross-chip λ-RLC
-        # stays a single dot per round body regardless of chip count,
-        # contributing zero extra growth.
+        # constrained chip therefore brings exactly one Gruen dot inside its
+        # own round marker per compiled round body (each unrolled shrink
+        # round plus the rolled tail), always growing linearly with the chip
+        # count (never O(1), unlike the old batched tail this replaces). The
+        # chips' t-point constraint decompositions contribute NO growth here:
+        # every chip carries the same eval_fn identity at equal statics and
+        # avals, so `_round_constraint_eval_cached` collapses their column
+        # dots into shared decompositions. The cross-chip λ-RLC stays a
+        # single dot per round body regardless of chip count, contributing
+        # zero extra growth.
         num_vars = 3
         round_bodies = min(jagged._SHRINK_ROUNDS, num_vars) + (
             1 if num_vars > jagged._SHRINK_ROUNDS else 0
@@ -486,7 +489,7 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
         self.assertEqual(
             self._tail_dot_count(num_vars, [5, 2, 3, 4, 1])
             - self._tail_dot_count(num_vars, [5, 2]),
-            4 * 3 * round_bodies,
+            1 * 3 * round_bodies,
         )
 
     def test_gkr_claim_threading(self) -> None:
@@ -636,6 +639,183 @@ class JaggedZerocheckRoundTest(absltest.TestCase):
                 cheap_transcript(F),
                 claims=[fnp.zeros((), F)] * 2,
             )
+
+
+class RoundConstraintTraceCacheTest(absltest.TestCase):
+    """The `_round_constraint_eval_cached` zone contract: a chip's constraint
+    circuit is TRACED once per (eval_fn identity, round-body statics, operand
+    avals) process-wide — the 3 sumcheck t-points of a body are aval-identical,
+    and later proves reuse the cached traces — while the emitted module keeps
+    one composite marker per t-point. The per-chip C_alpha(0_row) probe stays
+    deliberately outside the zone (a 1-row circuit, one trace per enclosing
+    stage trace — not worth a value-keyed memo).
+
+    Every test builds FRESH eval_fn closures: the zone cache is keyed on the
+    callable's identity and lives for the process, so reusing module-level
+    eval_fns across tests would let one test's traces satisfy another's."""
+
+    _NUM_VARS = 3
+    _NUM_REALS = (5, 2)
+
+    def _round_bodies(self, num_vars: int) -> int:
+        unroll = min(jagged._SHRINK_ROUNDS, num_vars)
+        return unroll + (1 if num_vars > unroll else 0)
+
+    def _counting_fn(
+        self, log: list[Any], tag: Any, flavor: int = 0
+    ) -> Callable[[Array, Array], Array]:
+        """A fresh 3-column K=2 circuit that logs each TRACE-time invocation.
+        Two flavors with identical signature, statics, and operand avals but
+        different circuits — the pair whose zone keys must not collide."""
+
+        def eval_fn(trace: Array, public_values: Array) -> Array:
+            log.append(tag)
+            a, b, c = trace[:, 0], trace[:, 1], trace[:, 2]
+            if flavor == 0:
+                return fnp.stack([a * b - c, (a - public_values[0]) * c], axis=-1)
+            return fnp.stack([a * c - b, (b - public_values[1]) * a], axis=-1)
+
+        return eval_fn
+
+    def _lower_prove(
+        self,
+        eval_fns: Sequence[Callable[[Array, Array], Array]],
+        num_reals: Sequence[int],
+        seed: int = 0,
+    ) -> Any:
+        """Lower one prove under a FRESH outer jit function, so the outer
+        trace is never served from frx's function-identity cache — only the
+        module-level zone may dedupe the inner constraint traces."""
+        nchips = len(num_reals)
+        traces = [_rand(seed + i, (_NUM_COLS, nr)) for i, nr in enumerate(num_reals)]
+        alphas = [rlc_coeffs(_rand(99 + i, ()), _K) for i in range(nchips)]
+        challenges = [_rand(1000 + r, ()) for r in range(self._NUM_VARS)]
+        beta = _rand(77, ())
+        _, claims = _gkr_inputs(beta, traces, _rand(7, (self._NUM_VARS,)))
+
+        def run(traces, alphas, lambdas, zeta):  # type: ignore[no-untyped-def]
+            return prove_jagged_zerocheck(
+                JaggedZerocheckSummand(
+                    eval_fns=list(eval_fns),
+                    alphas=alphas,
+                    lambdas=lambdas,
+                    beta=beta,
+                    public_values=_PV,
+                ),
+                traces,
+                num_reals,
+                zeta,
+                _ScriptedTranscript.replaying(challenges),
+                claims=claims,
+            )[2].round_poly
+
+        return (
+            frx.jit(run)
+            .lower(traces, alphas, _rand(55, (nchips,)), _rand(7, (self._NUM_VARS,)))
+            .as_text()
+        )
+
+    def test_body_traces_once_and_reproves_retrace_only_the_probe(self) -> None:
+        bodies = self._round_bodies(self._NUM_VARS)
+        # Distinct caps per compiled round body — each body is its own zone
+        # key (window_rows static + flat-buffer aval), so "one trace per
+        # body" is exact rather than an upper bound.
+        cls = TotalCapClass.from_heights(
+            list(self._NUM_REALS), [_NUM_COLS] * len(self._NUM_REALS)
+        )
+        caps = cls.shrink_schedule(
+            len(self._NUM_REALS) * _NUM_COLS, jagged._SHRINK_ROUNDS, self._NUM_VARS
+        )
+        self.assertLen({caps[r] for r in range(bodies)}, bodies)
+
+        log: list[int] = []
+        fns = [self._counting_fn(log, i) for i in range(len(self._NUM_REALS))]
+
+        txt = self._lower_prove(fns, self._NUM_REALS)
+        # Per chip: one trace per round body (the 3 t-points are
+        # aval-identical, so t=2/t=4 hit the zone) plus the uncached
+        # C_alpha(0_row) probe. The uncached shape is 3 traces per body.
+        want = {i: bodies + 1 for i in range(len(self._NUM_REALS))}
+        self.assertEqual(dict(collections.Counter(log)), want)
+
+        # The zone dedupes TRACES, never markers: the module still carries 3
+        # t-point composites per chip per body plus the per-chip probe, but
+        # their decompositions collapse to one callee per zone key.
+        markers = re.findall(
+            r'stablehlo\.composite "zorch\.constraint_eval"[^\n]*'
+            r"decomposition = @(\S+?)[,}]",
+            txt,
+        )
+        nchips = len(self._NUM_REALS)
+        self.assertLen(markers, (3 * bodies + 1) * nchips)
+        self.assertLen(set(markers), (bodies + 1) * nchips)
+
+        # A later prove (fresh outer trace, same eval_fn identities and
+        # avals) re-traces ONLY the probe: every round-body trace is served
+        # from the process-wide zone — the warm re-prove win this cache
+        # exists for.
+        n_first = len(log)
+        self._lower_prove(fns, self._NUM_REALS)
+        self.assertEqual(
+            dict(collections.Counter(log[n_first:])),
+            {i: 1 for i in range(len(self._NUM_REALS))},
+        )
+
+    def test_same_fn_same_shape_chips_share_body_traces(self) -> None:
+        # Sharing is keyed, not accidental: two chips carrying the SAME
+        # callable at the same heights/statics collapse to one trace per
+        # body (the K=0 lookup family relies on this — every such chip
+        # shares the constraint-free circuit), while each chip keeps its own
+        # probe trace.
+        bodies = self._round_bodies(self._NUM_VARS)
+        log: list[str] = []
+        shared = self._counting_fn(log, "s")
+        self._lower_prove([shared, shared], (5, 5))
+        self.assertLen(log, bodies + 2)
+
+    def test_same_aval_different_fn_does_not_share(self) -> None:
+        # Adversarial keying: chips A and B agree on every static and every
+        # operand aval — only the eval_fn identity differs. A shape-only key
+        # would serve B chip A's circuit; the round polys would then be
+        # byte-equal and B's circuit would never trace.
+        bodies = self._round_bodies(self._NUM_VARS)
+        log: list[str] = []
+        fn_a = self._counting_fn(log, "a", flavor=0)
+        fn_b = self._counting_fn(log, "b", flavor=1)
+        trace = _rand(60, (_NUM_COLS, 5))
+        alphas = [rlc_coeffs(_rand(61, ()), _K)]
+        lambdas = _rand(62, (1,))
+        challenges = [_rand(1000 + r, ()) for r in range(self._NUM_VARS)]
+        beta = _rand(77, ())
+        zeta = _rand(7, (self._NUM_VARS,))
+        _, claims = _gkr_inputs(beta, [trace], zeta)
+
+        def run_polys(fn: Callable[[Array, Array], Array]) -> Array:
+            def run(traces, alphas, lambdas, zeta):  # type: ignore[no-untyped-def]
+                return prove_jagged_zerocheck(
+                    JaggedZerocheckSummand(
+                        eval_fns=[fn],
+                        alphas=alphas,
+                        lambdas=lambdas,
+                        beta=beta,
+                        public_values=_PV,
+                    ),
+                    [traces[0]],
+                    [5],
+                    zeta,
+                    _ScriptedTranscript.replaying(challenges),
+                    claims=[claims[0]],
+                )[2].round_poly
+
+            return frx.jit(run)([trace], alphas, lambdas, zeta)
+
+        polys_a = run_polys(fn_a)
+        n_a = len(log)
+        polys_b = run_polys(fn_b)
+
+        self.assertEqual(collections.Counter(log[:n_a]), {"a": bodies + 1})
+        self.assertEqual(collections.Counter(log[n_a:]), {"b": bodies + 1})
+        self.assertTrue(bool(np.any(_u32(polys_a) != _u32(polys_b))))
 
 
 class TotalCapTracedTest(absltest.TestCase):
