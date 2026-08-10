@@ -72,8 +72,7 @@ class JitPermutation:
         self.width: int = inner.width
         self.dtype: Any = inner.dtype
         self.has_dedicated_fusion: bool = inner.has_dedicated_fusion
-        self.fused_region_name: str = inner.fused_region_name
-        self.fused_region_version: int = inner.fused_region_version
+        self.fused_region_marker: tuple[str, int] = inner.fused_region_marker
         self._permute = frx.jit(inner.permute)
 
     def permute(self, state: Array) -> Array:
