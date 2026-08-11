@@ -292,11 +292,17 @@ an ELF + stdin) the tool uses `CpuShardProver`: useful as the injection-validity
 
 | Phase | SP1 GPU | sp1-zorch GPU | spread | ratio | golden |
 |---|---|---|---|---|---|
-| trace commit | 16.6 ms | 17.6 ms | 17.5–17.6 | 1.06× | byte-match |
-| LogUp-GKR | 19.9 ms | **20.4 ms** | 20.4–20.6 | **1.03×** | byte-match |
-| zerocheck | 156.9 ms | **50.8 ms** | 50.4–51.0 | **0.32×** | byte-match |
-| jagged eval (PCS open) | 41.1 ms | **37.8 ms** | 36.3–37.9 | **0.92×** | byte-match |
-| full chain | 234.8 ms | **134.0 ms** | 132.8–136.3 | **0.57×** | byte-match |
+| trace commit | 16.6 ms | 18.4 ms | 18.3–18.4 | 1.11× | byte-match |
+| LogUp-GKR | 19.9 ms | **18.4 ms** | 18.1–18.7 | **0.92×** | byte-match |
+| zerocheck | 156.9 ms | **52.7 ms** | 52.3–52.8 | **0.34×** | byte-match |
+| jagged eval (PCS open) | 41.1 ms | **37.2 ms** | 37.1–37.3 | **0.91×** | byte-match |
+| full chain (phase sum) | 234.8 ms | **124.6 ms** | — | **0.53×** | byte-match |
+
+The sp1-zorch column was captured on `main` 23d2fff (2026-08-11). The full-chain
+row is the sum of the four phase medians: since #330 the CLI's `chain run:`
+print times the whole checked round — per-phase golden loads, device→host
+readbacks and compares included (~5.2 s of I/O on shard17) — so that print is a
+harness metric, not a prover latency, and is not comparable to the SP1 column.
 
 **A `--max_phase` run reads a phase faster than the full chain does.** Truncated
 runs are fine for A/B iteration, where both arms are truncated equally; they are
