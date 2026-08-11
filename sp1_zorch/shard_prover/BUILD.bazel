@@ -22,6 +22,32 @@ py_library(
     ],
 )
 
+# One definition of the shard compile-class math (tight zerocheck/GKR/jagged
+# classes) + the manifest/flag pin resolution, shared by the staged prove
+# harness (//tools:staged_prove_shard) and the warm cache filler so the two
+# cannot drift on what keys a compile.
+py_library(
+    name = "compile_classes",
+    srcs = ["compile_classes.py"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//sp1_zorch/logup_gkr",
+        "//sp1_zorch/zerocheck",
+    ],
+)
+
+py_test(
+    name = "compile_classes_test",
+    size = "small",
+    srcs = ["compile_classes_test.py"],
+    deps = [
+        ":compile_classes",
+        "//sp1_zorch/logup_gkr",
+        "//sp1_zorch/zerocheck",
+        requirement("absl_py"),
+    ],
+)
+
 # Shared scaffolding for the verify_* byte-match runnables: SP1's duplex
 # challenger, the shard preamble stream, and the core-machine jagged regions.
 py_library(
@@ -243,36 +269,8 @@ py_library(
 )
 
 py_binary(
-    name = "verify_prove_shard",
-    srcs = ["verify_prove_shard.py"],
-    # rsp byte-match of the assembled ShardProver (~1.5 GB/shard, GPU trace
-    # commit) — a runnable, not a unit test:
-    #   bazel run //sp1_zorch/shard_prover:verify_prove_shard -- \
-    #       --shard_dir=/path/to/rsp_dump/shardN
-    deps = [
-        ":prove_shard",
-        ":replay",
-        ":shard_prover",
-        ":sp1_ffi",
-        "//sp1_zorch/logup_gkr",
-        "//sp1_zorch/poseidon2:koalabear16",
-        "@zorch//zorch/commit:smcs",
-        "@zorch//zorch/hash:compression",
-        "@zorch//zorch/hash:sponge",
-        "@zorch//zorch/hash/poseidon2",
-        "@zorch//zorch/poly",
-        requirement("absl_py"),
-        requirement("frx"),
-        requirement("frx_cuda12_plugin"),
-        requirement("zk_dtypes"),
-        requirement("frx_cuda12_pjrt"),
-    ],
-)
-
-py_binary(
     name = "warm_shard_cache",
     srcs = [
-        "verify_prove_shard.py",
         "warm_shard_cache.py",
         "warm_worker.py",
     ],
@@ -282,6 +280,7 @@ py_binary(
     #   bazel run //sp1_zorch/shard_prover:warm_shard_cache -- \
     #       --dump_dir=/path/to/rsp_dump --out_manifest=/tmp/manifest.json
     deps = [
+        ":compile_classes",
         ":prove_shard",
         ":replay",
         ":shard_prover",
@@ -289,6 +288,10 @@ py_binary(
         "//sp1_zorch:types",
         "//sp1_zorch/logup_gkr",
         "//sp1_zorch/poseidon2:koalabear16",
+        "//sp1_zorch/zerocheck",
+        # warm_worker drives the staged harness main under its frx.jit
+        # intercept, so the warmed executables match a real staged prove.
+        "//tools:staged_prove_shard_lib",
         "@zorch//zorch/commit:smcs",
         "@zorch//zorch/hash:compression",
         "@zorch//zorch/hash:sponge",
@@ -306,16 +309,16 @@ py_test(
     name = "warm_shard_cache_test",
     size = "small",
     srcs = [
-        "verify_prove_shard.py",
         "warm_shard_cache.py",
         "warm_shard_cache_test.py",
     ],
     # Pure selection/cover logic, no GPU and no dump; the warm tool is a
-    # py_binary, so its modules ride along as srcs. --dump_dir is a required
+    # py_binary, so its module rides along as a src. --dump_dir is a required
     # tool flag the test never reads — satisfy the parser.
     args = ["--dump_dir=unused"],
     main = "warm_shard_cache_test.py",
     deps = [
+        ":compile_classes",
         ":prove_shard",
         ":replay",
         ":shard_prover",
