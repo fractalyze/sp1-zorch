@@ -154,7 +154,16 @@ def _indicator_chunk(
     window. ``start`` rides as a traced value, so one compile serves every
     chunk. No ``zorch.jagged_indicator`` fused-region marker here: the marker
     contract carries no window operand, so the chunk form inlines the
-    byte-identical decomposition."""
+    byte-identical decomposition.
+
+    Both per-element scans — the binary-search column lookup and the per-bit
+    row-eq product — run as ``fori_loop`` carries, so the zone holds one
+    step's chunk-width temporaries live at a time. Unrolled chains here are
+    forbidden: XLA's operand-capped fusion pins every per-step chunk-width
+    intermediate (and a broadcast scalar per step) simultaneously — tens of
+    chunk widths of temp arena at the 2^26 cap — and
+    ``ChunkZoneLiveWidthTest`` guards the bound at trace time. Exact field
+    arithmetic makes the loop form byte-identical to the unrolled chain."""
     dtype = z_row.dtype
     n_d = offsets.shape[1]
     # Decode the MSB-first prefix-bit tensor: the canonical bit lives in int32
@@ -175,14 +184,20 @@ def _indicator_chunk(
     # last index, where the height mask zeros it.
     i_idx = fnp.arange(size, dtype=fnp.int32)
     n = prefix.shape[0]
-    lo = fnp.zeros(i_idx.shape, fnp.int32)
-    hi = fnp.full(i_idx.shape, n, fnp.int32)
-    for _ in range(log2_ceil_usize(n) + 2):
+
+    def search_step(_: Array, lo_hi: tuple[Array, Array]) -> tuple[Array, Array]:
+        lo, hi = lo_hi
         mid = (lo + hi) // 2
         val = prefix[fnp.minimum(mid, n - 1)]
         go_right = (mid < n) & (val <= i_idx)
-        lo = fnp.where(go_right, mid + 1, lo)
-        hi = fnp.where(go_right, hi, mid)
+        return fnp.where(go_right, mid + 1, lo), fnp.where(go_right, hi, mid)
+
+    lo, _ = frx.lax.fori_loop(
+        0,
+        log2_ceil_usize(n) + 2,
+        search_step,
+        (fnp.zeros(i_idx.shape, fnp.int32), fnp.full(i_idx.shape, n, fnp.int32)),
+    )
     c_idx = lo - 1
     t_c = prefix[c_idx]
     h = prefix[c_idx + 1] - t_c  # column height (0 for padding columns)
@@ -192,12 +207,15 @@ def _indicator_chunk(
     mask = local < fnp.minimum(h, row_len)
 
     # eq(z_row, local) per element, MSB-first — the per-row eq factor without
-    # a 2^n_r gather table.
-    row_vals = fnp.ones(i_idx.shape, dtype)
-    for bit_pos in range(n_r):
+    # a 2^n_r gather table. ``bit_pos`` is the loop carry's induction value,
+    # so ``z_row[bit_pos]`` stays a scalar dynamic-slice inside the loop body
+    # rather than one materialized chunk-width broadcast per bit.
+    def row_eq_step(bit_pos: Array, row_vals: Array) -> Array:
         bit = ((local >> (n_r - 1 - bit_pos)) & 1).astype(dtype)
         z_k = z_row[bit_pos]
-        row_vals = row_vals * (bit * z_k + (one - bit) * (one - z_k))
+        return row_vals * (bit * z_k + (one - bit) * (one - z_k))
+
+    row_vals = frx.lax.fori_loop(0, n_r, row_eq_step, fnp.ones(i_idx.shape, dtype))
     val = col_eq[c_idx] * row_vals
     return fnp.where(mask, val, fnp.zeros([], dtype=dtype))
 
