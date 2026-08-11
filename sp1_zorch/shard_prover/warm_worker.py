@@ -11,6 +11,19 @@ hits every cache entry byte-for-byte). Peak device memory is the autotune
 scratch, not the ~29 GiB execute workspace — ~2 GiB at 46M area, ~18 GiB at
 400M with the default two compile threads.
 
+The zeros a zone returns carry the real jit's COMMITTED placement: jax commits
+a jit's results to the execution device exactly when an input arrived
+committed, and the cache key carries each parameter's committed/uncommitted
+state (`allow_spmd_sharding_propagation_to_parameters`: a committed arg lowers
+with its sharding specified, an uncommitted one as unspecified). Commitment
+originates in the chain's own eager `device_put`s (the transcript host-FS
+round trips) and propagates zone to zone through the data, so the wrapper
+mirrors the rule — `device_put` the zeros when any arg leaf was committed,
+plain zeros otherwise — and the warmed chain reproduces the staged prove's
+per-parameter pattern arg-for-arg. Zeros that dropped the committed placement
+would key every downstream zone all-unspecified and miss the staged prove's
+entries on precisely the transcript-descended (cap/jagged/opening) zones.
+
 `frx.jit` MUST be patched before the chain imports bind their decorators, so
 this module patches at import top, before any sp1/zorch import. Run as a
 subprocess per shard from ``warm_shard_cache --warm``.
@@ -25,6 +38,7 @@ from typing import Any
 import frx  # establish the frx jax fork before anything imports `jax`
 import frx.numpy as fnp
 import jax
+from jax.sharding import SingleDeviceSharding
 
 _real_jit = frx.jit
 _depth = [0]
@@ -54,6 +68,63 @@ if _cfg_path := os.environ.get("WARM_TARGET_CONFIG"):
             "warm-aot", "cuda", target_config=_f.read(), topology="1x1x1"
         ).devices[0]
 
+# The device committed zone outputs are placed on (a real jit commits its
+# results to the execution device). Resolved lazily: importing this module
+# must not initialize a backend.
+_commit_dev = [None]
+
+
+def _args_committed(args: tuple, kwargs: dict) -> bool:
+    """Whether the real jit would commit this call's outputs: for the zones
+    warmed here — no out_shardings, no context mesh, no in-jaxpr memory-kind
+    transfers — jax commits a single-device jit's results exactly when an arg
+    leaf arrived committed (`frx._src.interpreters.pxla` keys it on any
+    specified in-sharding; those other commitment triggers would need
+    modeling here if a zone ever grows one)."""
+    return any(
+        isinstance(x, jax.Array) and getattr(x, "committed", False)
+        for x in jax.tree_util.tree_leaves((args, kwargs))
+    )
+
+
+def _zone_zeros(out_shapes: Any, committed: bool) -> Any:
+    """Zeros for a zone's `eval_shape` outputs, committed to the local device
+    exactly when the real prove's results would be."""
+    if committed and _commit_dev[0] is None:
+        _commit_dev[0] = jax.local_devices()[0]
+
+    def zero(s: Any) -> Any:
+        z = fnp.zeros(s.shape, s.dtype)
+        return jax.device_put(z, _commit_dev[0]) if committed else z
+
+    return jax.tree_util.tree_map(zero, out_shapes)
+
+
+def _lowering_args(args: tuple, kwargs: dict) -> tuple[tuple, dict]:
+    """The (args, kwargs) a zone lowers on.
+
+    Deviceless mode: committed leaves live on host CPU but stand in for the
+    staged prove's committed CUDA arrays, so each becomes an abstract spec
+    sharded on the topology device — the lowering keeps its committed
+    (sharding-specified) keying without pulling the CPU device into the
+    lowering. Uncommitted leaves pass through and lower as unspecified,
+    matching the prove's host-value args. With a real device the args already
+    carry the right shardings; no translation."""
+    if _topo_dev is None:
+        return args, kwargs
+
+    def retarget(x: Any) -> Any:
+        if isinstance(x, jax.Array) and getattr(x, "committed", False):
+            return jax.ShapeDtypeStruct(
+                x.shape,
+                x.dtype,
+                sharding=SingleDeviceSharding(_topo_dev),
+                weak_type=x.aval.weak_type,
+            )
+        return x
+
+    return jax.tree_util.tree_map(retarget, (args, kwargs))
+
 
 def _compile_only_jit(fn: Callable[..., Any] | None = None, **kw: Any) -> Any:
     if fn is None:
@@ -67,16 +138,17 @@ def _compile_only_jit(fn: Callable[..., Any] | None = None, **kw: Any) -> Any:
             return jitted(*args, **kwargs)
         _depth[0] += 1
         try:
+            largs, lkwargs = _lowering_args(args, kwargs)
             if _topo_dev is not None:
                 with jax.default_device(_topo_dev):
-                    lowered = jitted.lower(*args, **kwargs)
+                    lowered = jitted.lower(*largs, **lkwargs)
             else:
-                lowered = jitted.lower(*args, **kwargs)
+                lowered = jitted.lower(*largs, **lkwargs)
             out = jax.eval_shape(jitted, *args, **kwargs)
         finally:
             _depth[0] -= 1
         _futures.append(_pool.submit(lowered.compile))  # write cache, no execute
-        return jax.tree_util.tree_map(lambda s: fnp.zeros(s.shape, s.dtype), out)
+        return _zone_zeros(out, _args_committed(args, kwargs))
 
     return wrapper
 
