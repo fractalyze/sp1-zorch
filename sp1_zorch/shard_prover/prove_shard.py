@@ -25,7 +25,7 @@ from zorch.stage import (
 )
 from zorch.transcript import Transcript
 
-from sp1_zorch.jagged_pcs.prover import JaggedPcsProver
+from sp1_zorch.jagged_pcs.prover import JaggedCapClass, JaggedPcsProver
 from sp1_zorch.logup_gkr.circuit import GkrCapClass, GkrChip
 from sp1_zorch.logup_gkr.prover import LogupGkrProver
 from sp1_zorch.types import (
@@ -137,6 +137,7 @@ class ShardProver(ProverStage[ShardClaim, ShardWitness, TrivialClaim, ShardProof
         jit: bool = True,
         zerocheck_total_cap_class: TotalCapClass | None = None,
         gkr_cap_class: GkrCapClass | None = None,
+        jagged_cap_class: JaggedCapClass | None = None,
     ) -> None:
         self.gkr = LogupGkrProver(
             gkr_chips,
@@ -157,6 +158,7 @@ class ShardProver(ProverStage[ShardClaim, ShardWitness, TrivialClaim, ShardProof
             num_queries=open_num_queries,
             pow_bits=open_pow_bits,
             jit=jit,
+            jagged_cap_class=jagged_cap_class,
         )
 
     def prove(
