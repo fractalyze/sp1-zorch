@@ -65,9 +65,9 @@ from absl import app, flags
 from frx import Array
 from zk_dtypes import koalabear_mont as F
 from zorch.commit.smcs import SingleMatrixCommitmentScheme
-from zorch.hash.compression import Compression, CompressionParams
-from zorch.hash.poseidon2.poseidon2 import Poseidon2
-from zorch.hash.sponge import Sponge, SpongeParams
+from hash_frx.compression import Compression, CompressionParams
+from hash_frx.poseidon2.poseidon2 import Poseidon2
+from hash_frx.sponge import Sponge, SpongeParams
 from zorch.poly.univariate import eval_coeffs
 from zorch.transcript import DuplexTranscript
 

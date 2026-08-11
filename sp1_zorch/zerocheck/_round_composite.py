@@ -13,7 +13,7 @@ from typing import Any
 
 import frx.numpy as fnp
 from frx import Array
-from zorch._composite import composite
+from hash_frx.fusion import fused_region
 from zorch.poly.eq import eq_factor
 from zorch.poly.geq import VirtualGeq
 from zorch.sumcheck.gruen import round_coeffs_from_matrix
@@ -107,7 +107,7 @@ def zerocheck_round_poly(
     )
     if not _MARK_ZEROCHECK_ROUNDS:
         return _decomp(*operands)
-    return composite(
+    return fused_region(
         _decomp,
         *operands,
         name=SUMCHECK_ROUND_MARKER,

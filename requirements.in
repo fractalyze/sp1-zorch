@@ -18,6 +18,12 @@ frx-cuda12-plugin[with-cuda]==0.10.1.dev20260811100738
 nvidia-cuda-nvcc-cu12==12.8.93
 zk-dtypes==0.0.10
 
+# The symmetric layer (permutations, sponges, compressions). It sits BELOW
+# `zorch`, which imports it rather than owning a copy, so this repo takes it
+# directly — the same distribution-name rule as frx above: pip resolves here on
+# a separate hub from zorch's, so a shared distribution must be named in both.
+hash-frx==0.1.0.dev20260810004122
+
 # SP1 chip definitions (constraints + LogUp interactions) exported from
 # riscv-witness; consumed by the shard fixture loader. Same pin as whir-zorch.
 rw-constraints @ https://github.com/fractalyze/pypi/releases/download/riscv-witness-dev-20260703070602/rw_constraints-0.1.0.dev20260703070602-py3-none-any.whl

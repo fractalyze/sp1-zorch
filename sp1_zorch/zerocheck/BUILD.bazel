@@ -27,6 +27,7 @@ py_library(
         "@zorch//zorch/poly",
         "@zorch//zorch/sumcheck",
         requirement("frx"),
+        requirement("hash_frx"),
         requirement("rw_constraints"),
         requirement("zk_dtypes"),
     ],
