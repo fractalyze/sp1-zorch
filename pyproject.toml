@@ -34,6 +34,7 @@ dependencies = [
     "numpy",
     "pyzorch>=0.1.0",
     "frx>=0.10.0.dev0",
+    "hash-frx>=0.1.0.dev0",
     "rw-constraints>=0.1.0.dev0",
 ]
 
