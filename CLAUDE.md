@@ -4,7 +4,7 @@
 | --- | --- |
 | [`README.md`](README.md) | What sp1-zorch is, and how to install it |
 | [`docs/architecture.md`](docs/architecture.md) | Stage / Round, the PCS commit half, and the SP1 dump "phase" vocabulary |
-| [`docs/development.md`](docs/development.md) | Environment, the coupled zorch/frx pin, bazel gotchas, testing, and the per-phase SP1 baseline |
+| [`docs/development.md`](docs/development.md) | Environment, the coupled zorch/frx pin, bazel gotchas, testing, the staged local shard-prove harness, and the per-phase SP1 baseline |
 | [`docs/conventions.md`](docs/conventions.md) | Comment scoping, commit messages, and how SP1 reference code is cited |
 
 ## One non-negotiable

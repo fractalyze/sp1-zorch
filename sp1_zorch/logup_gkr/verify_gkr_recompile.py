@@ -5,8 +5,9 @@ Proves every ``--shard-dirs`` shard through ONE ``GkrCapClass`` + ONE
 ``gkr_chips`` tuple in one process; shards after the first must add ZERO
 compiles in every class-keyed zone (first-layer/open in sp1-zorch,
 transition/round zones in zorch). Assemble ``--gkr_class_json`` as the per-chip
-max of the ``GKR_CLASS`` lines ``verify_gkr_prove``/``verify_prove_shard``
-print. Byte-match stays ``verify_gkr_prove``'s job; this checks compile
+max of the ``GKR_CLASS`` lines ``verify_gkr_prove`` /
+``//tools:staged_prove_shard`` print. Byte-match stays
+``verify_gkr_prove``'s job; this checks compile
 sharing and prints per-shard walls.
 
     bazel run //sp1_zorch/logup_gkr:verify_gkr_recompile -- \
@@ -65,7 +66,7 @@ def main() -> int:
         help='JSON {"chip_heights": {name: bound}} pinning the shard-'
         "invariant GkrCapClass; it must bound every --shard-dirs shard. "
         "Assemble it as the per-chip max of the GKR_CLASS lines "
-        "verify_gkr_prove / verify_prove_shard print.",
+        "verify_gkr_prove / staged_prove_shard print.",
     )
     parser.add_argument(
         "--gkr_pow_bits",
@@ -132,7 +133,7 @@ def main() -> int:
         # Release this shard's device buffers before the next iteration
         # allocates — holding a spent proof + regions while the next shard
         # proves stacks two shards' residency and OOMs a wide core-shard
-        # pair (verify_prove_shard releases the same way between passes).
+        # pair (the staged harness releases the same way between passes).
         del shard, main_region, prep_region, proof
         gc.collect()
 

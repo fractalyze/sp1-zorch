@@ -11,9 +11,9 @@ chips mapping is loaded once and reused across shards, mirroring a
 process-held machine (``chips`` is an identity-keyed static jit arg; fresh
 Chip objects per shard would bust the cache and mask the result).
 
-``--zc_class_json`` pins the class, exactly as ``verify_prove_shard`` /
-``verify_zerocheck`` take it: assemble it as the per-field max of the
-``ZC_CLASS`` lines ``verify_prove_shard`` prints for each shard.
+``--zc_class_json`` pins the class, exactly as ``//tools:staged_prove_shard``
+/ ``verify_zerocheck`` take it: assemble it as the per-field max of the
+``ZC_CLASS`` lines ``staged_prove_shard`` prints for each shard.
 
 GKR outputs are seeded per shard via the rolled jit prove and cached as the
 replay module's npz (``save_gkr_cache``/``load_gkr_cache``), so reruns skip
@@ -98,7 +98,7 @@ def main() -> int:
         help='JSON {"area_cap"} pinning the shard-invariant '
         "zerocheck TotalCapClass; it must bound every --shard-dirs shard. "
         "Assemble it as the per-field max of the ZC_CLASS lines "
-        "verify_prove_shard prints.",
+        "staged_prove_shard prints.",
     )
     args = parser.parse_args()
 

@@ -1,8 +1,8 @@
 # Development guide
 
 Everything needed to build, test, and benchmark sp1-zorch: the environment
-setup, the test conventions, and the reproducible per-phase baseline against
-SP1. For architecture (Stage / Round) see
+setup, the test conventions, the local shard-prove harness, and the
+reproducible per-phase baseline against SP1. For architecture (Stage / Round) see
 [architecture.md](architecture.md); for coding style see
 [conventions.md](conventions.md).
 
@@ -62,14 +62,14 @@ measure a locally built plugin you overwrite the wheel's bundled
   `jagged_byte_match_test` is `gpu_only` — on CPU its wide `constraint_eval`
   compiles monolithically and never finishes. Use
   `bazel test //sp1_zorch/... --test_tag_filters=-gpu_only`, as CI does, and
-  remember the suite can go green while `verify_prove_shard` (a `py_binary`)
+  remember the suite can go green while `staged_prove_shard` (a `py_binary`)
   is broken. After changing anything it constructs, run it.
 
 ## Testing
 
 Tests default to `FRX_PLATFORMS=cpu`. The SP1 FFI byte-match path needs a CUDA
-GPU and is exercised through the `verify_*` `py_binary` tools, not the unit
-suite.
+GPU and is exercised through the per-stage `verify_*` `py_binary` tools and
+the full-chain harness `//tools:staged_prove_shard`, not the unit suite.
 
 ### Test sizing & timeouts
 
@@ -108,9 +108,105 @@ bytes, no tolerances):
 - **Vendored** small fixtures live per module under `testdata/` (e.g.
   `sp1_zorch/zerocheck/testdata/gpu_fibonacci`) and back the unit tests.
 - **External** full-shard dumps are too large to vendor; they stay out of the
-  repo and are checked with the `verify_*` `py_binary` tools via `--shard_dir`
-  (GPU). The CUDA FFI they call (`libsp1_gpu_jax_ffi`) lives in `whir-zorch`
-  under `third_party/sp1/`.
+  repo and are checked via `--shard_dir` (GPU) — per stage with the `verify_*`
+  `py_binary` tools, full-chain with `//tools:staged_prove_shard`. The CUDA
+  FFI they call (`libsp1_gpu_jax_ffi`) lives in `whir-zorch` under
+  `third_party/sp1/`.
+
+## Running a local shard prove
+
+`//tools:staged_prove_shard` is **the** local GPU harness: it proves one rsp
+shard dump through the full chain (trace commit → LogUp-GKR → zerocheck →
+jagged eval), byte-checking each phase against the dump's references the
+instant that phase finishes — a phase-k mismatch aborts before phase k+1 pays
+its multi-minute compile.
+
+```bash
+FRX_PLATFORMS=cuda,cpu \
+  XLA_FLAGS="--xla_gpu_enable_command_buffer=FUSION,CUSTOM_CALL" \
+  bazel run //tools:staged_prove_shard -- \
+    --shard_dir=/data/sp1_dumps/rsp_21740136_sp1/shard17
+```
+
+### Why the harness is staged
+
+The harness drives the four phases stage by stage with a release point between
+them — each stage's spent result object is dropped and gc runs before the next
+stage allocates — instead of calling the composite `ShardProver.prove` once:
+
+- **Memory.** A monolithic full-chain run keeps every stage's spent result
+  live to the end of the chain: measured **89 GB host peak** on a core shard
+  (shard6) — beyond any 32 GB dev box. Released stage by stage, one stage's
+  working set is resident at a time, and a full rsp shard proves on a 32 GB
+  card.
+- **Production shape.** The staging order is the production zkvm pipeline
+  driver's — the local harness rehearses the same stage-by-stage drive that
+  ships.
+- **Still byte-exact.** Same call order and transcript threading as the
+  composite `ShardProver.prove`, so the Fiat-Shamir stream — and the proof —
+  is the composite's byte for byte.
+
+### Flags
+
+| Flag | Meaning |
+|---|---|
+| `--shard_dir` | rsp shard dump dir. Comma-separate several to prove them sequentially in ONE process; same-class shards must then reuse the first shard's compiles (the shard-invariance check). |
+| `--runs=N` | Prove the chain N times in one process: run 1 is cold (pays the XLA/zkx compiles), runs 2+ are warm (executables reused). Golden checks run on every pass. |
+| `--max_phase=N` | Run + byte-check only phases 1..N (1 = trace commit … 4 = full, default). Skips the downstream compiles for a cheaper iteration loop. |
+| `--ffi_verify` | Assemble the bincode wire and verify it through SP1's `sp1_verify_shard` FFI (needs `SP1_JAX_FFI_LIB`, below). |
+| `--proof_sha256` | Default on: on a full run, bincode-encode the proof and print `PROOF_SHA256` — the cross-run/cross-stack byte-golden line. Disable for compile-only drivers. |
+| `--zc_class_json` / `--gkr_class_json` | Global zerocheck / LogUp-GKR class pins (next section). |
+| `--group_manifest_json` | Per-shard class pins for multi-group runs; overrides the global pins field by field. |
+| `--jaxprof_dir` | Write an frx profiler trace of the last (warm) prove pass. |
+
+The security-parameter flags (`--gkr_pow_bits`, `--open_num_queries`,
+`--open_pow_bits`) default to SP1's core machine — leave them alone for
+byte-match runs.
+
+### Class pins and the group manifest
+
+The heavy zones compile keyed on `(chip set, class)` — the shard's runtime
+heights ride as traced values — so every shard of one class shares one
+executable. Per shard the harness resolves its classes as, highest precedence
+first:
+
+1. the shard's entry in `--group_manifest_json`,
+2. the global `--zc_class_json` / `--gkr_class_json` pins,
+3. the shard's own a-priori-tight class (per-shard compile).
+
+The single definition of the class math and this resolution is
+`sp1_zorch.shard_prover.compile_classes`, shared with the `warm_shard_cache`
+cache filler — the classes a warm fills are the classes a prove requests by
+construction. Get a manifest from `warm_shard_cache` analyze
+(`--out_manifest`; a `--warm` fill also writes `group_manifest.json` beside
+the cache), or assemble a pin file as the per-field max of the class lines
+below.
+
+### Stdout contract
+
+Bench and cache tooling parse these lines — keep their shape stable:
+
+| Line | When | Meaning / consumer |
+|---|---|---|
+| `CHIP_HEIGHTS name:rows …` | per shard, pre-prove | census of real per-chip heights |
+| `ZC_CLASS {"area_cap": N}` | per shard, pre-prove | the shard's tight zerocheck class; cross-shard pin = per-field max |
+| `GKR_CLASS {"chip_heights": {…}, "slot_cap": N}` | per shard, pre-prove | the shard's tight GKR class; cross-shard pin = per-chip max |
+| `JAGGED_CLASS {"L": …, "n_d": …, "K": …, "rlc_bits": …}` | per shard, pre-prove | the fully derived jagged class (no pin flag exists for it) |
+| `[phase X] Yms mem=…GiB peak=…GiB` | per phase, per pass | phase wall-clock + device-pool telemetry; on a mid-phase OOM the *previous* phase's line is the resident set the failing alloc fought |
+| `chain run: Yms` | per pass | full-chain wall |
+| `prove_shard chain (phases 1..N) byte-match: ALL OK` | end of shard | every executed phase matched its golden reference |
+| `PROOF_SHA256 <hex>` | full run only | cross-run/cross-stack byte-golden line |
+
+### Environment contract
+
+| Env | Setting | Why |
+|---|---|---|
+| `FRX_PLATFORMS` | `cuda,cpu` — not `cuda` alone | the long Fiat-Shamir absorbs run on the host sponge, which needs a registered CPU backend; without it the run dies in `frx.devices("cpu")` with `Unknown backend cpu`. (`gpu` is wrong too: it also initializes rocm and dies.) |
+| `XLA_FLAGS` | `--xla_gpu_enable_command_buffer=FUSION,CUSTOM_CALL` | captures each fused region (the whole-layer LogUp-GKR zone, the trace-commit tail) as a CUDA graph so the warm pass isn't host-dispatch-bound. **Do NOT add `--xla_gpu_graph_min_graph_size=1`**: it captures every 1-op region (~4.3k `wrapped_*` pyramid-transition ops) as its own resident CUDA graph, whose cross-pass buffer residency double-allocates the pyramid intermediate and OOMs a wide shard on `--runs>=2` (shard18 dies `RESOURCE_EXHAUSTED: allocate 3.77 GiB` on pass 2) — for no speedup, since the LogUp-GKR zone is already one big graph. |
+| `XLA_PYTHON_CLIENT_ALLOCATOR` | `cuda_async` on a wide shard | under the default BFC allocator shard0 (33 chips, `slot_cap` 77.3M) dies in the GKR phase with `RESOURCE_EXHAUSTED: allocate 11.62GiB` while only 10.57 GiB is in use on a 32 GiB card — fragmentation, not capacity; with `cuda_async` the same shard runs clean at 21.4 GiB peak and byte-matches. On a narrow shard `cuda_async` measured slightly *slower*, so it is not a blanket default. |
+| `FRX_COMPILATION_CACHE_DIR` + `FRX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS=0` + `FRX_RAISE_PERSISTENT_CACHE_ERRORS=true` | a per-toolchain dir while iterating; **unset for byte-match gates** | cuts the cold pass ~175 s → ~28 s (measured, shard17) and does not move the warm pass. Both extra flags matter: `min_compile_time` defaults to 1.0 s and admits nothing here (a cache dir alone caches zero modules), and cache errors are swallowed as warnings by default, so a broken cache looks like a working one — check the dir is non-empty. A cache shared across toolchains has served wrong executables, hence unset for gates. |
+| `SP1_JAX_FFI_LIB` | path to `libsp1_gpu_jax_ffi.so` | required by `--ffi_verify`; vendored in SP1 reference checkouts, e.g. whir-zorch `third_party/sp1/`. |
+| `CUDA_DEVICE_ORDER=PCI_BUS_ID` + `CUDA_VISIBLE_DEVICES=<idx>` | pin an idle card on a shared box | contending with another prove during CUDA init can hard-kill the run. |
 
 ## Per-phase baseline against SP1
 
@@ -126,24 +222,25 @@ same computation.
 > grind/head), and no golden equivalence, since the two never prove the same
 > instance. Ratios obtained that way are scope-confounded; do not quote them.
 
-#### sp1-zorch side — `verify_prove_shard` (per-phase + golden)
+#### sp1-zorch side — `staged_prove_shard` (per-phase + golden)
+
+The [local shard-prove harness](#running-a-local-shard-prove) doubles as the
+measurement tool — its warm `[phase X]` lines are the sp1-zorch column:
 
 ```bash
 FRX_PLATFORMS=cuda,cpu \
   XLA_FLAGS="--xla_gpu_enable_command_buffer=FUSION,CUSTOM_CALL" \
-  bazel run //sp1_zorch/shard_prover:verify_prove_shard -- \
+  bazel run //tools:staged_prove_shard -- \
     --shard_dir=/data/sp1_dumps/rsp_21740136_sp1/shard17 --ffi_verify --runs=5
 ```
 
-`FRX_PLATFORMS=cuda,cpu`, not `cuda` alone: the long Fiat-Shamir absorbs run on
-the host sponge, which needs a CPU backend registered. Without it the run dies
-in `frx.devices("cpu")` with `Unknown backend cpu`.
-
 Use `--runs=5`, not `--runs=2`: the **first** warm pass (pass 2) has not fully
-settled and overstates a phase by ~10–15%, so take a converged pass (3–5).
-Pin to an idle card on a shared box
-(`CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=<idx>`) — contending with
-another prove during CUDA init can hard-kill the run.
+settled and overstates a phase by ~10–15%, so read a converged pass (3–5). Pin
+an idle card and set the rest of the
+[environment contract](#environment-contract). This runs the GPU plugin
+bundled in the pinned `frx-cuda12-pjrt` wheel; to measure a *locally built*
+Fractalyze XLA plugin instead, see
+[Measure shipped code](#measure-shipped-code).
 
 **Host load is part of the measurement.** Warm LogUp-GKR inflates badly above
 load ~5 — the same build reads 17 ms on an idle box and 27 ms at load 50 — and
@@ -152,61 +249,13 @@ beside any number you quote, and never compare two arms measured in separate
 sessions: interleave them in one run, alternating which arm goes first, or the
 load trend becomes your result.
 
-**Use the persistent compile cache while iterating.** It cuts the cold pass
-from ~175 s to ~28 s (measured, shard17) and does **not** move the warm pass, so
-it is safe for the numbers this tool exists to produce:
-
-```bash
-FRX_COMPILATION_CACHE_DIR=/data/<you>/frx-compile-cache \
-  FRX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS=0 \
-  FRX_RAISE_PERSISTENT_CACHE_ERRORS=true
-```
-
-Both extra flags matter. `min_compile_time` defaults to **1.0 s** and admits
-nothing here, so a cache dir on its own caches zero modules and silently
-changes nothing; and cache errors are swallowed as warnings by default, so a
-broken cache looks exactly like a working one. Check the dir is non-empty
-before trusting that it did anything.
-
-The `--xla_gpu_enable_command_buffer=...` flag captures each fused region (the
-whole-layer LogUp-GKR zone, the trace-commit tail) as a CUDA graph so the warm
-pass isn't host-dispatch-bound. **Do NOT add `--xla_gpu_graph_min_graph_size=1`.**
-It additionally captures every 1-op region (the ~4.3k `wrapped_*` pyramid-transition
-ops) as its own resident CUDA graph; their cross-pass buffer residency
-double-allocates the pyramid intermediate on the warm pass and OOMs a wide shard —
-`shard18 --runs≥2` dies with `RESOURCE_EXHAUSTED: allocate 3.77 GiB` on pass 2,
-while a fresh single-pass prove succeeds. It also gives no speedup, since the
-LogUp-GKR zone is already captured as one big graph.
-
-**A wide shard needs `XLA_PYTHON_CLIENT_ALLOCATOR=cuda_async`.** Under the
-default BFC allocator, shard0 (33 chips, `slot_cap` 77.3M) dies in the GKR phase
-with `RESOURCE_EXHAUSTED: allocate 11.62GiB` while peak usage is only 10.57 GiB
-on a 32 GiB card — fragmentation, not capacity. With `cuda_async` the same shard
-runs clean at 21.4 GiB peak and byte-matches. This is separate from throughput:
-on a narrow shard `cuda_async` measured slightly *slower*, which is why it was
-once written off — but on a wide shard it is the difference between proving and
-not.
-
-`--ffi_verify` byte-verifies the assembled bincode proof through SP1's
-`sp1_verify_shard` FFI; point `SP1_JAX_FFI_LIB` at `libsp1_gpu_jax_ffi.so`
-(vendored in SP1 reference checkouts, e.g. whir-zorch `third_party/sp1/`). This
-runs the GPU plugin bundled in the pinned `frx-cuda12-pjrt` wheel; to measure a
-*locally built* Fractalyze XLA plugin instead, see [Measure shipped code](#measure-shipped-code).
-
-- Runs `ShardProver` (`JaggedPcsProver.commit` → `LogupGkrProver`
-  → `ZerocheckProver` → `JaggedPcsProver.prove`) on the real shard.
-- A `_TimedRound` wrapper prints **per-phase wall-clock** in ms:
-  `[phase TraceCommit] X.Yms`, and likewise for the other three. `--runs=5`
-  proves five times in one process: pass 1 is cold (XLA compiles), passes
-  2–5 are **warm** (executables reused); read a converged pass (3–5), not the
-  first warm pass (see the run note above), and compare it against SP1.
-- **Golden**: the chain's commitment must equal the dump's `main_commit`
-  (`gpu_commitment.txt`), the GKR evaluation point's row tail must equal
-  `gpu_z_row.txt` (SP1's `zeta`, not the zerocheck point), the
-  jagged claim must equal `phase4_sumcheck_claim`, and with `--ffi_verify` the
-  assembled bincode proof is byte-verified through SP1's `sp1_verify_shard` FFI.
-  So sp1-zorch's output is byte-identical to SP1's — the same-output premise
-  holds.
+**Golden — the same-output premise holds.** Every phase byte-checks against
+the dump as it finishes (commitment vs `main_commit`, the GKR evaluation
+point's row tail vs `gpu_z_row.txt` — SP1's `zeta`, not the zerocheck point —
+zerocheck's `final_eval`, the jagged outer sumcheck claim vs
+`phase4_sumcheck_claim`), and `--ffi_verify` byte-verifies the assembled
+bincode proof through SP1's `sp1_verify_shard` FFI. So sp1-zorch's output is
+byte-identical to SP1's.
 
 #### SP1 native side — `riscv-witness/tools/sp1/sp1_shard_prover`
 
@@ -237,7 +286,7 @@ riscv-witness#1971).
 **CPU — reference / parity only.** Without `--gpu` (or via `NoExec` / `Prove` with
 an ELF + stdin) the tool uses `CpuShardProver`: useful as the injection-validity
 / byte-match reference, but **not** the same hardware as sp1-zorch's GPU
-`verify_prove_shard`. Keep CPU phase times out of the GPU-vs-GPU table below.
+`staged_prove_shard`. Keep CPU phase times out of the GPU-vs-GPU table below.
 
 ### Per-phase comparison (shard17)
 

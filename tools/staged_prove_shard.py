@@ -1,67 +1,57 @@
 # Copyright 2026 The sp1-zorch Authors. SPDX-License-Identifier: Apache-2.0
-"""rsp byte-match harness for the assembled prove_shard chain -- a runnable.
+"""Staged shard-prove runner over rsp GPU-trace dumps — THE local GPU harness.
 
-Runs ``ShardProver`` (trace commit -> LogUp-GKR
--> zerocheck -> jagged evaluation proof) over a real rsp dump and seals the
-composition against the reference:
+Drives the shard proof STAGE-BY-STAGE (trace commit -> LogUp-GKR -> zerocheck
+-> jagged evaluation proof) with a memory-release point between stages: each
+stage's spent result object is dropped (only the proof section and the
+transcript threading survive) and gc runs before the next stage allocates, so
+the card holds one stage's working set at a time. That release discipline is
+what keeps a full rsp shard provable on a 32 GB card; the staging order is the
+production staged driver's (same call order, same transcript threading, so the
+Fiat-Shamir stream is the composite ``ShardProver.prove``'s byte for byte).
 
-- the commitment the chain's PCS commit half computes must equal the
-  dump's ``main_commit`` (``gpu_commitment.txt``);
-- the GKR evaluation point's row tail (SP1's ``zeta``) must equal
-  ``gpu_z_row.txt``. ``zeta`` is a sponge image of every byte the chain
-  observed through the LogUp-GKR leg, so this one match transitively pins the
-  preamble (vk, public values, commitment, chip metadata) and the GKR leg,
-  proving the Stage wiring reproduces SP1's transcript. The zerocheck sumcheck
-  point is not dumped to a txt (it lives only in the proof JSON); ``final_eval``
-  below pins the zerocheck rounds instead. ``gpu_z_row.txt`` is SP1's ``zeta``,
-  not the zerocheck point -- see ``zerocheck/verify_zerocheck.py``, the
-  authoritative per-stage check.
-- the jagged eval's outer sumcheck claim must equal
-  ``phase4_sumcheck_claim``, sealing the eval stage's z_col sampling and
-  per-column claim assembly.
+Per-stage golden byte-checks run the instant each stage finishes against the
+dump's references (``gpu_commitment.txt``, ``gpu_z_row.txt``,
+``gpu_zerocheck_state.txt``, ``phase4_sumcheck_claim.txt``) and fail-fast — a
+phase-k mismatch aborts before phase k+1 pays its (multi-minute) compile. A
+full run additionally bincode-encodes the proof and prints ``PROOF_SHA256``,
+the cross-run byte-golden line; ``--ffi_verify`` runs SP1's own verifier over
+the wire bytes (``SP1_JAX_FFI_LIB`` must point at ``libsp1_gpu_jax_ffi.so``).
 
-With ``--ffi_verify`` the tool additionally assembles the bincode wire
-(``encode_vk`` + ``encode_shard_proof``) and runs SP1's own verifier over it
-via the ``sp1_verify_shard`` FFI (``SP1_JAX_FFI_LIB`` must point at
-``libsp1_gpu_jax_ffi.so``) — the end-to-end acceptance gate of
-fractalyze/sp1-zorch#21.
-
-Each downstream Stage's internals are gated by its own runnable
-(``logup_gkr:verify_gkr_prove`` and ``zerocheck:verify_zerocheck`` here, the
-jagged eval's own tests in zorch under ``zorch/pcs/jagged``); the trace commit's
-byte-match is this tool at ``--max_phase=1``, and ``prove_shard_test`` pins both
-its structure and the chain wiring against a synthetic reference. This tool
-checks the composition, not any one Stage's math.
-
-Real-block data (~1.5 GB/shard) plus the GPU trace commit keep this a
-runnable, not a unit test. Needs a CUDA GPU.
-
-    bazel run //sp1_zorch/shard_prover:verify_prove_shard -- \\
+    bazel run //tools:staged_prove_shard -- \\
         --shard_dir=/path/to/rsp_dump/shardN
 
 Wall-clock is dominated by XLA/zkx GPU compiles, not kernel runtime — the
-per-phase timings printed during the run show the split. Pass ``--runs=N``
-to prove the chain N times in one process: run 1 is cold (compiles), runs
-2+ are warm (executables reused), so the warm per-phase ``[phase X] Yms``
-lines are the ones to compare against SP1's native prover. Across separate
-processes, set ``FRX_COMPILATION_CACHE_DIR`` to a per-toolchain directory so
-every run after the first skips the compiles; leave it unset for byte-match
-gates (a cache shared across toolchains has served wrong executables).
+per-phase timings printed during the run show the split. Pass ``--runs=N`` to
+prove the chain N times in one process: run 1 is cold (compiles), runs 2+ are
+warm (executables reused), so the warm per-phase ``[phase X] Yms`` lines are
+the ones to compare against SP1's native prover. Across separate processes,
+set ``FRX_COMPILATION_CACHE_DIR`` to a per-toolchain directory so every run
+after the first skips the compiles; leave it unset for byte-match gates (a
+cache shared across toolchains has served wrong executables).
 
-``--max_phase=N`` runs + byte-checks only the first N phases (1=trace-commit ..
-4=full), a cheaper loop that skips the downstream compiles. The numbering is
-SP1's own tracing spans -- see ``docs/architecture.md`` for how they map onto
-this repo's Stages.
+``--max_phase=N`` runs + byte-checks only the first N phases (1=trace-commit
+.. 4=full), a cheaper loop that skips the downstream compiles. The numbering
+is SP1's own tracing spans -- see ``docs/architecture.md`` for how they map
+onto this repo's Stages.
 
-Each phase's golden check runs the instant that phase finishes, so a mismatch
-exits non-zero *before* the later phases pay their compile -- a phase-1 commit
-mismatch aborts in ~one trace-commit, not after the whole chain.
+Class census logging: every shard prints its ``CHIP_HEIGHTS`` / ``ZC_CLASS``
+/ ``GKR_CLASS`` / ``JAGGED_CLASS`` lines (the compile-class keys); assemble
+cross-shard pin files as the per-field max of those lines, or let
+``warm_shard_cache`` emit the group manifest. Class resolution (manifest >
+pin flags > the shard's own tight class) is
+``sp1_zorch.shard_prover.compile_classes.resolve_classes`` — the same
+definition the warm filler keys its cache cover on.
+
+Real-block data (~1.5 GB/shard) plus the GPU trace commit keep this a
+runnable, not a unit test. Needs a CUDA GPU.
 """
 
 from __future__ import annotations
 
 import dataclasses
 import gc
+import hashlib
 import json
 import sys
 import time
@@ -81,9 +71,14 @@ from zorch.hash.sponge import Sponge, SpongeParams
 from zorch.poly.univariate import eval_coeffs
 from zorch.transcript import DuplexTranscript
 
-from sp1_zorch.logup_gkr.circuit import GkrCapClass, build_gkr_chips
+from sp1_zorch.logup_gkr.circuit import build_gkr_chips
 from sp1_zorch.logup_gkr.prover import num_beta_values
 from sp1_zorch.poseidon2.koalabear16 import koalabear16_params
+from sp1_zorch.shard_prover.compile_classes import (
+    jagged_class,
+    resolve_classes,
+    tight_classes,
+)
 from sp1_zorch.shard_prover.fixture_loader import (
     _parse_ef_list,
     _parse_int_list,
@@ -112,7 +107,6 @@ from sp1_zorch.types import (
     ShardWitness,
     ZerocheckClaim,
 )
-from sp1_zorch.zerocheck.jagged import TotalCapClass
 
 # A phase's golden check: takes that phase's proof section, prints OK/MISMATCH.
 PhaseCheck = Callable[[Any], bool]
@@ -142,6 +136,13 @@ _FFI_VERIFY = flags.DEFINE_bool(
     "ffi_verify",
     False,
     "Assemble the bincode wire and verify it with SP1's sp1_verify_shard FFI.",
+)
+_PROOF_SHA256 = flags.DEFINE_bool(
+    "proof_sha256",
+    True,
+    "On a full run (--max_phase=4), bincode-encode the proof and print its "
+    "sha256 — the cross-run/cross-stack byte-golden line. Encoding is host "
+    "work over the final proof; disable for compile-only drivers.",
 )
 _RUNS = flags.DEFINE_integer(
     "runs",
@@ -187,8 +188,9 @@ _GROUP_MANIFEST_JSON = flags.DEFINE_string(
     "per-shard zerocheck + GKR class, so a single multi-shard process can "
     "prove several chip-set groups at once and still share one compile within "
     "each group (the group-max class per chip set). Overrides "
-    "--zc_class_json / --gkr_class_json for any shard it names; shards absent "
-    "from the manifest fall back to those flags or their own tight class.",
+    "--zc_class_json / --gkr_class_json field-by-field for any shard it "
+    "names; shards absent from the manifest fall back to those flags or "
+    "their own tight class.",
 )
 _JAXPROF_DIR = flags.DEFINE_string(
     "jaxprof_dir",
@@ -269,7 +271,15 @@ def _timed(
     return out
 
 
-def _prove_phases(
+def _release_stage() -> None:
+    """The between-stage release point: collect the spent stage's dropped
+    result object (and everything it pinned) before the next stage allocates.
+    One stage's working set at a time is what fits a full rsp shard on a
+    32 GB card."""
+    gc.collect()
+
+
+def _prove_staged(
     prover: ShardProver,
     claim: ShardClaim,
     witness: ShardWitness,
@@ -277,15 +287,17 @@ def _prove_phases(
     n: int,
     checks: Sequence[PhaseCheck],
 ) -> tuple[ShardProof | None, list[Any], Any, JaggedCommitData | None]:
-    """Run the first ``n`` SP1 phases, timing and byte-checking each.
+    """Run the first ``n`` SP1 phases stage-by-stage, releasing between them.
 
-    The composite ``ShardProver.prove`` runs all four; this mirrors it so
-    ``--max_phase`` can stop early and a mismatch aborts before the next one
-    pays its multi-minute compile. Same call order, same transcript threading,
-    so the stream is the composite's byte for byte.
+    Same call order and transcript threading as the composite
+    ``ShardProver.prove``, so the Fiat-Shamir stream is the composite's byte
+    for byte. Between stages only the proof section and the threading values
+    (transcript, reduced claim, commit data) survive — the spent stage result
+    is dropped and :func:`_release_stage` runs, so device buffers pinned by a
+    finished stage are freed before the next stage's peak.
     """
-    evaluation = commit_data = roots = None
-    gkr = zerocheck = opening = None
+    evaluation = None
+    gkr_claim = gkr_proof = zc_proof = open_proof = None
 
     commitment, commit_data = _timed(
         "TraceCommit",
@@ -296,6 +308,7 @@ def _prove_phases(
     transcript, roots = bind_commitment(transcript, claim, commitment)
 
     if n >= 2:
+        _release_stage()
         gkr = _timed(
             "LogupGkrProver",
             checks,
@@ -303,26 +316,33 @@ def _prove_phases(
             lambda: prover.gkr.prove(claim, witness, transcript),
         )
         transcript = gkr.transcript
-    if n >= 3:
-        # n >= 3 ran the GKR branch above, so its reduced claim exists. Bound to
-        # a local because the lambda defers the read past any narrowing.
-        assert gkr is not None
         gkr_claim = gkr.reduced_claim
+        gkr_proof = gkr.reduction_proof
+        del gkr
+    if n >= 3:
+        # n >= 3 ran the GKR branch above, so its reduced claim exists. Bound
+        # to a local because the lambda defers the read past any narrowing.
+        assert gkr_claim is not None
+        source_claim = gkr_claim
+        _release_stage()
         zerocheck = _timed(
             "ZerocheckProver",
             checks,
             2,
             lambda: prover.zerocheck.prove(
-                ZerocheckClaim(claim.public_values, gkr_claim, claim.chip_metadata),
+                ZerocheckClaim(claim.public_values, source_claim, claim.chip_metadata),
                 witness,
                 transcript,
             ),
         )
         transcript = zerocheck.transcript
         evaluation = zerocheck.reduced_claim
+        zc_proof = zerocheck.reduction_proof
+        del zerocheck
     if n >= 4:
         assert evaluation is not None
         evaluation_claim = evaluation
+        _release_stage()
         opening = _timed(
             "JaggedPcsProver",
             checks,
@@ -333,11 +353,14 @@ def _prove_phases(
                 transcript,
             ),
         )
+        open_proof = opening.reduction_proof
+        del opening
     # Only a full run has a shard proof. A --max_phase prefix ran some phases
     # and has their sections; it does not have a ShardProof, so it does not
     # claim one -- the wire assembly below is gated on the full run anyway.
-    sections = [commitment]
-    sections += [r.reduction_proof for r in (gkr, zerocheck, opening) if r is not None]
+    sections = [
+        s for s in (commitment, gkr_proof, zc_proof, open_proof) if s is not None
+    ]
     proof = ShardProof(*sections) if len(sections) == 4 else None
     return proof, sections, evaluation, commit_data
 
@@ -361,7 +384,7 @@ def main(argv: Sequence[str]) -> None:
         if len(shard_dirs) > 1:
             print(f"===== shard {shard_dir.name} =====", flush=True)
         try:
-            _verify_shard(shard_dir, smcs, shared_chips)
+            _prove_shard_dir(shard_dir, smcs, shared_chips)
         except SystemExit:
             # A phase byte-mismatch fail-fasts the SHARD; keep sweeping the
             # rest — later shards share the compile cache either way.
@@ -377,7 +400,7 @@ def main(argv: Sequence[str]) -> None:
         sys.exit(f"failed shards: {', '.join(failed)}")
 
 
-def _verify_shard(
+def _prove_shard_dir(
     shard_dir: Path, smcs: SingleMatrixCommitmentScheme, shared_chips: dict
 ) -> None:
     shard = load_fixture_shard(shard_dir)
@@ -406,101 +429,48 @@ def _verify_shard(
     # zerocheck rides the traced total-Σheights-cap round (sp1-zorch#242):
     # buffer bounds come from a TotalCapClass, the shard's real heights ride as
     # one traced int32 vector, and the compile keys on the class + chip set —
-    # shards of one class share the executable. Default class: this shard's
-    # own a-priori-tight bounds; --zc_class_json pins a cross-shard class
-    # (assemble it as the per-field max of the ZC_CLASS lines printed here).
+    # shards of one class share the executable. LogUp-GKR rides the same
+    # shard-invariant contract on per-chip height bounds (GkrCapClass).
     print(
         "CHIP_HEIGHTS " + " ".join(f"{n}:{int(r)}" for n, r in zip(order, num_reals)),
         flush=True,
     )
-    prep_widths = (
-        {
-            n: int(prep_region.chip_widths[k])
-            for k, n in enumerate(prep_region.chip_names)
-        }
-        if prep_region is not None
-        else {}
+    own_tc, own_gkr, own_slot = tight_classes(
+        main_region, prep_region, order, num_reals, gkr_chips
     )
-    chip_cols = [
-        int(main_region.chip_widths[i]) + prep_widths.get(name, 0)
-        for i, name in enumerate(order)
-    ]
-    own_class = TotalCapClass.from_heights([int(r) for r in num_reals], chip_cols)
-    print(
-        "ZC_CLASS " + json.dumps({"area_cap": own_class.area_cap}),
-        flush=True,
-    )
-    tc_class = own_class
-    if _ZC_CLASS_JSON.value:
-        with open(_ZC_CLASS_JSON.value) as f:
-            c = {k: int(v) for k, v in json.load(f).items()}
-        tc_class = TotalCapClass(area_cap=c["area_cap"])
-
-    # LogUp-GKR rides the same shard-invariant contract on per-chip height
-    # bounds; --gkr_class_json pins a cross-shard class (per-chip max of the
-    # GKR_CLASS lines printed here).
-    # From the region heights (what the stage packs), not num_reals — the
-    # two agree on real rows but the pack's bound check runs on the region.
-    own_gkr = GkrCapClass.from_heights([int(h) for h in main_region.chip_heights])
+    print("ZC_CLASS " + json.dumps({"area_cap": own_tc.area_cap}), flush=True)
     print(
         "GKR_CLASS "
         + json.dumps(
             {
                 "chip_heights": dict(zip(order, own_gkr.chip_heights)),
-                "slot_cap": own_gkr.resolved_slot_cap(gkr_chips, order),
+                "slot_cap": own_slot,
             }
         ),
         flush=True,
     )
-    gkr_class = own_gkr
+    print("JAGGED_CLASS " + json.dumps(jagged_class(main_region, prep_region)))
+
+    # Pin resolution: the shard's group-manifest entry > the global class
+    # flags > the shard's own tight class (compile_classes.resolve_classes,
+    # the same definition warm_shard_cache keys its cache cover on).
+    zc_spec = gkr_spec = manifest_entry = None
+    if _ZC_CLASS_JSON.value:
+        with open(_ZC_CLASS_JSON.value) as f:
+            zc_spec = {k: int(v) for k, v in json.load(f).items()}
     if _GKR_CLASS_JSON.value:
         with open(_GKR_CLASS_JSON.value) as f:
             gkr_spec = json.load(f)
-        gkr_class = GkrCapClass(
-            tuple(int(gkr_spec["chip_heights"][name]) for name in order),
-            gkr_spec.get("slot_cap"),
-        )
-
-    # Per-shard group class (multi-shard single process): the manifest pins
-    # each shard's zerocheck to its chip-set group's max area_cap, so the whole
-    # group shares one zerocheck compile (the expensive #284-pole stage; the
-    # area spread within a chip set is ~1%, so the buffer inflation is
-    # negligible). A "gkr" entry pins the group's per-chip-max height bounds
-    # (first-layer/open inflation is transient) and "gkr_slot_cap" the group's
-    # pyramid capacity — the pyramid keys on slot_cap, not heights
-    # (GkrCapClass), so the whole group shares one GKR compile set without the
-    # height-driven pyramid inflation. Overrides the global class flags.
     if _GROUP_MANIFEST_JSON.value:
         with open(_GROUP_MANIFEST_JSON.value) as f:
-            entry = json.load(f).get(shard_dir.name)
-        if entry is not None:
-            tc_class = TotalCapClass(area_cap=int(entry["area_cap"]))
-            if "gkr" in entry:
-                gkr_class = GkrCapClass(
-                    tuple(int(entry["gkr"][name]) for name in order),
-                    (int(entry["gkr_slot_cap"]) if "gkr_slot_cap" in entry else None),
-                )
-
-    # The jagged class is fully derived — no pin flag. Same (L, n_d) ⇒
-    # eval-zone cache hit; same K ⇒ open prologue/query hit; the fold zone is
-    # K-independent and always shared (sp1-zorch#274).
-    regions_jc = [r for r in (prep_region, main_region) if r is not None]
-    jagged_l = sum(sum(int(c) for c in r.column_counts) for r in regions_jc)
-    jagged_ks = [
-        int(r.dense.shape[0]) >> int(r.log_stacking_height) for r in regions_jc
-    ]
-    total_area = sum(int(r.dense.shape[0]) for r in regions_jc)
-    print(
-        "JAGGED_CLASS "
-        + json.dumps(
-            {
-                "L": jagged_l,
-                "n_d": (total_area - 1).bit_length() + 1,
-                "K": jagged_ks,
-                "rlc_bits": max(sum(jagged_ks) - 1, 0).bit_length(),
-            }
-        ),
-        flush=True,
+            manifest_entry = json.load(f).get(shard_dir.name)
+    tc_class, gkr_class = resolve_classes(
+        order,
+        own_tc,
+        own_gkr,
+        manifest_entry=manifest_entry,
+        zc_spec=zc_spec,
+        gkr_spec=gkr_spec,
     )
 
     # The GKR witness is consumed only by LogUp-GKR; a trace-commit-only run
@@ -512,9 +482,6 @@ def _verify_shard(
             (shard_dir / "gpu_gkr_state.txt").read_text(), skip_unkeyed=True
         )
         witness = fnp.array(int(gkr_state["witness"]), F)
-    # The zerocheck and GKR jits key statically on the chips / gkr_chips
-    # tuples, so a multi-shard run must present the SAME objects to every
-    # same-chip-set shard — a fresh fixture load's chips would miss the
     shard_claim = ShardClaim(vk, public_values, shard_chip_metadata)
     shard_witness = ShardWitness(main_region, prep_region)
     prover = ShardProver(
@@ -543,9 +510,9 @@ def _verify_shard(
     commit_kv = _parse_kv_lines((shard_dir / "gpu_commitment.txt").read_text())
     want_commit = fnp.array(_parse_int_list(commit_kv["main_commit"]), F)
     # gpu_z_row.txt is SP1's `zeta` -- the LogUp-GKR eval point's row tail
-    # (eval_point[-MAX_LOG_ROW_COUNT:]), NOT the zerocheck point. zeta is a sponge
-    # image of every byte observed through the GKR leg, so matching it seals the
-    # preamble + GKR leg; final_eval seals the zerocheck rounds.
+    # (eval_point[-MAX_LOG_ROW_COUNT:]), NOT the zerocheck point. zeta is a
+    # sponge image of every byte observed through the GKR leg, so matching it
+    # seals the preamble + GKR leg; final_eval seals the zerocheck rounds.
     want_z_row = (
         _parse_ef_list((shard_dir / "gpu_z_row.txt").read_text()) if n >= 2 else None
     )
@@ -564,10 +531,10 @@ def _verify_shard(
         else None
     )
 
-    # Per-phase golden byte-checks, wired into the timed round wrapper (below) to
-    # fire the instant their phase finishes and abort on a mismatch -- so a
-    # phase-k mismatch never pays phase k+1's (multi-minute) compile, instead of
-    # every check firing after the whole chain runs.
+    # Per-phase golden byte-checks, wired into the timed round wrapper to fire
+    # the instant their phase finishes and abort on a mismatch -- so a phase-k
+    # mismatch never pays phase k+1's (multi-minute) compile, instead of every
+    # check firing after the whole chain runs.
     def _check_commit(msg: Any) -> bool:
         return check_match("commitment vs gpu_commitment.main_commit", msg, want_commit)
 
@@ -597,9 +564,9 @@ def _verify_shard(
     # Prove ``--runs`` times: run 1 pays the XLA/zkx compile, runs 2+ reuse it.
     # Each phase is jitted (ShardProver(jit=True)); `_timed` blocks after each
     # phase to print its wall-clock + run its golden check, so the per-phase
-    # split is visible and a mismatch aborts before the next phase compiles. That
-    # wall is host-dispatch-bound, not GPU compute -- for an honest per-phase GPU
-    # number use nsys kernel-active time on the warm pass (#124).
+    # split is visible and a mismatch aborts before the next phase compiles.
+    # That wall is host-dispatch-bound, not GPU compute -- for an honest
+    # per-phase GPU number use nsys kernel-active time on the warm pass (#124).
     runs = _RUNS.value
     _prof_dir = _JAXPROF_DIR.value
     for i in range(runs):
@@ -616,7 +583,7 @@ def _verify_shard(
         # holding a spent pass resident while the next re-allocates the pyramid
         # intermediate is what tips a wide shard over the card on --runs>=2.
         proof = sections = commit_data = evaluation = None
-        proof, sections, evaluation, commit_data = _prove_phases(
+        proof, sections, evaluation, commit_data = _prove_staged(
             prover, shard_claim, shard_witness, fresh_transcript(), n, phase_checks
         )
         frx.block_until_ready(sections)
@@ -628,9 +595,10 @@ def _verify_shard(
     # on a mismatch, so reaching here means phases 1..n all byte-matched.
     print(f"prove_shard chain (phases 1..{n}) byte-match: ALL OK")
 
-    if n >= 4 and _FFI_VERIFY.value:
+    if n >= 4 and (_PROOF_SHA256.value or _FFI_VERIFY.value):
         # n is capped at 4, so n >= 4 means every phase ran and `proof` is a
-        # real ShardProof -- a shorter prefix leaves it None and never gets here.
+        # real ShardProof -- a shorter prefix leaves it None and never gets
+        # here.
         assert proof is not None
         assert evaluation is not None
         assert commit_data is not None
@@ -650,15 +618,20 @@ def _verify_shard(
             f"bincode: vk {len(vk_bytes)} B, proof {len(proof_bytes)} B "
             f"({time.monotonic() - t0:.1f}s)"
         )
-        sp1_verify_shard(
-            vk_bytes,
-            proof_bytes,
-            log_blowup=_LOG_BLOWUP,
-            num_queries=_OPEN_NUM_QUERIES.value,
-            pow_bits=_OPEN_POW_BITS.value,
-            gkr_pow_bits=_GKR_POW_BITS.value,
+        print(
+            f"PROOF_SHA256 {hashlib.sha256(proof_bytes).hexdigest()}",
+            flush=True,
         )
-        print("sp1_verify_shard: ACCEPTED")
+        if _FFI_VERIFY.value:
+            sp1_verify_shard(
+                vk_bytes,
+                proof_bytes,
+                log_blowup=_LOG_BLOWUP,
+                num_queries=_OPEN_NUM_QUERIES.value,
+                pow_bits=_OPEN_POW_BITS.value,
+                gkr_pow_bits=_GKR_POW_BITS.value,
+            )
+            print("sp1_verify_shard: ACCEPTED")
 
 
 if __name__ == "__main__":
