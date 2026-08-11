@@ -71,6 +71,7 @@ from zorch.hash.sponge import Sponge, SpongeParams
 from zorch.poly.univariate import eval_coeffs
 from zorch.transcript import DuplexTranscript
 
+from sp1_zorch.jagged_pcs.prover import JaggedCapClass
 from sp1_zorch.logup_gkr.circuit import build_gkr_chips
 from sp1_zorch.logup_gkr.prover import num_beta_values
 from sp1_zorch.poseidon2.koalabear16 import koalabear16_params
@@ -191,6 +192,16 @@ _GROUP_MANIFEST_JSON = flags.DEFINE_string(
     "--zc_class_json / --gkr_class_json field-by-field for any shard it "
     "names; shards absent from the manifest fall back to those flags or "
     "their own tight class.",
+)
+_JAGGED_SCAN_CAP = flags.DEFINE_integer(
+    "jagged_scan_cap",
+    0,
+    "Row cap per jagged open eval-scan dispatch (JaggedCapClass, "
+    "sp1-zorch#334). 0 keeps the monolithic scan (default); -1 derives each "
+    "shard's tier/8 cap (the <=4 GiB eval-arena point of the keccak-class "
+    "projection); a positive power of two pins the cap explicitly, shared by "
+    "every shard so the chunk zones stay shard-invariant per (layout class, "
+    "cap).",
 )
 _JAXPROF_DIR = flags.DEFINE_string(
     "jaxprof_dir",
@@ -472,6 +483,17 @@ def _prove_shard_dir(
         zc_spec=zc_spec,
         gkr_spec=gkr_spec,
     )
+    # Jagged eval-scan cap (sp1-zorch#334): tier/8 on -1, explicit rows on a
+    # positive value, monolithic on 0. n_d is the padded tier + 1
+    # (compile_classes.jagged_class), so the tier is n_d - 1.
+    jagged_cap = None
+    if _JAGGED_SCAN_CAP.value == -1:
+        tier = int(jagged_class(main_region, prep_region)["n_d"]) - 1
+        jagged_cap = JaggedCapClass.for_tier(tier)
+    elif _JAGGED_SCAN_CAP.value:
+        jagged_cap = JaggedCapClass(_JAGGED_SCAN_CAP.value)
+    if jagged_cap is not None:
+        print(f"JAGGED_SCAN_CAP {jagged_cap.scan_cap}", flush=True)
 
     # The GKR witness is consumed only by LogUp-GKR; a trace-commit-only run
     # (--max_phase=1) slices that off, so don't require the gkr fixture.
@@ -499,6 +521,7 @@ def _prove_shard_dir(
         jit=True,
         zerocheck_total_cap_class=tc_class,
         gkr_cap_class=gkr_class,
+        jagged_cap_class=jagged_cap,
     )
 
     # Parse the golden references up front: a missing/malformed fixture then
