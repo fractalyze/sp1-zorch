@@ -338,6 +338,41 @@ py_test(
     ],
 )
 
+py_test(
+    name = "warm_worker_test",
+    size = "small",
+    srcs = [
+        "warm_worker.py",
+        "warm_worker_test.py",
+    ],
+    # CPU-only commitment-alignment tests over the compile-only wrapper; the
+    # worker module rides along as a src of the warm py_binary. --shard_dir is
+    # a required staged-harness flag the test never reads — satisfy the
+    # parser.
+    args = ["--shard_dir=unused"],
+    main = "warm_worker_test.py",
+    deps = [
+        ":compile_classes",
+        ":prove_shard",
+        ":replay",
+        ":shard_prover",
+        ":sp1_ffi",
+        "//sp1_zorch:types",
+        "//sp1_zorch/logup_gkr",
+        "//sp1_zorch/poseidon2:koalabear16",
+        "//sp1_zorch/zerocheck",
+        "//tools:staged_prove_shard_lib",
+        "@zorch//zorch/commit:smcs",
+        "@zorch//zorch/hash:compression",
+        "@zorch//zorch/hash:sponge",
+        "@zorch//zorch/hash/poseidon2",
+        "@zorch//zorch/poly",
+        requirement("absl_py"),
+        requirement("frx"),
+        requirement("zk_dtypes"),
+    ],
+)
+
 py_binary(
     name = "verify_shard_fixture",
     srcs = ["verify_shard_fixture.py"],
