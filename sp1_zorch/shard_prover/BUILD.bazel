@@ -302,6 +302,39 @@ py_binary(
     ],
 )
 
+py_test(
+    name = "warm_shard_cache_test",
+    size = "small",
+    srcs = [
+        "verify_prove_shard.py",
+        "warm_shard_cache.py",
+        "warm_shard_cache_test.py",
+    ],
+    # Pure selection/cover logic, no GPU and no dump; the warm tool is a
+    # py_binary, so its modules ride along as srcs. --dump_dir is a required
+    # tool flag the test never reads — satisfy the parser.
+    args = ["--dump_dir=unused"],
+    main = "warm_shard_cache_test.py",
+    deps = [
+        ":prove_shard",
+        ":replay",
+        ":shard_prover",
+        ":sp1_ffi",
+        "//sp1_zorch:types",
+        "//sp1_zorch/logup_gkr",
+        "//sp1_zorch/poseidon2:koalabear16",
+        "//sp1_zorch/zerocheck",
+        "@zorch//zorch/commit:smcs",
+        "@zorch//zorch/hash:compression",
+        "@zorch//zorch/hash:sponge",
+        "@zorch//zorch/hash/poseidon2",
+        "@zorch//zorch/poly",
+        requirement("absl_py"),
+        requirement("frx"),
+        requirement("zk_dtypes"),
+    ],
+)
+
 py_binary(
     name = "verify_shard_fixture",
     srcs = ["verify_shard_fixture.py"],

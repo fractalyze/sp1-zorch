@@ -19,11 +19,20 @@ Two steps:
            (one shard each) that drive the real prove chain but lower+compile
            every zone WITHOUT executing a kernel (``warm_worker`` intercepts
            ``frx.jit``), all writing the shared ``--cache_dir``. A real prove
-           later hits every entry with zero recompiles. XLA still autotunes
-           on-device during compile, so a worker peaks at ~2 GiB (46M area) to
-           ~18 GiB (400M, two compile threads) — below the ~29 GiB execute;
-           concurrency is capped by ``--mem_budget_gib``, one shard per worker
-           process.
+           of a WARMED shard later hits every entry with zero recompiles.
+           ``--warm_per_class`` (default) warms only a greedy cover of the
+           dump's class-keyed compile keys — one representative shard per
+           distinct class — since every other shard of a class would re-trace
+           and cache-hit those entries. One zone is per-shard, not
+           class-keyed: ``_jagged_pack_jit`` keys on each region's exact
+           row-count tuples, so a non-selected shard's first prove pays that
+           one compile cold — a cheap concat/pad graph, not a class compile
+           (see ``_COVER_KINDS``).
+           ``--nowarm_per_class`` warms every shard and fills it too. XLA still
+           autotunes on-device during compile, so a worker peaks at ~2 GiB
+           (46M area) to ~18 GiB (400M, two compile threads) — below the
+           ~29 GiB execute; concurrency is capped by ``--mem_budget_gib``,
+           one shard per worker process.
 
 Grouping policy (memory-aware, matches the single-process prove):
   * Zerocheck area_cap is pinned to the chip-set group MAX only when the
@@ -133,6 +142,15 @@ _GPUS = flags.DEFINE_string(
     "whichever GPU drains its queue takes the next group; a whole group stays "
     "on one GPU (concurrent same-class compiles would race the cache). Empty: "
     "one pool on the inherited CUDA_VISIBLE_DEVICES.",
+)
+_WARM_PER_CLASS = flags.DEFINE_bool(
+    "warm_per_class",
+    True,
+    "Warm one representative shard per distinct compile class instead of "
+    "every shard: a class's remaining shards would only re-trace and "
+    "cache-hit every class-keyed zone. Their one per-shard zone (the jagged "
+    "pack, keyed on exact row counts) stays a cheap cold compile on first "
+    "prove. False warms all shards, filling that zone too.",
 )
 
 
@@ -248,6 +266,105 @@ def _snum(s: str) -> int:
     return int(s.replace("shard", ""))
 
 
+# The CLASS-KEYED compile-key kinds one warmed shard fills, mirroring the
+# prove chain: zerocheck rounds key on (chip set, TotalCapClass.area_cap); the
+# LogUp-GKR zones on (chip set, GkrCapClass heights + slot_cap); the
+# trace/open zones on the chip set; the class-keyed jagged zones (eval/open)
+# on the derived (L, n_d, K) class — keyed per chip set here, a conservative
+# refinement of the cache's own key. The chipset kind alone does not
+# distinguish dense region shapes — the jagged kind's (L, n_d, K) is what
+# keeps a same-chip-set different-shape rider off a cold commit/open compile,
+# so it must not be coarsened.
+#
+# Deliberately absent: the jagged PACK zone. ``_jagged_pack_jit`` keys on each
+# region's exact row-count tuple (``rc_rounds``/``cc_rounds`` — the per-chip
+# heights themselves), a per-shard static that no subset short of every shard
+# can cover. It sits outside the cover contract: under ``--warm_per_class`` a
+# non-selected shard's first prove pays that one compile cold — a cheap
+# concat/pad graph, not a class compile.
+_COVER_KINDS = ("zerocheck", "gkr", "chipset", "jagged")
+
+
+def compile_cover_keys(name: str, classes: dict, manifest: dict) -> dict:
+    """Shard ``name``'s effective class-keyed compile keys (``_COVER_KINDS``)
+    under ``manifest`` — a manifest entry overrides the shard's own class, as
+    verify_prove_shard's ``--group_manifest_json`` resolution does for
+    ``_plan``-produced manifests. (A partial hand-written entry is tolerated
+    here where the prove raises ``KeyError``.)"""
+    c = classes[name]
+    order = tuple(c["order"])
+    entry = manifest.get(name, {})
+    area = int(entry.get("area_cap", c["area_cap"]))
+    if "gkr" in entry:
+        heights = tuple(int(entry["gkr"][n]) for n in order)
+        slot = entry.get("gkr_slot_cap")
+    else:
+        heights = tuple(int(c["gkr_heights"][n]) for n in order)
+        slot = c["gkr_slot_bound"]
+    j = c["jagged"]
+    return {
+        "zerocheck": (order, area),
+        "gkr": (order, heights, None if slot is None else int(slot)),
+        "chipset": order,
+        "jagged": (order, int(j["L"]), int(j["n_d"]), tuple(int(k) for k in j["K"])),
+    }
+
+
+def select_warm_shards(
+    classes: dict, manifest: dict, per_class: bool = True
+) -> list[str]:
+    """The shard subset ``--warm`` compiles: every shard, or (``per_class``)
+    a greedy cover of the dump's class-keyed compile keys — one
+    representative per distinct effective zerocheck class (its area-max
+    carrier, so a manifest-less lone run of the representative pins the same
+    class; the grouping policy itself rides in ``manifest``), extended by a
+    carrier for any GKR / chip-set / jagged key the zerocheck picks leave
+    uncovered. The per-shard jagged pack zone is outside the cover (see
+    ``_COVER_KINDS``)."""
+    if not per_class:
+        return sorted(classes, key=_snum)
+    keys = {n: compile_cover_keys(n, classes, manifest) for n in classes}
+    # Area-max first: each class's chosen carrier is its biggest member, and
+    # cover-extension picks are deterministic.
+    by_area = sorted(classes, key=lambda n: (-classes[n]["area_cap"], _snum(n)))
+    selected: list[str] = []
+    covered: set[tuple] = set()  # (kind, key) pairs the selection fills
+    for kind in _COVER_KINDS:
+        for name in by_area:
+            if (kind, keys[name][kind]) not in covered:
+                selected.append(name)
+                covered.update((k, keys[name][k]) for k in _COVER_KINDS)
+    check_warm_cover(selected, classes, manifest)
+    return sorted(selected, key=_snum)
+
+
+def check_warm_cover(selected: Sequence[str], classes: dict, manifest: dict) -> None:
+    """RAISE unless ``selected`` compiles every class-keyed key
+    (``_COVER_KINDS``) an all-shards warm would — the cover contract, checked
+    rather than hoped for. The per-shard jagged pack zone is outside the
+    contract by construction: its key is invisible to ``classes`` and only an
+    all-shards warm fills it."""
+    keys = {n: compile_cover_keys(n, classes, manifest) for n in classes}
+    covered = {(k, keys[n][k]) for n in selected for k in _COVER_KINDS}
+    missing = [
+        (kind, n, keys[n][kind])
+        for n in sorted(classes, key=_snum)
+        for kind in _COVER_KINDS
+        if (kind, keys[n][kind]) not in covered
+    ]
+    if missing:
+        raise ValueError(
+            "per-class warm selection misses compile keys the all-shards "
+            f"warm fills: {missing}"
+        )
+
+
+def _selection_banner(selected: Sequence[str], total: int) -> str:
+    return f"warming {len(selected)} of {total} shards (compile-key cover): " + str(
+        list(selected)
+    )
+
+
 def main(argv: Sequence[str]) -> None:
     del argv
     dirs = _shard_dirs()
@@ -282,6 +399,14 @@ def main(argv: Sequence[str]) -> None:
         Path(manifest_path).write_text(json.dumps(out["manifest"]))
         print(f"wrote manifest -> {manifest_path}")
     if _WARM.value:
+        selected = select_warm_shards(
+            classes, out["manifest"], per_class=_WARM_PER_CLASS.value
+        )
+        if _WARM_PER_CLASS.value:
+            print(_selection_banner(selected, len(dirs)), flush=True)
+        keep = set(selected)
+        dirs = [d for d in dirs if d.name in keep]
+        groups = {o: [s for s in ss if s in keep] for o, ss in groups.items()}
         _warm(dirs, classes, groups, manifest_path)
 
 
