@@ -22,7 +22,7 @@ import numpy as np
 from frx import Array
 from zk_dtypes import koalabear_mont as F
 from zk_dtypes import koalabearx4_mont as EF
-from zorch.hash.poseidon2.poseidon2 import Poseidon2
+from hash_frx.poseidon2.poseidon2 import Poseidon2
 from zorch.pcs.jagged.region import JaggedRegion
 from zorch.transcript import DuplexState, DuplexTranscript, Transcript
 

@@ -198,7 +198,7 @@ _TermFn = Callable[[Array, Array, Array, Array], Array]
 # Module-level jit zone so a chip's round-body `constraint_eval` traces once
 # per (eval_fn, window/num_cols statics, operand avals) process-wide:
 # `lax.composite` re-traces its decomposition on every emission (see
-# zorch._composite's module docstring), and the 3 sumcheck t-points per chip
+# hash_frx.fusion's module docstring), and the 3 sumcheck t-points per chip
 # per round body are aval-identical — only the alpha VALUE (round-0 masking)
 # and the fold coefficient VALUE differ, neither of which enters the trace
 # cache key. The poseidon2 `_permute_body` zone is the sanctioned precedent

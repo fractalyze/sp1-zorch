@@ -21,9 +21,9 @@ from frx import Array
 from rw_constraints import Interaction, VirtualPairCol
 from zk_dtypes import koalabear_mont as F
 from zorch.commit.smcs import SingleMatrixCommitmentScheme
-from zorch.hash.compression import Compression, CompressionParams
-from zorch.hash.poseidon2.poseidon2 import Poseidon2
-from zorch.hash.sponge import Sponge, SpongeParams
+from hash_frx.compression import Compression, CompressionParams
+from hash_frx.poseidon2.poseidon2 import Poseidon2
+from hash_frx.sponge import Sponge, SpongeParams
 from zorch.pcs.jagged.region import JaggedRegion
 from zorch.testkit.transcript import cheap_transcript
 
