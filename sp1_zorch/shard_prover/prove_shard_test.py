@@ -270,7 +270,8 @@ class ProveShardChainTest(absltest.TestCase):
         # stage's base->extension embeds keep its EF->PF converts off the CPU
         # path (frx#168), so the open executes. The hand replay stops at
         # zerocheck, so snapshot the transcript there for the in-sync check;
-        # the open's SP1 byte-match is the GPU verify_prove_shard harness's job.
+        # the open's SP1 byte-match is the GPU //tools:staged_prove_shard
+        # harness's job.
         claim = ShardClaim(vk, public_values, chip_metadata)
         witness = ShardWitness(main_region, prep_region)
         # Run the roles explicitly rather than through `ShardProver.prove`:
@@ -336,8 +337,9 @@ class ProveShardChainTest(absltest.TestCase):
         """The fourth stage runs the outer/inner jagged sumcheck to D(z_final)
         and the stacked BaseFold open over the [prep, main] committed rounds.
         The open exposes one batch-eval set and one component opening per
-        committed round; SP1 byte-correctness is the GPU verify_prove_shard
-        harness's job, so here we pin the executed shape."""
+        committed round; SP1 byte-correctness is the GPU
+        //tools:staged_prove_shard harness's job, so here we pin the executed
+        shape."""
         msg = self.jagged
         self.assertEqual(msg.eval.dense_eval.shape, ())  # scalar D(z_final)
         n_rounds = len(self.digests)

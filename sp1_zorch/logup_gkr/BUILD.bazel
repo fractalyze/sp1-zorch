@@ -114,7 +114,7 @@ py_test(
 )
 
 # rsp byte-match harness over a local GPU-trace capture — a runnable, not a
-# unit test (same convention as //sp1_zorch/shard_prover:verify_prove_shard):
+# unit test (the verify_* runnable convention, docs/conventions.md):
 #   bazel run //sp1_zorch/logup_gkr:verify_first_layer -- \
 #       --shard_dir=/path/to/rsp_dump/shardN
 py_binary(

@@ -98,11 +98,11 @@ def _drain_compiles() -> int:
 frx.jit = _compile_only_jit
 
 from sp1_zorch.logup_gkr import prover as _gkr_prover  # noqa: E402
-from sp1_zorch.shard_prover import verify_prove_shard as V  # noqa: E402
+from tools import staged_prove_shard as S  # noqa: E402
 
 # Bypass value-dependent HOST checks that zero'd compile-only outputs can't
 # satisfy — they gate correctness, not compilation.
-V.check_match = lambda *a, **k: True
+S.check_match = lambda *a, **k: True
 
 
 def _grind_no_pow(transcript: Any, pow_witness: Any, *, pow_bits: int = 0) -> Any:
@@ -120,13 +120,20 @@ _gkr_prover.absorb_grind = _grind_no_pow
 if __name__ == "__main__":
     # argv[1] = comma-separated shard dirs; argv[2] (optional) = group manifest
     # so grouped-zerocheck compiles match the real prove's pinned class.
+    # --noproof_sha256: bincode encoding is host work over the final proof; a
+    # compile-only run's zeroed sections have nothing worth hashing.
     shards = sys.argv[1]
-    argv = ["warm_worker", f"--shard_dir={shards}", "--max_phase=4"]
+    argv = [
+        "warm_worker",
+        f"--shard_dir={shards}",
+        "--max_phase=4",
+        "--noproof_sha256",
+    ]
     if len(sys.argv) > 2 and sys.argv[2]:
         argv.append(f"--group_manifest_json={sys.argv[2]}")
     sys.argv = argv
     try:
-        V.app.run(V.main)
+        S.app.run(S.main)
     except SystemExit:
         pass
     n_failed = _drain_compiles()

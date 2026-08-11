@@ -76,10 +76,13 @@ from typing import Any
 from absl import app, flags
 
 from sp1_zorch.logup_gkr.circuit import GkrCapClass, build_gkr_chips
-from sp1_zorch.shard_prover.verify_prove_shard import (
-    load_fixture_shard,
-    shard_regions,
+from sp1_zorch.shard_prover.compile_classes import (
+    jagged_class,
+    resolve_classes,
+    tight_classes,
 )
+from sp1_zorch.shard_prover.fixture_loader import load_fixture_shard
+from sp1_zorch.shard_prover.replay import shard_regions
 from sp1_zorch.zerocheck.jagged import TotalCapClass
 
 _DUMP_DIR = flags.DEFINE_string(
@@ -92,7 +95,7 @@ _OUT_MANIFEST = flags.DEFINE_string(
     "out_manifest",
     None,
     "Write the per-shard group-class manifest here "
-    "(the --group_manifest_json verify_prove_shard consumes).",
+    "(the --group_manifest_json //tools:staged_prove_shard consumes).",
 )
 _GROUP_AREA_RATIO = flags.DEFINE_float(
     "group_area_ratio",
@@ -167,44 +170,24 @@ def _shard_dirs() -> list[Path]:
 
 
 def _shard_class(sd: Path) -> dict:
-    """Derive one shard's (chip set, zerocheck, GKR, jagged) class — the compile
-    keys, no GPU. Mirrors verify_prove_shard._verify_shard's class block."""
+    """Derive one shard's (chip set, zerocheck, GKR, jagged) class — the
+    compile keys, no GPU — via the shared ``compile_classes`` math the staged
+    prove harness prints as its class census lines."""
     shard = load_fixture_shard(sd)
     main_region, prep_region = shard_regions(shard)
     main = shard.main_trace_data
     order = list(main.traces.chip_order)
     num_reals = [int(main.traces.per_chip[n].num_real) for n in order]
-    prep_w = (
-        {
-            n: int(prep_region.chip_widths[k])
-            for k, n in enumerate(prep_region.chip_names)
-        }
-        if prep_region is not None
-        else {}
-    )
-    chip_cols = [
-        int(main_region.chip_widths[i]) + prep_w.get(name, 0)
-        for i, name in enumerate(order)
-    ]
-    zc = TotalCapClass.from_heights(num_reals, chip_cols)
-    gkr = GkrCapClass.from_heights([int(h) for h in main_region.chip_heights])
     gkr_chips = build_gkr_chips(main.chips, order)
-    slot_bound = gkr.resolved_slot_cap(gkr_chips, order)
-    regions_jc = [r for r in (prep_region, main_region) if r is not None]
-    jl = sum(sum(int(c) for c in r.column_counts) for r in regions_jc)
-    jks = [int(r.dense.shape[0]) >> int(r.log_stacking_height) for r in regions_jc]
-    area = sum(int(r.dense.shape[0]) for r in regions_jc)
+    zc, gkr, slot_bound = tight_classes(
+        main_region, prep_region, order, num_reals, gkr_chips
+    )
     return {
         "order": order,
         "area_cap": int(zc.area_cap),
         "gkr_heights": {n: int(h) for n, h in zip(order, gkr.chip_heights)},
         "gkr_slot_bound": int(slot_bound),
-        "jagged": {
-            "L": jl,
-            "n_d": (area - 1).bit_length() + 1,
-            "K": jks,
-            "rlc_bits": max(sum(jks) - 1, 0).bit_length(),
-        },
+        "jagged": jagged_class(main_region, prep_region),
     }
 
 
@@ -287,24 +270,25 @@ _COVER_KINDS = ("zerocheck", "gkr", "chipset", "jagged")
 
 def compile_cover_keys(name: str, classes: dict, manifest: dict) -> dict:
     """Shard ``name``'s effective class-keyed compile keys (``_COVER_KINDS``)
-    under ``manifest`` — a manifest entry overrides the shard's own class, as
-    verify_prove_shard's ``--group_manifest_json`` resolution does for
-    ``_plan``-produced manifests. (A partial hand-written entry is tolerated
-    here where the prove raises ``KeyError``.)"""
+    under ``manifest`` — resolved by ``compile_classes.resolve_classes``, the
+    SAME field-by-field resolution the staged prove harness applies to its
+    ``--group_manifest_json``, so the cover fills exactly the classes a
+    manifest-driven prove requests (a partial entry pins only what it names)."""
     c = classes[name]
     order = tuple(c["order"])
-    entry = manifest.get(name, {})
-    area = int(entry.get("area_cap", c["area_cap"]))
-    if "gkr" in entry:
-        heights = tuple(int(entry["gkr"][n]) for n in order)
-        slot = entry.get("gkr_slot_cap")
-    else:
-        heights = tuple(int(c["gkr_heights"][n]) for n in order)
-        slot = c["gkr_slot_bound"]
+    tc, gkr = resolve_classes(
+        order,
+        TotalCapClass(area_cap=int(c["area_cap"])),
+        GkrCapClass(
+            tuple(int(c["gkr_heights"][n]) for n in order), int(c["gkr_slot_bound"])
+        ),
+        manifest_entry=manifest.get(name),
+    )
+    slot = gkr.slot_cap
     j = c["jagged"]
     return {
-        "zerocheck": (order, area),
-        "gkr": (order, heights, None if slot is None else int(slot)),
+        "zerocheck": (order, int(tc.area_cap)),
+        "gkr": (order, gkr.chip_heights, None if slot is None else int(slot)),
         "chipset": order,
         "jagged": (order, int(j["L"]), int(j["n_d"]), tuple(int(k) for k in j["K"])),
     }

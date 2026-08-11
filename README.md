@@ -65,7 +65,8 @@ message sails through to CI.
 
 [`docs/development.md`](docs/development.md) has the rest — devving against a
 local `zorch` checkout, the coupled zorch/frx pin, the GPU-plugin gotcha, test
-conventions, and the per-phase SP1 baseline.
+conventions, the staged local shard-prove harness, and the per-phase SP1
+baseline.
 
 ## Documentation
 

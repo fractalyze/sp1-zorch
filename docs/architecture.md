@@ -51,7 +51,7 @@ either, since the verifier never reconstructs a digest tree.
 Between the halves both roles call one shared `bind_commitment`, which absorbs
 SP1's preamble stream and names the roots the opening is checked against, so an
 ordering edit cannot land in one Fiat-Shamir stream and not the other. The
-commit half is byte-matched by `shard_prover:verify_prove_shard --max_phase=1`
+commit half is byte-matched by `//tools:staged_prove_shard --max_phase=1`
 and its structure — digest trees kept, the trace-sized mle dropped — is
 pinned by `shard_prover:prove_shard_test`.
 
@@ -61,9 +61,9 @@ pinned by `shard_prover:prove_shard_test`.
 |---|---|---|---|---|
 | LogUp-GKR (`LogupGkrProver`) | A chain of layer Rounds (output layer → input layer), each layer a chain of per-variable sumcheck rounds | Per-layer running claim, ending in trace-column openings at the final evaluation point | `sp1_zorch/logup_gkr` | `logup_gkr:verify_first_layer`, `logup_gkr:verify_gkr_prove` |
 | Zerocheck (`ZerocheckProver`) | One jagged multi-chip sumcheck: 22 homogeneous per-variable rounds over `eq * (constraint RLC + GKR column term)`, then the per-chip opened values absorbed into the transcript | In: every chip's constraint zero-sum + its GKR opening claim; out: one claim at the sumcheck point + the opened values there (the evaluation Stage's per-column claims) | `sp1_zorch/zerocheck` | `zerocheck:verify_zerocheck` |
-| Jagged opening (`JaggedPcsProver.prove`) | Outer/inner sumcheck reducing the committed trace to `D(z_final)`, then the stacked BaseFold open of `D` at that point | In: the zerocheck point + per-column claims off its source claim; out: the evaluation proof (jagged eval + stacked BaseFold PCS) | `sp1_zorch/jagged_pcs`, over zorch's `zorch/pcs/jagged` primitives | `shard_prover:verify_prove_shard` |
+| Jagged opening (`JaggedPcsProver.prove`) | Outer/inner sumcheck reducing the committed trace to `D(z_final)`, then the stacked BaseFold open of `D` at that point | In: the zerocheck point + per-column claims off its source claim; out: the evaluation proof (jagged eval + stacked BaseFold PCS) | `sp1_zorch/jagged_pcs`, over zorch's `zorch/pcs/jagged` primitives | `//tools:staged_prove_shard` |
 
-Each runnable above gates one Stage's math; `shard_prover:verify_prove_shard`
+Each runnable above gates one Stage's math; `//tools:staged_prove_shard`
 gates the *composition* — it runs the assembled `ShardProver` over a dump and
 seals it on the prove's own trace commitment plus the zerocheck point, which
 transitively pins the full composed transcript. Proof assembly / serialization
@@ -85,8 +85,9 @@ dump files carry that prefix. The numbering:
 | phase 4 | Jagged opening |
 
 **Convention: "phase" names an SP1 tracing span and nothing else** — dump file
-names, capture spans, and the byte-match harness that times itself against
-them (`--max_phase`, the `[phase X]` lines). Our own levels are Stage and
+names, capture spans, and the staged harness that times itself against
+them (`//tools:staged_prove_shard --max_phase`, the `[phase X]` lines). Our
+own levels are Stage and
 Round, and the mapping above is not a synonym list — the two vocabularies
 disagree on the first row.
 

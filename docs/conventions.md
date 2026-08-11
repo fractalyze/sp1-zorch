@@ -102,11 +102,16 @@ Two artifact kinds share the "verif" prefix; they are different things:
 - **`verifier.py`** (in a stage module) — product code: the stage's protocol
   verifier dual. It checks a *proof* — transcript replay plus oracle checks —
   and mirrors SP1's reference verifier.
-- **`verify_*` py_binary runnables** (`verify_prove_shard`, `verify_zerocheck`,
-  `verify_gkr_prove`, `verify_first_layer`) — dev harnesses: rsp byte-match of
-  the *prover* against an external SP1 reference dump (`--shard_dir`), for
+- **`verify_*` py_binary runnables** (`verify_zerocheck`, `verify_gkr_prove`,
+  `verify_first_layer`) — dev harnesses: rsp byte-match of one stage's
+  *prover* against an external SP1 reference dump (`--shard_dir`), for
   full-shard dumps too large to vendor. Their cold-path units
   (`verify_*_test`) test the harness, not the protocol.
 
-Name new files accordingly: a protocol dual is `verifier.py`; a dump-diff
-harness gets the `verify_` prefix.
+Name new files accordingly: a protocol dual is `verifier.py`; a per-stage
+dump-diff harness gets the `verify_` prefix and lives in its stage's module.
+The full-*chain* harness is the one exception: `//tools:staged_prove_shard`
+composes every stage rather than gating one, so it lives in `tools/` and is
+named for what distinguishes it — the staged driving
+([development.md](development.md#running-a-local-shard-prove)) — while still
+byte-checking every phase against the dump.
