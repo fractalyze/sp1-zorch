@@ -8,6 +8,8 @@ import json
 from collections.abc import Sequence
 from typing import Any
 
+from unittest import mock
+
 from absl.testing import absltest
 from absl.testing import parameterized
 
@@ -221,6 +223,34 @@ class LaunchAllowedTest(absltest.TestCase):
 
     def test_free_at_peak_plus_headroom_launches(self) -> None:
         self.assertTrue(wsc.launch_allowed(10.0 + wsc._LAUNCH_HEADROOM_GIB, 10.0))
+
+
+class SoloRetryTest(absltest.TestCase):
+    def test_recovered_shard_counts_and_reruns_the_worker(self) -> None:
+        calls = []
+
+        def fake_run(argv: list[str], env: dict[str, str]) -> mock.Mock:
+            calls.append((argv, env))
+            return mock.Mock(returncode=0)
+
+        with mock.patch.object(wsc.subprocess, "run", side_effect=fake_run):
+            n = wsc._solo_retry(["/d/shard22"], ["1"], {"A": "b"}, "/m.json")
+        self.assertEqual(n, 1)
+        argv, env = calls[0]
+        self.assertIn("sp1_zorch.shard_prover.warm_worker", argv)
+        self.assertIn("/d/shard22", argv)
+        self.assertEqual(env["CUDA_VISIBLE_DEVICES"], "1")
+
+    def test_failed_retry_does_not_count(self) -> None:
+        with mock.patch.object(
+            wsc.subprocess, "run", return_value=mock.Mock(returncode=1)
+        ):
+            self.assertEqual(wsc._solo_retry(["/d/shard22"], [None], {}, ""), 0)
+
+    def test_no_failures_runs_nothing(self) -> None:
+        with mock.patch.object(wsc.subprocess, "run") as run:
+            self.assertEqual(wsc._solo_retry([], [None], {}, ""), 0)
+        run.assert_not_called()
 
 
 if __name__ == "__main__":
