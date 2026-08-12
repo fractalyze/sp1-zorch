@@ -1,14 +1,18 @@
 # Copyright 2026 The sp1-zorch Authors. SPDX-License-Identifier: Apache-2.0
 """The JaggedCapClass-gated chunked eval scan (sp1-zorch#334).
 
-Three contracts: the chunked open is byte-identical to the monolithic one
+Four contracts: the chunked open is byte-identical to the monolithic one
 (exact field arithmetic — no tolerance), an unset class keeps the monolithic
-path (HEAD behavior), and the chunk zones compile once per (layout class,
-scan cap) — shards differing only in heights share every chunk executable."""
+path (HEAD behavior), the chunk zones compile once per (layout class,
+scan cap) — shards differing only in heights share every chunk executable —
+and the chunk zone's traced intermediates total O(chunk width) bytes, so its
+temp arena scales with the cap rather than with unrolled per-bit chains."""
 
 from __future__ import annotations
 
 import dataclasses
+import math
+from functools import partial
 from typing import Any
 
 import frx
@@ -23,8 +27,10 @@ from hash_frx.compression import Compression, CompressionParams
 from hash_frx.poseidon2.poseidon2 import Poseidon2
 from hash_frx.sponge import Sponge, SpongeParams
 from zorch.pcs.jagged.commit import commit_region
+from zorch.pcs.jagged.prover import eval_column_arrays
 from zorch.pcs.jagged.region import JaggedRegion
 from zorch.testkit.transcript import cheap_transcript
+from zorch.utils.bits import log2_ceil_usize
 
 from sp1_zorch.jagged_pcs.prover import (
     JaggedCapClass,
@@ -34,6 +40,7 @@ from sp1_zorch.jagged_pcs.prover import (
     _jagged_outer_chunk_fold_jit,
     _jagged_outer_chunk_partials_jit,
     _jagged_outer_tail_jit,
+    _outer_chunk_partials,
 )
 from sp1_zorch.poseidon2.koalabear16 import koalabear16_params
 from sp1_zorch.types import (
@@ -231,6 +238,57 @@ class ChunkedEvalByteIdentityTest(parameterized.TestCase):
             _jagged_outer_chunk_partials_jit._cache_size(), partials_before
         )
         self.assertGreaterEqual(_jagged_eval_jit._cache_size() - eval_before, 0)
+
+
+class ChunkZoneLiveWidthTest(absltest.TestCase):
+    """Trace-time arena guard on the chunk zone: the traced body's
+    intermediate aval bytes must total O(chunk width) with a constant
+    independent of the row-variable count and the searchsorted depth.
+
+    A per-bit or per-search-step chunk-width chain unrolled at the top level
+    trips the bound — XLA's operand-capped fusion pins every such
+    intermediate (plus one chunk-width scalar broadcast per bit) as
+    simultaneously-resident buffers, a temp arena of tens of chunk widths at
+    the production 2^26 cap."""
+
+    # The loop-carried body traces ~200 intermediate bytes per chunk row
+    # (a dozen-odd chunk-width values, mixed EF/int32/bool, at any fold
+    # depth); an unrolled 22-bit row-eq chain alone is ~2,300 bytes per row.
+    _CAP_BYTES_PER_ROW = 512
+
+    @staticmethod
+    def _intermediate_bytes(jaxpr: Any) -> int:
+        """Sum of eqn-output aval bytes at the zone's top level. Loop bodies
+        count once via their carry outputs — their internal buffers are
+        reused across iterations, exactly the live-set the bound models."""
+        return sum(
+            math.prod(v.aval.shape) * v.aval.dtype.itemsize
+            for eqn in jaxpr.eqns
+            for v in eqn.outvars
+        )
+
+    def test_chunk_zone_intermediates_scale_with_chunk_width(self) -> None:
+        chunk_rows = 1 << 16
+        n_cols = 512  # searchsorted depth log2_ceil(513) + 2 = 12 steps
+        n_r = 22  # the keccak-class row-variable count
+        offsets, _ = eval_column_arrays([4] * n_cols, dtype=EF)
+        dense = fnp.zeros((2 * chunk_rows,), F)
+        z_row = _rand_ef(11, (n_r,))
+        z_col = _rand_ef(12, (log2_ceil_usize(n_cols),))
+        start = fnp.asarray(0, fnp.int32)
+        for depth in (0, 3):
+            folds = _rand_ef(13, (depth,))
+            closed = frx.make_jaxpr(
+                partial(_outer_chunk_partials, chunk_rows=chunk_rows)
+            )(offsets, dense, z_row, z_col, start, folds)
+            total = self._intermediate_bytes(closed.jaxpr)
+            self.assertLessEqual(
+                total,
+                self._CAP_BYTES_PER_ROW * chunk_rows,
+                f"fold depth {depth}: {total / chunk_rows:.0f} traced "
+                "intermediate bytes per chunk row — a chunk-width chain is "
+                "unrolled in the chunk zone body",
+            )
 
 
 class ChunkZoneCompileSharingTest(absltest.TestCase):
