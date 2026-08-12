@@ -153,6 +153,15 @@ def _compile_only_jit(fn: Callable[..., Any] | None = None, **kw: Any) -> Any:
     return wrapper
 
 
+def _chain_rc(code: object) -> int:
+    """The shard chain's verdict from ``app.run``'s SystemExit code: absl
+    always leaves via SystemExit, and the staged sweep exits with a
+    failed-shards payload when any shard's chain died. 0/None is a clean
+    pass; anything else (a nonzero int or a message string) is a dead chain
+    the worker must report as its own failure."""
+    return 0 if code in (0, None) else 1
+
+
 def _drain_compiles() -> int:
     """Wait for queued backend compiles; count successes, report failures."""
     failed = 0
@@ -204,21 +213,20 @@ if __name__ == "__main__":
     if len(sys.argv) > 2 and sys.argv[2]:
         argv.append(f"--group_manifest_json={sys.argv[2]}")
     sys.argv = argv
-    # app.run always leaves via SystemExit; only a zero code is a clean pass.
-    # The harness exits nonzero on a failed shard sweep, and swallowing that
-    # made a dead shard count as warmed (zkvm-prover#161, sp1-zorch#341).
-    body_failed = False
+    # A swallowed failure payload would count a dead shard chain as warmed
+    # while its tail zones never compiled (zkvm-prover#161, sp1-zorch#341).
+    chain_rc = 0
     try:
         S.app.run(S.main)
     except SystemExit as e:
-        body_failed = bool(e.code)
+        chain_rc = _chain_rc(e.code)
     n_failed = _drain_compiles()
     st = frx.local_devices()[0].memory_stats() or {}
     print(
         f"=== worker done: {_stats['compiled']} zones compiled, "
-        f"{n_failed} failed, harness={'FAILED' if body_failed else 'ok'}, "
+        f"{n_failed} failed, harness={'FAILED' if chain_rc else 'ok'}, "
         f"peak={st.get('peak_bytes_in_use', 0) / 2**30:.2f}GiB ===",
         flush=True,
     )
-    if n_failed or body_failed:
+    if n_failed or chain_rc:
         sys.exit(1)

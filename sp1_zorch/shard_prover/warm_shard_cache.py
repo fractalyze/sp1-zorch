@@ -155,6 +155,25 @@ _WARM_PER_CLASS = flags.DEFINE_bool(
     "pack, keyed on exact row counts) stays a cheap cold compile on first "
     "prove. False warms all shards, filling that zone too.",
 )
+_FRONT_SHARDS = flags.DEFINE_string(
+    "front_shards",
+    "",
+    "Comma-separated shard dir names moved to the head of the dispatch order "
+    "(named shards first, in the given order; the rest keep the area-desc "
+    "order). On a single GPU the group cost queue is not consulted and "
+    "area-desc fires the keccak class (~93 zones, the wall pole) late; "
+    "front-loading it overlaps its long compile with everything else.",
+)
+_PEAK_OVERRIDES_JSON = flags.DEFINE_string(
+    "peak_overrides_json",
+    "",
+    "JSON file mapping shard dir name -> measured device peak GiB, applied "
+    "verbatim in place of the area-formula estimate for the listed shards — "
+    "the operator owns any safety margin. Pool-peak readings miss "
+    "compile/autotune transients (jagged rematerialization floors ~13 GiB "
+    "at 400M area), so an override below the real transient can over-pack "
+    "and kill worker chains; prefer conservative values.",
+)
 
 
 def _shard_dirs() -> list[Path]:
@@ -402,6 +421,30 @@ def _est_peak_gib(area_cap: int) -> float:
     return 4.0 + area_cap / 28e6  # 400M -> ~18.3 GiB (measured at 402M)
 
 
+def front_load(shards: Sequence[str], front: Sequence[str]) -> list[str]:
+    """Dispatch order with the ``front`` shard dir names moved to the head,
+    in the given order; the rest keep their relative order (stable sort)."""
+    rank = {n: i for i, n in enumerate(front)}
+    return sorted(shards, key=lambda s: rank.get(Path(s).name, len(rank)))
+
+
+def shard_peaks(
+    shards: Sequence[str], classes: dict, overrides_path: str = ""
+) -> dict[str, float]:
+    """Per-shard device-peak GiB the scheduler packs against: the measured
+    override verbatim for shards listed in ``overrides_path``
+    (``--peak_overrides_json``), the area-formula estimate otherwise."""
+    overrides = json.loads(Path(overrides_path).read_text()) if overrides_path else {}
+    return {
+        s: (
+            float(overrides[Path(s).name])
+            if Path(s).name in overrides
+            else _est_peak_gib(classes[Path(s).name]["area_cap"])
+        )
+        for s in shards
+    }
+
+
 def _group_queue(classes: dict, groups: dict) -> list[list[str]]:
     """Chip-set groups as a work queue, costliest first. Cost = the group's
     distinct cold zerocheck compiles (a tight group prices as its one pinned
@@ -438,7 +481,10 @@ def _warm(dirs: list[Path], classes: dict, groups: dict, manifest_path: str) -> 
     shards = sorted(
         (str(sd) for sd in dirs), key=lambda s: -classes[Path(s).name]["area_cap"]
     )
-    peaks = {s: _est_peak_gib(classes[Path(s).name]["area_cap"]) for s in shards}
+    front = [n.strip() for n in _FRONT_SHARDS.value.split(",") if n.strip()]
+    if front:
+        shards = front_load(shards, front)
+    peaks = shard_peaks(shards, classes, _PEAK_OVERRIDES_JSON.value)
     budget = _MEM_BUDGET_GIB.value
     # Cap each worker's cuda_async pool so freed autotune scratch is RELEASED
     # between the ~95 zone compiles instead of accumulating (autotune stays ON,
@@ -487,11 +533,20 @@ def _warm(dirs: list[Path], classes: dict, groups: dict, manifest_path: str) -> 
                 launched = False
                 mine = [(s, pk) for s, pk, pg in running.values() if pg == g]
                 used = sum(pk for _, pk in mine)
-                s = queue[0]
+                # First FITTING shard, not the head: a small shard must not
+                # wait behind a blocked big head.
+                pick = None
+                for cand in queue:
+                    if not mine or used + peaks[cand] <= budget:
+                        pick = cand
+                        break
+                if pick is None:
+                    break
+                s = pick
                 # Always allow one worker even if a lone big shard exceeds
                 # the budget.
                 if len(mine) < _JOBS.value and (not mine or used + peaks[s] <= budget):
-                    queue.pop(0)
+                    queue.remove(s)
                     wenv = env if g is None else dict(env, CUDA_VISIBLE_DEVICES=g)
                     p = subprocess.Popen(
                         [
