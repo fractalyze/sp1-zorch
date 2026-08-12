@@ -170,6 +170,21 @@ class CacheKeyAlignmentTest(absltest.TestCase):
         self.assertEqual(_entries(self._cache), n_staged)
 
 
+class ChainRcTest(absltest.TestCase):
+    """The worker's exit code must carry the harness verdict: absl's app.run
+    always leaves via SystemExit, and the staged sweep exits with a
+    failed-shards payload when any shard's chain died."""
+
+    def test_failure_payload_is_nonzero(self) -> None:
+        self.assertEqual(ww._chain_rc("failed shards: ['shard3']"), 1)
+        self.assertEqual(ww._chain_rc(1), 1)
+        self.assertEqual(ww._chain_rc(2), 1)
+
+    def test_clean_exit_is_zero(self) -> None:
+        self.assertEqual(ww._chain_rc(0), 0)
+        self.assertEqual(ww._chain_rc(None), 0)
+
+
 class LoweringArgsTest(absltest.TestCase):
     def test_no_translation_without_topology(self) -> None:
         committed = jax.device_put(fnp.ones((2,), np.float32), _cpu())

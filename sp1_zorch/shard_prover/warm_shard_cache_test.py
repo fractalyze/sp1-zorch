@@ -4,6 +4,7 @@ compile keys (``select_warm_shards``) and its RAISE-on-gap cover contract
 (``check_warm_cover``), on synthetic analyze fixtures. The per-shard jagged
 pack zone is outside the contract (see ``_COVER_KINDS``)."""
 
+import json
 from collections.abc import Sequence
 from typing import Any
 
@@ -165,6 +166,61 @@ class CheckWarmCoverTest(parameterized.TestCase):
     def test_passes_on_full_selection(self) -> None:
         classes = {"shard0": _cls(("a",), 100), "shard1": _cls(("b",), 200)}
         wsc.check_warm_cover(["shard0", "shard1"], classes, {})
+
+
+class FrontLoadTest(absltest.TestCase):
+    def test_named_shards_lead_in_given_order(self) -> None:
+        shards = ["/d/shard0", "/d/shard1", "/d/shard2", "/d/shard3"]
+        self.assertEqual(
+            wsc.front_load(shards, ["shard2", "shard1"]),
+            ["/d/shard2", "/d/shard1", "/d/shard0", "/d/shard3"],
+        )
+
+    def test_rest_keeps_relative_order(self) -> None:
+        # The tail must stay in the caller's (area-desc) order, stably.
+        shards = ["/d/shard5", "/d/shard2", "/d/shard9", "/d/shard1"]
+        self.assertEqual(
+            wsc.front_load(shards, ["shard9"]),
+            ["/d/shard9", "/d/shard5", "/d/shard2", "/d/shard1"],
+        )
+
+    def test_unknown_names_are_ignored(self) -> None:
+        shards = ["/d/shard0", "/d/shard1"]
+        self.assertEqual(wsc.front_load(shards, ["shardX"]), shards)
+
+    def test_empty_front_is_identity(self) -> None:
+        shards = ["/d/shard1", "/d/shard0"]
+        self.assertEqual(wsc.front_load(shards, []), shards)
+
+
+class ShardPeaksTest(absltest.TestCase):
+    def test_override_applies_verbatim_estimate_elsewhere(self) -> None:
+        classes = {
+            "shard0": _cls(("a",), 402_000_000),
+            "shard1": _cls(("a",), 46_000_000),
+        }
+        f = self.create_tempfile(content=json.dumps({"shard0": 10.05}))
+        peaks = wsc.shard_peaks(["/d/shard0", "/d/shard1"], classes, f.full_path)
+        self.assertEqual(peaks["/d/shard0"], 10.05)
+        self.assertEqual(peaks["/d/shard1"], wsc._est_peak_gib(46_000_000))
+
+    def test_no_overrides_path_uses_estimates(self) -> None:
+        classes = {"shard0": _cls(("a",), 100_000_000)}
+        peaks = wsc.shard_peaks(["/d/shard0"], classes)
+        self.assertEqual(peaks["/d/shard0"], wsc._est_peak_gib(100_000_000))
+
+
+class LaunchAllowedTest(absltest.TestCase):
+    def test_unreadable_free_falls_back_to_estimates(self) -> None:
+        self.assertTrue(wsc.launch_allowed(None, 18.0))
+
+    def test_free_below_peak_plus_headroom_blocks(self) -> None:
+        self.assertFalse(
+            wsc.launch_allowed(10.0 + wsc._LAUNCH_HEADROOM_GIB - 0.1, 10.0)
+        )
+
+    def test_free_at_peak_plus_headroom_launches(self) -> None:
+        self.assertTrue(wsc.launch_allowed(10.0 + wsc._LAUNCH_HEADROOM_GIB, 10.0))
 
 
 if __name__ == "__main__":
