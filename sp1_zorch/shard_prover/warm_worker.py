@@ -170,7 +170,7 @@ def _drain_compiles() -> int:
 frx.jit = _compile_only_jit
 
 from sp1_zorch.logup_gkr import prover as _gkr_prover  # noqa: E402
-from tools import staged_prove_shard as S  # noqa: E402
+from sp1_zorch.shard_prover import staged_prove_shard as S  # noqa: E402
 
 # Bypass value-dependent HOST checks that zero'd compile-only outputs can't
 # satisfy — they gate correctness, not compilation.
@@ -204,17 +204,21 @@ if __name__ == "__main__":
     if len(sys.argv) > 2 and sys.argv[2]:
         argv.append(f"--group_manifest_json={sys.argv[2]}")
     sys.argv = argv
+    # app.run always leaves via SystemExit; only a zero code is a clean pass.
+    # The harness exits nonzero on a failed shard sweep, and swallowing that
+    # made a dead shard count as warmed (zkvm-prover#161, sp1-zorch#341).
+    body_failed = False
     try:
         S.app.run(S.main)
-    except SystemExit:
-        pass
+    except SystemExit as e:
+        body_failed = bool(e.code)
     n_failed = _drain_compiles()
     st = frx.local_devices()[0].memory_stats() or {}
     print(
         f"=== worker done: {_stats['compiled']} zones compiled, "
-        f"{n_failed} failed, "
+        f"{n_failed} failed, harness={'FAILED' if body_failed else 'ok'}, "
         f"peak={st.get('peak_bytes_in_use', 0) / 2**30:.2f}GiB ===",
         flush=True,
     )
-    if n_failed:
+    if n_failed or body_failed:
         sys.exit(1)

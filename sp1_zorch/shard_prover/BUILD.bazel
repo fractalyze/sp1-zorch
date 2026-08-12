@@ -287,7 +287,7 @@ py_binary(
         "//sp1_zorch/zerocheck",
         # warm_worker drives the staged harness main under its frx.jit
         # intercept, so the warmed executables match a real staged prove.
-        "//tools:staged_prove_shard_lib",
+        ":staged_prove_shard",
         "@zorch//zorch/commit:smcs",
         "@zorch//zorch/poly",
         requirement("absl_py"),
@@ -349,11 +349,11 @@ py_test(
         ":replay",
         ":shard_prover",
         ":sp1_ffi",
+        ":staged_prove_shard",
         "//sp1_zorch:types",
         "//sp1_zorch/logup_gkr",
         "//sp1_zorch/poseidon2:koalabear16",
         "//sp1_zorch/zerocheck",
-        "//tools:staged_prove_shard_lib",
         "@zorch//zorch/commit:smcs",
         "@zorch//zorch/poly",
         requirement("absl_py"),
@@ -373,6 +373,44 @@ py_binary(
     deps = [
         ":shard_prover",
         requirement("absl_py"),
+        requirement("zk_dtypes"),
+    ],
+)
+
+# The staged runner as an importable, wheel-shipped module: warm_worker drives
+# the same main under its compile-only frx.jit intercept, so the warmed
+# executable set is exactly what a real staged prove requests
+# (//tools:staged_prove_shard is a launcher shim over this target).
+py_library(
+    name = "staged_prove_shard",
+    srcs = ["staged_prove_shard.py"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":compile_classes",
+        ":prove_shard",
+        ":replay",
+        ":shard_prover",
+        ":sp1_ffi",
+        "//sp1_zorch/jagged_pcs",
+        "//sp1_zorch/logup_gkr",
+        "//sp1_zorch/poseidon2:koalabear16",
+        "@zorch//zorch/commit:smcs",
+        "@zorch//zorch/poly",
+        requirement("absl_py"),
+        requirement("frx"),
+        requirement("hash_frx"),
+        requirement("zk_dtypes"),
+    ],
+)
+
+py_test(
+    name = "staged_prove_shard_test",
+    size = "small",
+    srcs = ["staged_prove_shard_test.py"],
+    deps = [
+        ":staged_prove_shard",
+        requirement("absl_py"),
+        requirement("frx"),
         requirement("zk_dtypes"),
     ],
 )
