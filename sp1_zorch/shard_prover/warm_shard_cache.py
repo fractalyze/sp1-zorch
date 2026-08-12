@@ -508,6 +508,38 @@ def _group_queue(classes: dict, groups: dict) -> list[list[str]]:
     return ordered
 
 
+def _solo_retry(
+    failed_shards: Sequence[str], gpus: Sequence, env: dict, manifest_path: str
+) -> int:
+    """One SOLO retry per failed shard, after the worker pool drained. The
+    dominant failure is a transient co-tenancy OOM — a mid-chain alloc
+    landing on a momentarily full card — and a lone retry sees the whole
+    card while its shared zones now cache-hit, so the retry is cheap.
+    Returns how many shards recovered."""
+    recovered = 0
+    for s in failed_shards:
+        name = Path(s).name
+        print(f"  solo retry: {name}", flush=True)
+        g = next(iter(gpus))
+        wenv = env if g is None else dict(env, CUDA_VISIBLE_DEVICES=g)
+        rc = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "sp1_zorch.shard_prover.warm_worker",
+                s,
+                manifest_path or "",
+            ],
+            env=wenv,
+        ).returncode
+        if rc == 0:
+            recovered += 1
+            print(f"  solo retry ok: {name}", flush=True)
+        else:
+            print(f"  solo retry for {name} exited {rc}", flush=True)
+    return recovered
+
+
 def _warm(dirs: list[Path], classes: dict, groups: dict, manifest_path: str) -> None:
     cache = _CACHE_DIR.value
     Path(cache).mkdir(parents=True, exist_ok=True)
@@ -555,6 +587,7 @@ def _warm(dirs: list[Path], classes: dict, groups: dict, manifest_path: str) -> 
     pending: dict = {g: [] for g in gpus}  # per-GPU shard queue
     running: dict = {}  # Popen -> (shard, peak, gpu)
     ok = fail = 0
+    failed_shards: list[str] = []
     while any(pending.values()) or group_q or running:
         for g in gpus:
             queue = pending[g]
@@ -607,12 +640,16 @@ def _warm(dirs: list[Path], classes: dict, groups: dict, manifest_path: str) -> 
                     ok += 1
                 else:
                     fail += 1
+                    failed_shards.append(s)
                     print(
                         f"  warm worker for {Path(s).name} exited " f"{p.returncode}",
                         flush=True,
                     )
         if running:
             time.sleep(2)
+    recovered = _solo_retry(failed_shards, gpus, env, manifest_path)
+    ok += recovered
+    fail -= recovered
     entries = sum(1 for _ in Path(cache).rglob("*") if _.is_file())
     print(
         f"=== warm done: {ok}/{ok + fail} shards ok; " f"cache entries: {entries} ===",
