@@ -4,11 +4,13 @@ prover, and the flag-surface parse smoke. The GPU prove + golden byte-match
 run through the ``//tools:staged_prove_shard`` runnable itself."""
 
 from types import SimpleNamespace
+from collections.abc import Sequence
+from typing import Any, cast
 from unittest import mock
 
 from absl.testing import absltest, flagsaver
 
-from tools import staged_prove_shard as sps
+from sp1_zorch.shard_prover import staged_prove_shard as sps
 
 
 class _StubProver:
@@ -16,14 +18,17 @@ class _StubProver:
 
     def __init__(self, calls: list[str]) -> None:
         self._calls = calls
+        self.zerocheck_source_claim: Any = None
         outer = self
 
         class _Opening:
-            def commit(self, witness):
+            def commit(self, witness: Any) -> tuple[str, str]:
                 outer._calls.append("commit")
                 return "commitment", "commit_data"
 
-            def prove(self, claim, witness, transcript):
+            def prove(
+                self, claim: Any, witness: Any, transcript: Any
+            ) -> SimpleNamespace:
                 outer._calls.append("opening")
                 return SimpleNamespace(
                     transcript=transcript + ["opening"],
@@ -32,7 +37,9 @@ class _StubProver:
                 )
 
         class _Gkr:
-            def prove(self, claim, witness, transcript):
+            def prove(
+                self, claim: Any, witness: Any, transcript: Any
+            ) -> SimpleNamespace:
                 outer._calls.append("gkr")
                 return SimpleNamespace(
                     transcript=transcript + ["gkr"],
@@ -41,7 +48,9 @@ class _StubProver:
                 )
 
         class _Zerocheck:
-            def prove(self, claim, witness, transcript):
+            def prove(
+                self, claim: Any, witness: Any, transcript: Any
+            ) -> SimpleNamespace:
                 outer._calls.append("zerocheck")
                 outer.zerocheck_source_claim = claim
                 return SimpleNamespace(
@@ -55,12 +64,12 @@ class _StubProver:
         self.zerocheck = _Zerocheck()
 
 
-def _claim():
+def _claim() -> SimpleNamespace:
     return SimpleNamespace(public_values="pv", chip_metadata="meta")
 
 
 class ProveStagedTest(absltest.TestCase):
-    def _run(self, n: int, checks=()):
+    def _run(self, n: int, checks: Sequence[Any] = ()) -> tuple:
         calls: list[str] = []
         prover = _StubProver(calls)
         releases: list[int] = []
@@ -75,7 +84,14 @@ class ProveStagedTest(absltest.TestCase):
             ),
             mock.patch.object(sps, "ShardProof", lambda *sections: sections),
         ):
-            out = sps._prove_staged(prover, _claim(), "witness", [], n, checks)
+            out = sps._prove_staged(
+                cast(Any, prover),
+                cast(Any, _claim()),
+                cast(Any, "witness"),
+                [],
+                n,
+                checks,
+            )
         return prover, calls, releases, out
 
     def test_full_chain_order_and_threading(self) -> None:
@@ -115,7 +131,7 @@ class ProveStagedTest(absltest.TestCase):
     def test_phase_check_runs_per_stage_and_fail_fast_exits(self) -> None:
         seen: list[str] = []
 
-        def _ok(section):
+        def _ok(section: str) -> bool:
             seen.append(section)
             return True
 

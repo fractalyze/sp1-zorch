@@ -518,11 +518,16 @@ def _warm(dirs: list[Path], classes: dict, groups: dict, manifest_path: str) -> 
                     )
         if running:
             time.sleep(2)
+    entries = sum(1 for _ in Path(cache).rglob("*") if _.is_file())
     print(
-        f"=== warm done: {ok}/{ok + fail} shards ok; "
-        f"cache entries: {sum(1 for _ in Path(cache).rglob('*') if _.is_file())} ===",
+        f"=== warm done: {ok}/{ok + fail} shards ok; " f"cache entries: {entries} ===",
         flush=True,
     )
+    # A warm that filled nothing is a broken prewarm, not a success: callers
+    # (donor reseed, bring-up prewarm) treat exit 0 as "cache is served" and
+    # then eat the full cold penalty silently (sp1-zorch#341).
+    if fail or not ok or entries == 0:
+        sys.exit(f"warm FAILED: {fail} worker(s) failed, {entries} cache entries")
 
 
 if __name__ == "__main__":

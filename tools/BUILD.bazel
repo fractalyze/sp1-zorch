@@ -1,30 +1,5 @@
-load("@rules_python//python:defs.bzl", "py_binary", "py_library", "py_test")
+load("@rules_python//python:defs.bzl", "py_binary")
 load("@sp1_zorch_pip//:requirements.bzl", "requirement")
-
-# The staged runner as an importable module: warm_worker drives the same
-# main under its compile-only frx.jit intercept, so the warmed executable set
-# is exactly what a real staged prove requests.
-py_library(
-    name = "staged_prove_shard_lib",
-    srcs = ["staged_prove_shard.py"],
-    visibility = ["//visibility:public"],
-    deps = [
-        "//sp1_zorch/jagged_pcs",
-        "//sp1_zorch/logup_gkr",
-        "//sp1_zorch/poseidon2:koalabear16",
-        "//sp1_zorch/shard_prover",
-        "//sp1_zorch/shard_prover:compile_classes",
-        "//sp1_zorch/shard_prover:prove_shard",
-        "//sp1_zorch/shard_prover:replay",
-        "//sp1_zorch/shard_prover:sp1_ffi",
-        "@zorch//zorch/commit:smcs",
-        "@zorch//zorch/poly",
-        requirement("absl_py"),
-        requirement("frx"),
-        requirement("hash_frx"),
-        requirement("zk_dtypes"),
-    ],
-)
 
 py_binary(
     name = "staged_prove_shard",
@@ -36,20 +11,8 @@ py_binary(
     #   bazel run //tools:staged_prove_shard -- \
     #       --shard_dir=/path/to/rsp_dump/shardN
     deps = [
-        ":staged_prove_shard_lib",
+        "//sp1_zorch/shard_prover:staged_prove_shard",
         requirement("frx_cuda12_pjrt"),
         requirement("frx_cuda12_plugin"),
-    ],
-)
-
-py_test(
-    name = "staged_prove_shard_test",
-    size = "small",
-    srcs = ["staged_prove_shard_test.py"],
-    deps = [
-        ":staged_prove_shard_lib",
-        requirement("absl_py"),
-        requirement("frx"),
-        requirement("zk_dtypes"),
     ],
 )
