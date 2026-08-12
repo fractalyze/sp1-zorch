@@ -428,6 +428,44 @@ def front_load(shards: Sequence[str], front: Sequence[str]) -> list[str]:
     return sorted(shards, key=lambda s: rank.get(Path(s).name, len(rank)))
 
 
+_LAUNCH_HEADROOM_GIB = 1.5
+
+
+def launch_allowed(free_gib: float | None, peak_gib: float) -> bool:
+    """Whether a newcomer may launch next to running workers, judged by the
+    card's MEASURED free VRAM. The estimate-sum budget bounds steady usage,
+    but cuda_async pools retain freed memory up to each worker's own peak, so
+    a newcomer's CUDA context + cuDNN handle initialize against the real free
+    memory — launched into a full card, the worker dies at its first compile
+    (``RunBackend`` RET_CHECKs ``dnn_support`` when ``cudnnCreate`` cannot
+    allocate). ``None`` (unreadable) falls back to estimate-only packing."""
+    return free_gib is None or free_gib >= peak_gib + _LAUNCH_HEADROOM_GIB
+
+
+def _gpu_free_gib(gpu_id: str | None) -> float | None:
+    """Free VRAM (GiB) on the target GPU via one nvidia-smi call, or ``None``
+    when it can't be read (no id, no tool, or a query error)."""
+    dev = gpu_id or (os.environ.get("CUDA_VISIBLE_DEVICES") or "").split(",")[0].strip()
+    if not dev:
+        return None
+    try:
+        out = subprocess.run(
+            [
+                "nvidia-smi",
+                f"--id={dev}",
+                "--query-gpu=memory.free",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=True,
+        )
+        return int(out.stdout.strip().splitlines()[0]) / 1024.0
+    except Exception:  # noqa: BLE001 — any read failure degrades to estimates
+        return None
+
+
 def shard_peaks(
     shards: Sequence[str], classes: dict, overrides_path: str = ""
 ) -> dict[str, float]:
@@ -546,6 +584,8 @@ def _warm(dirs: list[Path], classes: dict, groups: dict, manifest_path: str) -> 
                 # Always allow one worker even if a lone big shard exceeds
                 # the budget.
                 if len(mine) < _JOBS.value and (not mine or used + peaks[s] <= budget):
+                    if mine and not launch_allowed(_gpu_free_gib(g), peaks[s]):
+                        break  # real free VRAM says no — retry next poll
                     queue.remove(s)
                     wenv = env if g is None else dict(env, CUDA_VISIBLE_DEVICES=g)
                     p = subprocess.Popen(

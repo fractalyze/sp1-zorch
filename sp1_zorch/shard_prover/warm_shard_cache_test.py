@@ -210,5 +210,18 @@ class ShardPeaksTest(absltest.TestCase):
         self.assertEqual(peaks["/d/shard0"], wsc._est_peak_gib(100_000_000))
 
 
+class LaunchAllowedTest(absltest.TestCase):
+    def test_unreadable_free_falls_back_to_estimates(self) -> None:
+        self.assertTrue(wsc.launch_allowed(None, 18.0))
+
+    def test_free_below_peak_plus_headroom_blocks(self) -> None:
+        self.assertFalse(
+            wsc.launch_allowed(10.0 + wsc._LAUNCH_HEADROOM_GIB - 0.1, 10.0)
+        )
+
+    def test_free_at_peak_plus_headroom_launches(self) -> None:
+        self.assertTrue(wsc.launch_allowed(10.0 + wsc._LAUNCH_HEADROOM_GIB, 10.0))
+
+
 if __name__ == "__main__":
     absltest.main()
