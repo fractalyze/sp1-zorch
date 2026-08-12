@@ -320,6 +320,43 @@ zerocheck and the jagged open. Every phase byte-matches on every pass. Add
 either direction; take several and quote the median with its min-max, and treat
 the chain total the same way since it inherits every phase's variance.
 
+### Per-phase comparison (shard14, keccak class)
+
+shard17 above is a narrow shard; shard14 is a **wide keccak-class** shard
+(`KeccakPermute` 122 k rows, `Program` 518 k, zerocheck `area_cap` 401 M) —
+worth its own table because every phase is an order of magnitude heavier and
+the allocator constraint changes. Same premise as shard17: same dump, same
+RTX 5090, every sp1-zorch phase byte-checks against the dump as it finishes.
+
+| Phase | SP1 GPU | sp1-zorch GPU | spread | ratio | golden |
+|---|---|---|---|---|---|
+| trace commit | 91.3 ms | 155.8 ms | 105.3–334.5 | 1.71× | byte-match |
+| LogUp-GKR | 63.2 ms | **41.0 ms** | 34.9–53.9 | **0.65×** | byte-match |
+| zerocheck | 947.5 ms | **693.8 ms** | 661.7–705.2 | **0.73×** | byte-match |
+| jagged eval (PCS open) | 240.2 ms | **220.1 ms** | 209.2–240.8 | **0.92×** | byte-match |
+| full chain (phase sum) | 1342.6 ms | **1110.7 ms** | — | **0.83×** | byte-match |
+
+Captured on the #336/#337 tree (2026-08-12), default monolithic jagged scan
+(no `--jagged_scan_cap`). The sp1-zorch column is the median of passes 3–5 of
+**one** `--runs=5` invocation; the SP1 column is a single `no-exec-gpu-dump
+--gpu` invocation. Both arms ran in the same session window at host load
+29–38 — comparable to each other, but weaker sampling than the shard17 table,
+and the load-sensitive rows show it (trace commit's 105–335 ms spread is load,
+not the prover). Treat the per-phase ratios as first measurements; re-measure
+on an idle box before quoting any single row.
+
+Two shard14-specific gotchas:
+
+- **`XLA_PYTHON_CLIENT_ALLOCATOR=cuda_async` is required, not optional.** The
+  monolithic run peaks at **17.51 GiB** and fits a 32 GiB card with no
+  eviction under `cuda_async`. Under BFC the same shard dies of
+  fragmentation — even after #336/#337 chunked the jagged-open temp arenas
+  35.7 → 2.5 GB. This is the environment-contract wide-shard failure mode,
+  one shard class heavier.
+- **`sp1-shard-test` prints a hardcoded "shard17" tag** in its summary line
+  regardless of the input dump (`gpu_dump_prover.rs`). Identify the shard by
+  `--shard_dir` and the byte-match gates, never by the label.
+
 ### Measure shipped code
 
 A per-phase number is only a baseline if it runs the code the team **ships**, so
