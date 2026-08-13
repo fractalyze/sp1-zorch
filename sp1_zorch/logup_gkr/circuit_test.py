@@ -29,6 +29,9 @@ from sp1_zorch.logup_gkr.circuit import (
     GkrChip,
     _chip_first_layer,
     _chip_view,
+    _first_layer_layout,
+    _lay_in_chip,
+    _lay_in_tail,
     build_gkr_chips,
     generate_first_layer,
     generate_first_layer_capped,
@@ -766,14 +769,23 @@ class CappedFirstLayerTest(absltest.TestCase):
             generate_first_layer(chips, shard, None, ALPHA, BETAS)
             for shard in (shard1, shard2)
         ]
-        before = _chip_first_layer._cache_size()
+        zones = (_chip_first_layer, _lay_in_chip, _lay_in_tail, _first_layer_layout)
+        before = [z._cache_size() for z in zones]
+        after_first: list[int] | None = None
         for shard, exact in zip((shard1, shard2), exacts):
             capped = _capped_layer(chips, shard, None, cls)
             self.assertEqual(_host_counts(capped), _host_counts(exact))
             self._assert_matches_exact(capped, exact)
+            if after_first is None:
+                after_first = [z._cache_size() for z in zones]
         # One compile per chip across both shards: the class shapes + traced
-        # height keep the second shard a cache hit.
-        self.assertEqual(_chip_first_layer._cache_size() - before, len(chips))
+        # height keep the second shard a cache hit — in the block build AND
+        # in every lay-in zone (whose (shape, class_count, arena) keys may
+        # even alias a tight-class oracle entry: cross-class sharing, not a
+        # miss, so only flatness is asserted).
+        self.assertEqual([z._cache_size() for z in zones], after_first)
+        self.assertEqual(_chip_first_layer._cache_size() - before[0], len(chips))
+        self.assertGreaterEqual(_lay_in_chip._cache_size(), 1)
 
     def test_prep_chip_matches_exact_under_a_wider_class(self) -> None:
         # Keygen-height prep above main (recursion-shard shape); the class
@@ -809,6 +821,88 @@ class CappedFirstLayerTest(absltest.TestCase):
         region = _region(_main(10), names=("A",))
         with self.assertRaises(ValueError):
             pack_gkr_arrival(region, None, GkrCapClass((6,)))
+
+
+class LayInFirstLayerTest(absltest.TestCase):
+    """The per-chip lay-in assemble's own contracts, past what the exact
+    byte-match covers: the zero dead region behind the tight total (the
+    tail sweep clears the last live segments' class-count spill), and the
+    arena slack that keeps writes un-clamped when ``slot_cap`` sits below
+    the class slot total (the union/registry geometry)."""
+
+    def _chips(self) -> list[GkrChip]:
+        # B, the LAST live chip, carries the spill: class segments of 12
+        # slots over a 4-slot tight count, so its final write runs 8 slots
+        # past the tight total — further than the single 4-slot padding
+        # segment. Only the tail sweep clears it.
+        return [
+            GkrChip("A", (_interaction(0, 1),)),
+            GkrChip("B", (_interaction(0, 1, kind=5), _interaction(1, 0, kind=7))),
+        ]
+
+    def _shard(self) -> JaggedRegion:
+        return _region(_main(8), _main(8, offset=100), names=("A", "B"))
+
+    def _capped(self, cap_class: GkrCapClass, out_width: int | None) -> JaggedGkrLayer:
+        region = self._shard()
+        main_flat, prep_flat, heights = pack_gkr_arrival(region, None, cap_class)
+        return generate_first_layer_capped(
+            self._chips(),
+            main_flat,
+            prep_flat,
+            heights,
+            ALPHA,
+            BETAS,
+            cap_class=cap_class,
+            chip_names=tuple(region.chip_names),
+            main_widths=tuple(int(w) for w in region.chip_widths),
+            prep_names=(),
+            prep_widths=(),
+            prep_heights=(),
+            out_width=out_width,
+        )
+
+    def _assert_live_prefix_and_zero_dead_region(
+        self, capped: JaggedGkrLayer, out_width: int
+    ) -> None:
+        exact = generate_first_layer(self._chips(), self._shard(), None, ALPHA, BETAS)
+        self.assertEqual(_host_counts(capped), _host_counts(exact))
+        total = _starts(exact)[-1]
+        for plane in ("numerator_0", "numerator_1", "denominator_0", "denominator_1"):
+            got = getattr(capped, plane)
+            self.assertEqual(got.shape[0], out_width, msg=plane)
+            self.assertTrue(
+                bool(fnp.all(got[:total] == getattr(exact, plane))),
+                msg=f"{plane} live prefix",
+            )
+            self.assertTrue(
+                bool(fnp.all(got[total:] == fnp.zeros((), got.dtype))),
+                msg=f"{plane} dead region",
+            )
+
+    def test_dead_region_is_zero_behind_the_tight_total(self) -> None:
+        # Class (24, 24): capacity 12 + 12 + 12 + 4 = 40; shard heights
+        # (8, 8) put the tight total at 16, so slots [16, 40) are dead.
+        cls = GkrCapClass((24, 24))
+        for out_width in (None, 48):
+            with self.subTest(out_width=out_width):
+                capped = self._capped(cls, out_width)
+                self._assert_live_prefix_and_zero_dead_region(
+                    capped, 48 if out_width else 40
+                )
+
+    def test_slot_cap_below_the_class_slot_total(self) -> None:
+        # slot_cap 18 admits the shard (tight total 16) while the class
+        # slot total is 40: B's last segment write (start 8 + 12 slots) and
+        # the tail write both end past the 18-slot capacity — only the
+        # arena slack keeps them un-clamped, at the right offsets.
+        cls = GkrCapClass((24, 24), slot_cap=18)
+        capped = self._capped(cls, None)
+        self._assert_live_prefix_and_zero_dead_region(capped, 18)
+
+    def test_out_width_below_capacity_is_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            self._capped(GkrCapClass((24, 24)), 39)
 
 
 class TracedSlotCountsTest(absltest.TestCase):

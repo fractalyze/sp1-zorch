@@ -24,7 +24,7 @@ import frx
 import frx.numpy as fnp
 from frx import Array, lax
 from rw_constraints import Chip, Interaction, InteractionInfo, VirtualPairCol
-from zorch.logup_gkr.circuit import JaggedGkrLayer, _gather_pad
+from zorch.logup_gkr.circuit import JaggedGkrLayer
 from zorch.pcs.jagged.region import JaggedRegion
 from zorch.utils.bits import log2_ceil_usize
 
@@ -303,64 +303,109 @@ def _chip_first_layer(
     )
 
 
-@partial(
-    frx.jit,
-    static_argnames=("class_counts", "seg_chip_idx", "out_width"),
-)
-def _assemble_first_layer(
-    blocks: tuple[tuple[Array, Array, Array, Array], ...],
+@partial(frx.jit, static_argnames=("seg_chip_idx", "chip_first_seg"))
+def _first_layer_layout(
     heights: Array,
     *,
-    class_counts: tuple[int, ...],
     seg_chip_idx: tuple[int, ...],
-    out_width: int,
-) -> tuple[tuple[Array, Array, Array, Array], Array]:
-    """The class-layout concat and its compaction to the shard's tight
-    traced layout in ONE program, so the class-layout planes are XLA
-    temporaries, never a held array (sp1-zorch#292). Segment ``s`` keeps
-    its real slots as a live prefix, so tight slot ``j`` reads the static
-    class offset plus ``j``; the compile keys on (class layout, chip map,
-    capacity) alone. Dead capacity slots land zero — nothing downstream
-    reads them."""
+    chip_first_seg: tuple[int, ...],
+) -> tuple[Array, tuple[Array, ...], tuple[Array, ...], Array]:
+    """The shard's tight first-layer layout as one dispatch: the traced
+    ``row_counts``, plus per real chip its tight start offset and
+    per-segment slot count (every segment of a chip shares one count —
+    one height, one ``sp1_col_h``), plus the padding segments' start.
+    The compile keys on the chip set alone."""
     i32 = fnp.int32
-    bf_dtype = blocks[0][0].dtype
-    ef_dtype = blocks[0][2].dtype
-    # Power-of-two interaction padding: full pad slots of the neutral
-    # fraction behind the real chips' blocks.
-    pad_total = sum(class_counts) - sum(b[0].shape[0] for b in blocks)
-    parts = list(zip(*blocks))
-    if pad_total:
-        parts[0] += (fnp.zeros(pad_total, dtype=bf_dtype),)
-        parts[1] += (fnp.zeros(pad_total, dtype=bf_dtype),)
-        parts[2] += (fnp.ones(pad_total, dtype=ef_dtype),)
-        parts[3] += (fnp.ones(pad_total, dtype=ef_dtype),)
-    numerator_0, numerator_1, denominator_0, denominator_1 = (
-        fnp.concatenate(list(p)) for p in parts
-    )
-
     tight_counts = traced_slot_counts(heights, seg_chip_idx)
-    class_starts = [0]
-    for rc in class_counts:
-        class_starts.append(class_starts[-1] + rc)
-    starts = fnp.asarray(class_starts[:-1], i32)
-    tc = tight_counts.astype(i32)
-    cum = fnp.cumsum(tc)
-    q = fnp.arange(out_width, dtype=i32)
-    # scan_unrolled: the default scan lowers to a while op whose carry is
-    # the full index array, a device copy every trip.
-    s = fnp.searchsorted(cum, q, side="right", method="scan_unrolled")
-    s = fnp.minimum(s.astype(i32), i32(len(class_counts) - 1))
-    j = q - (cum[s] - tc[s])
-    live = q < cum[-1]
-    sentinel = i32(numerator_0.shape[0])
-    gather = fnp.where(live, starts[s] + j, sentinel)
-    planes = (
-        _gather_pad(numerator_0, gather, 0),
-        _gather_pad(numerator_1, gather, 0),
-        _gather_pad(denominator_0, gather, 0),
-        _gather_pad(denominator_1, gather, 0),
+    ends = fnp.cumsum(tight_counts)
+    starts = ends - tight_counts
+    n_real = sum(1 for i in seg_chip_idx if i >= 0)
+    chip_starts = tuple(starts[i] for i in chip_first_seg)
+    chip_tcs = tuple(tight_counts[i] for i in chip_first_seg)
+    pad_start = ends[n_real - 1] if n_real else fnp.zeros((), i32)
+    return tight_counts, chip_starts, chip_tcs, pad_start
+
+
+@partial(
+    frx.jit,
+    static_argnames=("class_count",),
+    donate_argnames=("n0", "n1", "d0", "d1"),
+)
+def _lay_in_chip(
+    n0: Array,
+    n1: Array,
+    d0: Array,
+    d1: Array,
+    block: tuple[Array, Array, Array, Array],
+    start: Array,
+    tc: Array,
+    *,
+    class_count: int,
+) -> tuple[Array, Array, Array, Array]:
+    """Lay ONE chip's class-layout block into the tight-layout planes at
+    its traced offset: per interaction, a static ``class_count`` slice of
+    the block written at ``start + k * tc`` (dynamic-update-slice on the
+    donated planes, in place). Consecutive segments overlap-write: segment
+    ``k`` carries ``class_count`` slots but only its first ``tc`` survive —
+    segment ``k+1`` starts ``tc`` slots later and overwrites the rest, so
+    the live layout is exactly the per-segment class-block prefixes. The slots the
+    LAST segment spills past the caller's tail write are the caller's
+    contract (``_lay_in_tail``'s sweep). Per-chip zones keep the assemble's
+    live set at the arena plus one chip's block; a whole-class concat
+    instead materializes every chip's planes twice over in one module —
+    2x40 B x the class slot total, ~12 GiB on the 33-chip registry class —
+    and its fused EF concatenate is the operand-drop hazard past 2^31
+    buffer bytes. The compile keys on (chip block shape, class_count,
+    arena length) alone, so shards of one class share the executable."""
+    planes = [n0, n1, d0, d1]
+    num_inter = block[0].shape[0] // class_count
+    for k in range(num_inter):
+        lo = k * class_count
+        offset = start + k * tc
+        planes = [
+            lax.dynamic_update_slice(p, b[lo : lo + class_count], (offset,))
+            for p, b in zip(planes, block)
+        ]
+    return planes[0], planes[1], planes[2], planes[3]
+
+
+@partial(
+    frx.jit,
+    static_argnames=("pad_slots", "sweep_slots"),
+    donate_argnames=("n0", "n1", "d0", "d1"),
+)
+def _lay_in_tail(
+    n0: Array,
+    n1: Array,
+    d0: Array,
+    d1: Array,
+    start: Array,
+    *,
+    pad_slots: int,
+    sweep_slots: int,
+) -> tuple[Array, Array, Array, Array]:
+    """The final write behind the live chips: the power-of-two padding
+    segments' full neutral slots (n=0, d=1; tight == class count, so no
+    overlap-write), then a ``sweep_slots`` zero sweep. The sweep clears
+    what the last live segments spilled past their tight counts — every
+    spill ends by ``real_total + max(class_counts)`` and this write ends at
+    ``real_total + pad_slots + sweep_slots``, past it — so dead slots up to
+    the arena end read zero in all four planes, byte-for-byte the
+    compaction-gather layout. Runs last; order is load-bearing."""
+    length = pad_slots + sweep_slots
+    n_patch = fnp.zeros((length,), dtype=n0.dtype)
+    d_patch = fnp.concatenate(
+        [
+            fnp.ones((pad_slots,), dtype=d0.dtype),
+            fnp.zeros((sweep_slots,), dtype=d0.dtype),
+        ]
     )
-    return planes, tight_counts
+    return (
+        lax.dynamic_update_slice(n0, n_patch, (start,)),
+        lax.dynamic_update_slice(n1, n_patch, (start,)),
+        lax.dynamic_update_slice(d0, d_patch, (start,)),
+        lax.dynamic_update_slice(d1, d_patch, (start,)),
+    )
 
 
 def region_statics(
@@ -773,13 +818,21 @@ def generate_first_layer_capped(
     out_width: int | None = None,
 ) -> JaggedGkrLayer:
     """The first layer at the shard's tight traced layout: one class-bound
-    block per chip (``_chip_first_layer``), compacted and assembled by
-    ``_assemble_first_layer`` — the class-layout planes exist only as XLA
-    temporaries inside it. Compiles once per (chip set, class); live prefix
-    byte-identical to ``generate_first_layer``'s exact build.
+    block per chip (``_chip_first_layer``), laid into the tight-layout
+    planes chip by chip (``_lay_in_chip``) as each block is built, so the
+    live set is the arena plus ONE chip's block — no class-layout plane is
+    ever materialized (sp1-zorch#292, #334). Compiles once per (chip set,
+    class); live prefix byte-identical to ``generate_first_layer``'s exact
+    build.
 
     ``out_width`` (>= the tight capacity) sizes the plane buffers; slots past
-    the live prefix land zero. Default keeps the exact tight layout."""
+    the live prefix land zero. Default keeps the exact tight layout. The
+    arena carries ``max(class_counts)`` slack past ``max(out_width,
+    capacity)`` so no lay-in write is ever start-clamped (a clamped
+    dynamic-update-slice lands the block at the wrong offset, silently);
+    the slack is trimmed off before the planes leave. Admission
+    (``check_bounds`` + ``check_slot_cap``) is the caller's host-side
+    obligation — an over-cap shard's traced offsets cannot be gated here."""
     name_to_idx = {name: i for i, name in enumerate(chip_names)}
     prep_name_to_idx = {name: i for i, name in enumerate(prep_names)}
     main_offsets = _arrival_offsets(main_widths, cap_class.chip_heights)
@@ -789,43 +842,86 @@ def generate_first_layer_capped(
     slot_cap = cap_class.resolved_slot_cap(gkr_chips, chip_names)
     capacity = slot_cap + slot_cap % 2
 
-    blocks: list[tuple[Array, Array, Array, Array]] = []
-    for chip in gkr_chips:
-        if not chip.interactions:
-            continue
-        idx = name_to_idx[chip.name]
-        has_prep = chip.name in prep_name_to_idx and prep_flat is not None
-        p_idx = prep_name_to_idx[chip.name] if has_prep else 0
-        blocks.append(
-            _chip_first_layer(
-                chip,
-                main_flat,
-                prep_flat if has_prep else None,
-                heights[idx],
-                alpha,
-                betas,
-                main_start=main_offsets[idx],
-                main_width=main_widths[idx],
-                cap=cap_class.chip_heights[idx],
-                prep_start=prep_offsets[p_idx] if has_prep else 0,
-                prep_width=prep_widths[p_idx] if has_prep else 0,
-                prep_height=prep_heights[p_idx] if has_prep else 0,
-            )
-        )
-
     if out_width is None:
         out_width = capacity
     elif out_width < capacity:
         raise ValueError(
             f"out_width {out_width} cannot hold the class capacity {capacity}"
         )
-    (n0, n1, d0, d1), tight_counts = _assemble_first_layer(
-        tuple(blocks),
+
+    class_counts = cap_class.slot_counts(gkr_chips, chip_names)
+    # Every lay-in write ends by capacity + max(class_counts): a segment
+    # write starts at or below the tight total (<= capacity) and carries one
+    # class segment; the tail write ends at real_total + pad + sweep
+    # <= capacity + sweep. The slack makes those ends in-bounds, never
+    # clamped.
+    max_count = max(class_counts)
+    arena_len = max(out_width, capacity + max_count)
+
+    # Each real chip's first segment index — the lay-in offset/count source.
+    chip_first_seg: list[int] = []
+    n_real_segs = 0
+    for chip in gkr_chips:
+        if chip.interactions:
+            chip_first_seg.append(n_real_segs)
+        n_real_segs += len(chip.interactions)
+
+    tight_counts, chip_starts, chip_tcs, pad_start = _first_layer_layout(
         heights,
-        class_counts=cap_class.slot_counts(gkr_chips, chip_names),
         seg_chip_idx=seg_chip_idx,
-        out_width=out_width,
+        chip_first_seg=tuple(chip_first_seg),
     )
+
+    planes: tuple[Array, Array, Array, Array] | None = None
+    lay_idx = 0
+    for chip in gkr_chips:
+        if not chip.interactions:
+            continue
+        idx = name_to_idx[chip.name]
+        has_prep = chip.name in prep_name_to_idx and prep_flat is not None
+        p_idx = prep_name_to_idx[chip.name] if has_prep else 0
+        block = _chip_first_layer(
+            chip,
+            main_flat,
+            prep_flat if has_prep else None,
+            heights[idx],
+            alpha,
+            betas,
+            main_start=main_offsets[idx],
+            main_width=main_widths[idx],
+            cap=cap_class.chip_heights[idx],
+            prep_start=prep_offsets[p_idx] if has_prep else 0,
+            prep_width=prep_widths[p_idx] if has_prep else 0,
+            prep_height=prep_heights[p_idx] if has_prep else 0,
+        )
+        if planes is None:
+            planes = (
+                fnp.zeros((arena_len,), dtype=block[0].dtype),
+                fnp.zeros((arena_len,), dtype=block[1].dtype),
+                fnp.zeros((arena_len,), dtype=block[2].dtype),
+                fnp.zeros((arena_len,), dtype=block[3].dtype),
+            )
+        planes = _lay_in_chip(
+            *planes,
+            block,
+            chip_starts[lay_idx],
+            chip_tcs[lay_idx],
+            class_count=class_counts[chip_first_seg[lay_idx]],
+        )
+        lay_idx += 1
+    if planes is None:
+        raise ValueError("the chip set has no real interactions")
+
+    n_pad = len(seg_chip_idx) - n_real_segs
+    planes = _lay_in_tail(
+        *planes,
+        pad_start,
+        pad_slots=2 * sp1_col_h(0) * n_pad,
+        sweep_slots=max_count,
+    )
+    if arena_len != out_width:
+        planes = tuple(p[:out_width] for p in planes)
+    n0, n1, d0, d1 = planes
     return JaggedGkrLayer(
         numerator_0=n0,
         numerator_1=n1,

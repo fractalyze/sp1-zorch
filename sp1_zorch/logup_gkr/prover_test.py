@@ -13,6 +13,7 @@ from collections.abc import Sequence
 from dataclasses import fields
 from types import SimpleNamespace
 
+import frx
 import frx.numpy as fnp
 import numpy as np
 from absl.testing import absltest
@@ -26,16 +27,28 @@ from zorch.logup_gkr.jagged_verifier import JaggedGkrLayerRound as VerifierRound
 from zorch.pcs.jagged.region import JaggedRegion
 from zorch.round import verify_rounds
 from zorch.testkit.transcript import cheap_transcript
+from zorch.transcript import sample_challenge
 
-from sp1_zorch.logup_gkr.circuit import GkrCapClass, GkrChip
+from sp1_zorch.logup_gkr.circuit import (
+    GkrCapClass,
+    GkrChip,
+    pack_gkr_arrival,
+    region_statics,
+)
 from sp1_zorch.logup_gkr.head import (
     EF_CHALLENGES,
+    EF_LIMBS,
     absorb_grind,
     bind_circuit_output,
     sample_head_challenges,
 )
 from sp1_zorch.logup_gkr.prover import (
+    _OPEN_FOLD_CHUNK_CELLS,
     ChipOpeningsRound,
+    _fold_chunk_rows,
+    _open_chip,
+    _open_chip_zone,
+    absorb_chip_openings,
     extract_sp1_outputs,
     num_beta_values,
     open_traces_capped,
@@ -147,6 +160,124 @@ class ExtractSp1OutputsTest(absltest.TestCase):
         layer = _jagged((2, 1), [1, 0, 2], [3, 0, 4], [5, 1, 6], [7, 1, 8])
         with self.assertRaises(ValueError):
             extract_sp1_outputs(layer)
+
+
+def _bytes_of(arr: Array) -> bytes:
+    return np.ascontiguousarray(np.asarray(fnp.asarray(arr))).tobytes()
+
+
+class OpenFoldChunkingTest(absltest.TestCase):
+    """Chunked open fold vs the monolithic fold -- exact byte equality.
+
+    An LSB-first bind never pairs rows across an aligned power-of-two
+    window, so each chunk-local generation is the monolithic fold's own
+    restriction to its window; field ops are exact, so equality is
+    byte-exact, never approximate."""
+
+    def _rev_point(self, n: int) -> Array:
+        base = fnp.arange(3, 3 + n, dtype=fnp.uint32).view(F)
+        return fnp.ones((), EF) * base
+
+    def test_chunked_matches_mono_across_chunk_sizes(self) -> None:
+        # Height 24 pads to 32: rows 4/8/16 all divide the padded height,
+        # and the 16-row plan's tail chunk mixes real and pad rows.
+        trace = _main(24, width=3)
+        rev_point = self._rev_point(6)
+        mono = _bytes_of(_open_chip(trace, rev_point, 24))
+        for rows in (4, 8, 16):
+            with self.subTest(rows=rows):
+                chunked = _open_chip(trace, rev_point, 24, chunk_cells=rows * 3)
+                self.assertEqual(_bytes_of(chunked), mono)
+
+    def test_chunked_matches_mono_under_jit(self) -> None:
+        trace = _main(24, width=3)
+        rev_point = self._rev_point(6)
+        jitted = frx.jit(
+            _open_chip, static_argnums=(2,), static_argnames=("chunk_cells",)
+        )
+        self.assertEqual(
+            _bytes_of(jitted(trace, rev_point, 24, chunk_cells=12)),
+            _bytes_of(_open_chip(trace, rev_point, 24)),
+        )
+
+    def test_height_not_divisible_by_chunk(self) -> None:
+        # Real height 6 pads to 8; 4-row chunks put the second chunk half
+        # in the zero pad.
+        trace = _main(6, width=2)
+        rev_point = self._rev_point(4)
+        self.assertEqual(
+            _bytes_of(_open_chip(trace, rev_point, 6, chunk_cells=8)),
+            _bytes_of(_open_chip(trace, rev_point, 6)),
+        )
+
+    def test_single_chunk_degenerate_is_monolithic(self) -> None:
+        # A budget admitting the whole padded height plans no chunking, and
+        # the bytes agree with the unbudgeted fold.
+        self.assertIsNone(_fold_chunk_rows(3, 32, 32 * 3))
+        trace = _main(24, width=3)
+        rev_point = self._rev_point(6)
+        self.assertEqual(
+            _bytes_of(_open_chip(trace, rev_point, 24, chunk_cells=32 * 3)),
+            _bytes_of(_open_chip(trace, rev_point, 24)),
+        )
+
+    def test_fold_chunk_rows_plan(self) -> None:
+        self.assertIsNone(_fold_chunk_rows(3, 32, None))
+        self.assertEqual(_fold_chunk_rows(3, 32, 24), 8)
+        self.assertEqual(_fold_chunk_rows(3, 32, 30), 8)  # power-of-two floor
+        self.assertEqual(_fold_chunk_rows(64, 1 << 21, 1), 4)  # 4-row minimum
+        self.assertIsNone(_fold_chunk_rows(1, 4, 4))  # rows >= padded height
+        # The default budget is None (chunking disabled -- the scan
+        # formulation regresses GPU memory; see _OPEN_FOLD_CHUNK_CELLS).
+        self.assertIsNone(_OPEN_FOLD_CHUNK_CELLS)
+        # An engaged budget must sit below the per-chip cell counts it is
+        # meant to split: at 2^24 cells both registry-shaped chips (33
+        # columns x 2^21 padded rows; 241 columns x 2^19 padded rows) plan
+        # chunks.
+        self.assertEqual(_fold_chunk_rows(33, 1 << 21, 1 << 24), 1 << 18)
+        self.assertEqual(_fold_chunk_rows(241, 1 << 19, 1 << 24), 1 << 16)
+
+    def test_capped_open_and_absorb_byte_identical_chunked(self) -> None:
+        # The full openings zone + absorb, chunked vs monolithic: same
+        # openings, same flat message, same post-absorb transcript stream
+        # (a squeeze depends on the whole absorbed history).
+        main_a, main_b = _main(24, width=2), _main(6, width=2, offset=100)
+        region = _region(main_a, main_b, names=("A", "B"))
+        cap_class = GkrCapClass.from_heights([24, 6])
+        main_flat, prep_flat, _ = pack_gkr_arrival(region, None, cap_class)
+        chip_names, main_widths, _ = region_statics(region)
+        eval_point = self._rev_point(6)
+
+        def open_with(
+            fold_chunk_cells: int | None,
+        ) -> tuple[dict[str, ChipEvaluation], Array]:
+            return open_traces_capped(
+                main_flat,
+                prep_flat,
+                eval_point,
+                fold_chunk_cells=fold_chunk_cells,
+                trace_dimension=6,
+                cap_class=cap_class,
+                chip_names=chip_names,
+                main_widths=main_widths,
+                prep_names=(),
+                prep_widths=(),
+                prep_heights=(),
+            )
+
+        opened_mono = open_with(fold_chunk_cells=None)
+        opened_chunked = open_with(fold_chunk_cells=8)
+        self.assertEqual(_bytes_of(opened_chunked[1]), _bytes_of(opened_mono[1]))
+        for name in chip_names:
+            self.assertEqual(
+                _bytes_of(opened_chunked[0][name].main),
+                _bytes_of(opened_mono[0][name].main),
+            )
+        t_mono, _ = absorb_chip_openings(cheap_transcript(F), opened_mono)
+        t_chunked, _ = absorb_chip_openings(cheap_transcript(F), opened_chunked)
+        _, c_mono = sample_challenge(t_mono, EF, EF_LIMBS)
+        _, c_chunked = sample_challenge(t_chunked, EF, EF_LIMBS)
+        self.assertEqual(_bytes_of(c_chunked), _bytes_of(c_mono))
 
 
 # Golden digest of the rolled prove output (the sole prove path). Regenerate with
@@ -427,7 +558,8 @@ class CappedProveTest(absltest.TestCase):
     def test_capped_open_shares_one_compile_across_the_class(self) -> None:
         shards = self._shards()
         cap_class = self._class_of(shards)
-        before = open_traces_capped._cache_size()
+        before = _open_chip_zone._cache_size()
+        first = None
         for shard in shards:
             prove_logup_gkr(
                 self._CHIPS,
@@ -437,7 +569,12 @@ class CappedProveTest(absltest.TestCase):
                 num_row_variables=4,
                 cap_class=cap_class,
             )
-        self.assertEqual(open_traces_capped._cache_size() - before, 1)
+            if first is None:
+                first = _open_chip_zone._cache_size() - before
+        # The class shapes compile per-chip zones on the first shard and
+        # every later shard of the class is a pure cache hit.
+        self.assertGreaterEqual(first, 1)
+        self.assertEqual(_open_chip_zone._cache_size() - before, first)
 
     def test_capped_prove_with_prep_matches_exact(self) -> None:
         # A prep chip under a class wider than the shard: the class bound

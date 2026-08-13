@@ -42,7 +42,7 @@ from sp1_zorch.logup_gkr.circuit import (
     _chip_first_layer,
 )
 from sp1_zorch.logup_gkr.prover import (
-    open_traces_capped,
+    _open_chip_zone,
     prove_logup_gkr,
 )
 from sp1_zorch.poseidon2.koalabear16 import koalabear16_params
@@ -612,7 +612,7 @@ class LogupGkrProverCapClassTest(absltest.TestCase):
             shards.append((rows, main_region, public_values, want))
 
         build_before = _chip_first_layer._cache_size()
-        open_before = open_traces_capped._cache_size()
+        open_before = _open_chip_zone._cache_size()
         for rows, main_region, public_values, want in shards:
             result = stage.prove(
                 ShardClaim(
@@ -633,13 +633,14 @@ class LogupGkrProverCapClassTest(absltest.TestCase):
                 want.chip_openings["alpha"].main,
                 label,
             )
-        # One first-layer compile per chip and one open compile across both
-        # shards: the class shapes + traced heights keep shard 2 a cache hit.
+        # One first-layer compile per chip and one per-chip open zone
+        # across both shards: the class shapes + traced heights keep shard 2
+        # a cache hit.
         self.assertEqual(
             _chip_first_layer._cache_size() - build_before,
             len(gkr_chips),
         )
-        self.assertEqual(open_traces_capped._cache_size() - open_before, 1)
+        self.assertEqual(_open_chip_zone._cache_size() - open_before, 1)
 
 
 class ZerocheckProverTotalCapTest(absltest.TestCase):

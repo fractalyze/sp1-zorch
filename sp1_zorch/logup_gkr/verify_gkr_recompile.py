@@ -30,11 +30,13 @@ from zorch.logup_gkr.jagged_prover import _jagged_round_zone
 
 from sp1_zorch.logup_gkr.circuit import (
     GkrCapClass,
-    _assemble_first_layer,
     _chip_first_layer,
+    _first_layer_layout,
+    _lay_in_chip,
+    _lay_in_tail,
     build_gkr_chips,
 )
-from sp1_zorch.logup_gkr.prover import _head_zone, open_traces_capped
+from sp1_zorch.logup_gkr.prover import _head_zone, _open_chip_zone
 from sp1_zorch.shard_prover.fixture_loader import load_fixture_shard
 from sp1_zorch.shard_prover.replay import replay_gkr, shard_regions
 
@@ -42,8 +44,10 @@ from sp1_zorch.shard_prover.replay import replay_gkr, shard_regions
 _ZONES = {
     "head(sp1)": _head_zone,
     "first_layer(sp1)": _chip_first_layer,
-    "assemble(sp1)": _assemble_first_layer,
-    "open(sp1)": open_traces_capped,
+    "layout(sp1)": _first_layer_layout,
+    "lay_in(sp1)": _lay_in_chip,
+    "lay_in_tail(sp1)": _lay_in_tail,
+    "open(sp1)": _open_chip_zone,
     "transition(zorch)": _jagged_transition_core,
     "round_zone(zorch)": _jagged_round_zone,
 }

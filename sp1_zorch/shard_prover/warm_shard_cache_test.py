@@ -58,16 +58,18 @@ class SelectWarmShardsTest(absltest.TestCase):
         sel = wsc.select_warm_shards(classes, _manifest(classes))
         self.assertEqual(sel, ["shard1"])
 
-    def test_loose_group_selects_one_per_distinct_area(self) -> None:
-        # 100/400 < group_area_ratio: each shard keeps its own zerocheck
-        # class; the two 400s share one, area-tie broken by shard number.
+    def test_wide_area_spread_shares_one_quantized_class(self) -> None:
+        # Pre-#176 a wide area spread splintered the set into per-block area
+        # clusters (each its own zerocheck compile — classes that could
+        # never match cross-block). One quantized cap per chip set now: one
+        # carrier warms the whole set.
         classes = {
             "shard0": _cls(("a", "b"), 400),
             "shard1": _cls(("a", "b"), 100),
             "shard2": _cls(("a", "b"), 400),
         }
         sel = wsc.select_warm_shards(classes, _manifest(classes))
-        self.assertEqual(sel, ["shard0", "shard1"])
+        self.assertEqual(sel, ["shard0"])
 
     def test_distinct_chip_sets_each_covered(self) -> None:
         classes = {
@@ -132,6 +134,45 @@ class SelectWarmShardsTest(absltest.TestCase):
             banner,
             "warming 2 of 5 shards (compile-key cover): ['shard1', 'shard3']",
         )
+
+
+class PlanManifestTest(absltest.TestCase):
+    """``_plan`` emits the class-keyed quantized manifest (zkvm-prover#176):
+    one entry per chip SET, ``class_name`` keys, quantized caps."""
+
+    def test_one_quantized_entry_per_chip_set_order_variants_fold(self) -> None:
+        classes = {
+            "shard0": _cls(("a", "b"), 401_893_824, heights={"a": 77824, "b": 64}),
+            # Reversed chip order: identity is the SET, so it folds in.
+            "shard1": _cls(("b", "a"), 300_000_000, heights={"a": 64, "b": 128}),
+        }
+        out = wsc._plan(classes, _groups(classes))
+        key = wsc.class_name(("a", "b"))
+        self.assertEqual(list(out["manifest"]), [key])
+        entry = out["manifest"][key]
+        # Tight per-field maxima, quantized (the area golden vector).
+        self.assertEqual(entry["area_cap"], 402_096_128)
+        self.assertEqual(entry["gkr"], {"a": 89088, "b": 3072})
+        # slot bound = per-shard sum(heights): max(77888, 192) -> quantized.
+        self.assertEqual(entry["gkr_slot_cap"], 98304)
+        (row,) = out["plan"]
+        self.assertEqual(row["class"], key)
+        self.assertEqual(row["distinct_zerocheck_compiles"], 1)
+        self.assertEqual(row["shards"], ["shard0", "shard1"])
+
+    def test_cover_resolves_the_class_keyed_manifest(self) -> None:
+        # The emitted manifest has NO shard-name keys; the cover must reach
+        # its entries through the chip-set matcher and pin both members to
+        # the one quantized zerocheck class.
+        classes = {
+            "shard0": _cls(("a", "b"), 400),
+            "shard1": _cls(("a", "b"), 300),
+        }
+        manifest = _manifest(classes)
+        k0 = wsc.compile_cover_keys("shard0", classes, manifest)
+        k1 = wsc.compile_cover_keys("shard1", classes, manifest)
+        self.assertEqual(k0["zerocheck"], k1["zerocheck"])
+        self.assertEqual(k0["zerocheck"][1], wsc.quantize_area(400))
 
 
 class CheckWarmCoverTest(parameterized.TestCase):
