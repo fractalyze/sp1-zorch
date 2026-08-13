@@ -76,7 +76,9 @@ from sp1_zorch.logup_gkr.circuit import build_gkr_chips
 from sp1_zorch.logup_gkr.prover import num_beta_values
 from sp1_zorch.poseidon2.koalabear16 import koalabear16_params
 from sp1_zorch.shard_prover.compile_classes import (
+    class_name,
     jagged_class,
+    manifest_entry_for,
     resolve_classes,
     tight_classes,
 )
@@ -185,13 +187,13 @@ _GKR_CLASS_JSON = flags.DEFINE_string(
 _GROUP_MANIFEST_JSON = flags.DEFINE_string(
     "group_manifest_json",
     None,
-    'JSON {shard_name: {"area_cap": N, "gkr": {chip: bound}}} pinning a '
-    "per-shard zerocheck + GKR class, so a single multi-shard process can "
-    "prove several chip-set groups at once and still share one compile within "
-    "each group (the group-max class per chip set). Overrides "
-    "--zc_class_json / --gkr_class_json field-by-field for any shard it "
-    "names; shards absent from the manifest fall back to those flags or "
-    "their own tight class.",
+    'JSON {class_or_shard_name: {"area_cap": N, "gkr": {chip: bound}}} '
+    "pinning a zerocheck + GKR class per chip set. Entries match by CHIP "
+    "SET (compile_classes.manifest_entry_for — the per-program class-keyed "
+    "manifest, zkvm-prover#176); legacy per-shard name keys still match "
+    "when their chip set agrees. Overrides --zc_class_json / "
+    "--gkr_class_json field-by-field for any shard it covers; uncovered "
+    "shards fall back to those flags or their own tight class.",
 )
 _JAGGED_SCAN_CAP = flags.DEFINE_integer(
     "jagged_scan_cap",
@@ -474,7 +476,14 @@ def _prove_shard_dir(
             gkr_spec = json.load(f)
     if _GROUP_MANIFEST_JSON.value:
         with open(_GROUP_MANIFEST_JSON.value) as f:
-            manifest_entry = json.load(f).get(shard_dir.name)
+            manifest_entry = manifest_entry_for(
+                json.load(f), order, name=shard_dir.name
+            )
+        print(
+            f"GROUP_MANIFEST_MATCH {class_name(order)} "
+            f"found={manifest_entry is not None}",
+            flush=True,
+        )
     tc_class, gkr_class = resolve_classes(
         order,
         own_tc,

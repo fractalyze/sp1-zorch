@@ -89,7 +89,47 @@ def _bind_rows(mles: Array, r: Array) -> Array:
     return mles[:, 0::2] + r * (mles[:, 1::2] - mles[:, 0::2])
 
 
-def _open_chip(trace: Array, rev_point: Array, real_height: int) -> Array:
+# One fold chunk's arrival cells (rows x width). The open's live fold
+# temporaries are one chunk's generations (~cells x the EF itemsize, 256 MiB
+# here); the monolithic fold instead materializes a whole class arrival in
+# the extension field at once -- 8 x slot_cap x 16 B, ~12 GiB on the
+# 33-chip registry class, the largest single allocation of a staged prove.
+# The budget must sit BELOW the per-chip cell counts it is meant to split:
+# the registry 33-chip class tops out near 2^27 cells per chip (padded
+# height <= 2^21, width <= 241), so a 2^27 budget planned every chip
+# monolithic and left the arrival-sized arena intact. The chunked default
+# is DISABLED: on GPU the lax.scan formulation materializes its sliced
+# operands and pushes the open zone PAST the monolithic arena (measured
+# 31.0 GiB device peak vs 24.3 GiB monolithic on the tight 33-chip class)
+# before dying CUDA_ERROR_ILLEGAL_ADDRESS; the chunk plan needs a
+# rework before it can be the default.
+_OPEN_FOLD_CHUNK_CELLS = None
+
+
+def _fold_chunk_rows(
+    width: int, padded_height: int, chunk_cells: int | None
+) -> int | None:
+    """Rows per fold chunk: the largest power of two keeping one chunk
+    within ``chunk_cells`` cells (>= 4 rows, so a chunk always folds), or
+    ``None`` for the monolithic fold -- no budget, or the whole padded
+    height fits one chunk (the single-chunk degenerate IS the monolithic
+    fold)."""
+    if chunk_cells is None:
+        return None
+    rows = max(chunk_cells // max(width, 1), 4)
+    rows = 1 << (rows.bit_length() - 1)
+    if rows >= padded_height:
+        return None
+    return rows
+
+
+def _open_chip(
+    trace: Array,
+    rev_point: Array,
+    real_height: int,
+    *,
+    chunk_cells: int | None = None,
+) -> Array:
     """Every column's MLE eval at the (reversed) row point, with the
     zero-extension to ``2^len(rev_point)`` factored out as a scalar.
 
@@ -97,6 +137,16 @@ def _open_chip(trace: Array, rev_point: Array, real_height: int) -> Array:
     zero bits at coordinates ``k >= d``, so the implicit zero rows above
     contribute the product of ``(1 - rev_point[k])`` there -- no
     full-height pad buffer (SP1 evaluates the same factorization).
+
+    ``chunk_cells`` bounds the fold's live temporaries: the first bind
+    promotes the base-field rows to the extension field, so the monolithic
+    fold holds the whole trace in EF at once. Chunked, the first
+    ``log2(chunk_rows)`` variables fold inside contiguous power-of-two row
+    windows (a serial ``lax.scan``), then the remaining variables fold the
+    per-chunk results. An LSB-first bind never pairs rows across an aligned
+    power-of-two window, so each chunk-local generation is the monolithic
+    fold's own restriction to its window; field ops are exact and
+    elementwise, so the chunked fold is byte-identical, not approximate.
     """
     if real_height == 0:
         return fnp.zeros((trace.shape[1],), dtype=rev_point.dtype)
@@ -104,8 +154,25 @@ def _open_chip(trace: Array, rev_point: Array, real_height: int) -> Array:
     pad = (1 << log_h) - real_height
     if pad > 0:
         trace = fnp.pad(trace, ((0, pad), (0, 0)))
-    mles = trace.T
-    for i in range(log_h):
+    chunk_rows = _fold_chunk_rows(trace.shape[1], 1 << log_h, chunk_cells)
+    if chunk_rows is None:
+        mles = trace.T
+        folded = 0
+    else:
+        folds = chunk_rows.bit_length() - 1
+
+        def fold_chunk(carry: None, chunk: Array) -> tuple[None, Array]:
+            mles = chunk.T
+            for i in range(folds):
+                mles = _bind_rows(mles, rev_point[i])
+            return carry, mles[:, 0]
+
+        _, reduced = lax.scan(
+            fold_chunk, None, trace.reshape(-1, chunk_rows, trace.shape[1])
+        )
+        mles = reduced.T
+        folded = folds
+    for i in range(folded, log_h):
         mles = _bind_rows(mles, rev_point[i])
     one = fnp.ones((), dtype=rev_point.dtype)
     correction = fnp.prod(one - rev_point[log_h:])
@@ -180,18 +247,27 @@ class ChipOpeningsRound:
         return carry, transcript.observe(flat), self._openings
 
 
-@partial(
-    frx.jit,
-    static_argnames=(
-        "trace_dimension",
-        "cap_class",
-        "chip_names",
-        "main_widths",
-        "prep_names",
-        "prep_widths",
-        "prep_heights",
-    ),
-)
+@partial(frx.jit, static_argnames=("width", "cap", "chunk_cells"))
+def _open_chip_zone(
+    chip_flat: Array,
+    rev_point: Array,
+    *,
+    width: int,
+    cap: int,
+    chunk_cells: int | None = None,
+) -> Array:
+    """ONE chip's capped open as its own executable. Per-chip zones keep the
+    open's temp arena at one chip's fold generations (the EF promote of the
+    largest chip, ~1 GiB at registry caps); a single whole-class zone instead
+    holds every chip's promote in one module arena — 16 B x the class
+    arrival, 12.2 GiB on the 33-chip registry class, which does not fit the
+    32 GiB card next to the first-layer arena. The compile keys on
+    ``(width, cap)`` alone, so quantized classes share entries across shards
+    and blocks."""
+    view = chip_flat.reshape(width, cap).T
+    return _open_chip(view, rev_point, cap, chunk_cells=chunk_cells)
+
+
 def open_traces_capped(
     main_flat: Array,
     prep_flat: Array | None,
@@ -204,14 +280,25 @@ def open_traces_capped(
     prep_names: tuple[str, ...],
     prep_widths: tuple[int, ...],
     prep_heights: tuple[int, ...],
+    fold_chunk_cells: int | None = _OPEN_FOLD_CHUNK_CELLS,
 ) -> tuple[dict[str, ChipEvaluation], Array]:
     """Open every shard chip's trace at the final GKR point and build its
     absorb message, on the class-shaped flat arrival — static slices
-    at the class bounds, so the compile keys on the chip set + class alone.
-    SP1 opens ALL shard chips; prep opens at its keygen height.
+    at the class bounds, so each per-chip zone keys on the chip set + class
+    alone. SP1 opens ALL shard chips; prep opens at its keygen height.
     Byte-identical at any admitted class: the arrival's zero rows fold into
     exactly the ``(1 - rev_point[k])`` factors ``_open_chip``'s
-    zero-extension correction applies, and field mul is exact."""
+    zero-extension correction applies, and field mul is exact.
+
+    Not itself a jit zone: each chip folds in its own ``_open_chip_zone``
+    executable (see its docstring for the memory contract), and the flat
+    message assembles from the per-chip openings eagerly — small arrays,
+    class-stable shapes.
+
+    ``fold_chunk_cells`` bounds each chip zone's live fold temporaries
+    (``_open_chip``'s chunked fold; ``None`` folds monolithically). The
+    openings and the absorb message are byte-identical at any value — the
+    knob moves memory, never the Fiat-Shamir stream."""
     rev_point = eval_point[-trace_dimension:][::-1]
     main_offsets = _arrival_offsets(main_widths, cap_class.chip_heights)
     prep_offsets = _arrival_offsets(prep_widths, prep_heights)
@@ -221,18 +308,25 @@ def open_traces_capped(
     for idx, name in enumerate(chip_names):
         cap, width = cap_class.chip_heights[idx], main_widths[idx]
         start = main_offsets[idx]
-        view = main_flat[start : start + width * cap].reshape(width, cap).T
-        main_eval = _open_chip(view, rev_point, cap)
+        chip_flat = main_flat[start : start + width * cap]
+        main_eval = _open_chip_zone(
+            chip_flat, rev_point, width=width, cap=cap, chunk_cells=fold_chunk_cells
+        )
         prep_eval = None
         if name in prep_name_to_idx and prep_flat is not None:
             p_idx = prep_name_to_idx[name]
             p_h, p_w = prep_heights[p_idx], prep_widths[p_idx]
             p_start = prep_offsets[p_idx]
-            p_view = prep_flat[p_start : p_start + p_w * p_h].reshape(p_w, p_h).T
-            prep_eval = _open_chip(p_view, rev_point, p_h)
+            prep_eval = _open_chip_zone(
+                prep_flat[p_start : p_start + p_w * p_h],
+                rev_point,
+                width=p_w,
+                cap=p_h,
+                chunk_cells=fold_chunk_cells,
+            )
         openings[name] = ChipEvaluation(main=main_eval, preprocessed=prep_eval)
 
-    # The absorb itself stays outside the zone: on an interaction-heavy shard
+    # The absorb itself stays outside the zones: on an interaction-heavy shard
     # this message is thousands of rate-blocks of serial sponge, which the
     # caller relocates to the host. `flat_openings_absorb` is still the one
     # definition of the message, shared with `ChipOpeningsRound` (the verifier

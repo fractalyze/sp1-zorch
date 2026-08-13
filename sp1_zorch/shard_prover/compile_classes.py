@@ -21,7 +21,8 @@ Class shapes on the wire:
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+import hashlib
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 from sp1_zorch.logup_gkr.circuit import GkrCapClass
@@ -125,3 +126,99 @@ def resolve_classes(
                 ),
             )
     return tc, gkr
+
+
+# --- class-keyed group manifest (zkvm-prover#176) ---------------------------
+# The group manifest is a per-PROGRAM artifact keyed by chip-set class, not
+# by per-block "shardN" position names. zkvm-prover's ``zkvm_sp1.manifest``
+# owns the schema; sp1-zorch cannot import it, so the class naming, the cap
+# quantization constants, and the read-side match rule are mirrored here by
+# documented spec — golden-vector tests on both sides
+# (``compile_classes_test`` / zkvm-prover ``test_manifest``) pin them to the
+# same numbers.
+
+_AREA_HEADROOM = (1, 2000)  # +0.05%
+_AREA_QUANTUM = 1 << 15  # cells
+_HEIGHT_REL_HEADROOM = (7, 50)  # +14% — the mid-chip (Mul-scale) rel drift
+_HEIGHT_MIN_SLACK = 2048  # rows — the tiny-chip absolute-jitter floor
+_HEIGHT_MAX_SLACK = 40960  # rows — the big-chip absolute drift bound
+_HEIGHT_QUANTUM = 1 << 10  # rows
+_SLOT_HEADROOM = (1, 25)  # +4%
+_SLOT_QUANTUM = 1 << 15  # slots
+
+
+def _quantize(x: int, headroom: tuple[int, int], quantum: int) -> int:
+    """``ceil(x * (1 + num/den) / quantum) * quantum`` in exact integer
+    arithmetic — a float boundary must never decide a compile key."""
+    num, den = headroom
+    padded = (int(x) * (den + num) + den - 1) // den
+    return -(-padded // quantum) * quantum
+
+
+def quantize_area(area: int) -> int:
+    """The stored zerocheck ``area_cap`` for a tight area."""
+    return _quantize(area, _AREA_HEADROOM, _AREA_QUANTUM)
+
+
+def quantize_height(height: int) -> int:
+    """The stored per-chip GKR height bound for a tight height.
+
+    Per-chip slack = ``clamp(+14%, 2048, 40960)`` rows: cross-block height
+    drift is absolute-bounded on big chips, relative on mid chips, and
+    sub-percentage-floor on tiny chips — a flat percentage inflates the
+    big chips (and the class's summed heights) far past the drift it
+    covers.
+    """
+    num, den = _HEIGHT_REL_HEADROOM
+    slack = (int(height) * num + den - 1) // den
+    slack = min(max(slack, _HEIGHT_MIN_SLACK), _HEIGHT_MAX_SLACK)
+    padded = int(height) + slack
+    return -(-padded // _HEIGHT_QUANTUM) * _HEIGHT_QUANTUM
+
+
+def quantize_slot(slot: int) -> int:
+    """The stored ``gkr_slot_cap`` for a tight resolved slot bound."""
+    return _quantize(slot, _SLOT_HEADROOM, _SLOT_QUANTUM)
+
+
+def class_name(chips: Iterable[str]) -> str:
+    """The class slug of a chip set: ``"{n}ch-{sig8}"``, sig8 = first 8 hex
+    of sha256 over the newline-joined SORTED chip names — order-independent,
+    stable across blocks/processes, greppable in a prove log."""
+    names = sorted(str(n) for n in chips)
+    sig = hashlib.sha256("\n".join(names).encode()).hexdigest()[:8]
+    return f"{len(names)}ch-{sig}"
+
+
+def manifest_entry_for(
+    manifest: Mapping[str, Mapping[str, Any]],
+    order: Sequence[str],
+    name: str | None = None,
+) -> Mapping[str, Any] | None:
+    """The manifest entry allowed to pin a shard whose chip set is
+    ``set(order)`` — the read-side match rule, mirroring
+    ``zkvm_sp1.manifest.entry_for_shard``:
+
+    - name lookup first (legacy per-block ``shardN`` manifests), but only
+      when the named entry's ``gkr`` key set equals the live chips — a
+      name collision across blocks must not serve a foreign class;
+    - else any entry with EXACT chip-set equality — never a superset — the
+      largest ``area_cap`` deterministically among several (legacy area
+      clusters; a class-keyed manifest has exactly one per set);
+    - else an area-only named entry (no ``gkr`` to match on) is trusted;
+    - else ``None`` — the caller keeps its tight classes.
+    """
+    chips = frozenset(order)
+    named = manifest.get(name) if name is not None else None
+    if named is not None and "gkr" in named and frozenset(named["gkr"]) == chips:
+        return named
+    candidates = [
+        (int(e.get("area_cap", -1)), key)
+        for key, e in manifest.items()
+        if "gkr" in e and frozenset(e["gkr"]) == chips
+    ]
+    if candidates:
+        return manifest[max(candidates)[1]]
+    if named is not None and "gkr" not in named:
+        return named
+    return None

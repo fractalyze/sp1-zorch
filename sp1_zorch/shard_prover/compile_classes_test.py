@@ -148,5 +148,100 @@ class ResolveClassesTest(absltest.TestCase):
         self.assertEqual(gkr, GkrCapClass((12, 14), 52))
 
 
+class QuantizePolicyTest(absltest.TestCase):
+    """Golden vectors for the mirrored quantization constants — identical
+    literals in zkvm-prover's ``test_manifest.py`` (``zkvm_sp1.manifest``
+    owns the schema; a drift on either side fails that side's test)."""
+
+    def test_area_golden_vectors(self) -> None:
+        # Block A's core33 tight max and block B's (+1088 cells) land in ONE
+        # bucket — the cross-block cap-jitter recompile closes by
+        # construction.
+        self.assertEqual(cc.quantize_area(401893824), 402096128)
+        self.assertEqual(cc.quantize_area(401894912), 402096128)
+        self.assertEqual(cc.quantize_area(400776800), 400982016)
+
+    def test_slot_golden_vector(self) -> None:
+        self.assertEqual(cc.quantize_slot(93165272), 96894976)
+
+    def test_height_golden_vectors(self) -> None:
+        # The three clamp arms of the per-chip slack: relative (mid chip),
+        # absolute bound (big chip), absolute floor (tiny chip).
+        self.assertEqual(cc.quantize_height(77824), 89088)
+        self.assertEqual(cc.quantize_height(1688832), 1730560)
+        self.assertEqual(cc.quantize_height(2240), 5120)
+        self.assertEqual(cc.quantize_height(32), 3072)
+
+    def test_quantize_covers_its_input(self) -> None:
+        for x in (0, 1, 32767, 32768, 401893824):
+            self.assertGreaterEqual(cc.quantize_area(x), x)
+
+
+class ClassNameTest(absltest.TestCase):
+    def test_slug_is_count_plus_sig8(self) -> None:
+        self.assertEqual(cc.class_name(("Cpu", "Add")), "2ch-57ec70cf")
+        self.assertEqual(cc.class_name(("KeccakPermute",)), "1ch-bf79035f")
+
+    def test_order_independent(self) -> None:
+        self.assertEqual(cc.class_name(("a", "b")), cc.class_name(("b", "a")))
+
+
+class ManifestEntryForTest(absltest.TestCase):
+    """The read-side class match, mirroring
+    ``zkvm_sp1.manifest.entry_for_shard`` (zkvm-prover#176)."""
+
+    _CORE = {"area_cap": 500, "gkr": {"a": 8, "b": 8}, "gkr_slot_cap": 32}
+
+    def test_class_keyed_entry_matches_by_chip_set(self) -> None:
+        manifest = {"2ch-7e18f737": self._CORE}
+        self.assertIs(
+            cc.manifest_entry_for(manifest, ("a", "b"), name="shard40"),
+            manifest["2ch-7e18f737"],
+        )
+
+    def test_name_hit_requires_chip_set_agreement(self) -> None:
+        # Cross-block name collision: the named entry is a foreign class,
+        # the class-keyed entry must serve instead.
+        manifest = {
+            "shard40": {"area_cap": 9, "gkr": {"keccak": 2}},
+            "2ch-7e18f737": self._CORE,
+        }
+        self.assertIs(
+            cc.manifest_entry_for(manifest, ("a", "b"), name="shard40"),
+            manifest["2ch-7e18f737"],
+        )
+
+    def test_matching_name_wins(self) -> None:
+        manifest = {"shard3": self._CORE, "other": dict(self._CORE, area_cap=999)}
+        self.assertIs(
+            cc.manifest_entry_for(manifest, ("a", "b"), name="shard3"),
+            manifest["shard3"],
+        )
+
+    def test_superset_entry_never_covers_a_smaller_shard(self) -> None:
+        manifest = {"shard15": {"area_cap": 999, "gkr": {"a": 8, "b": 8, "sha": 8}}}
+        self.assertIsNone(cc.manifest_entry_for(manifest, ("a", "b"), name="shard15"))
+
+    def test_largest_area_cap_wins_among_same_set_entries(self) -> None:
+        manifest = {
+            "shard9": {"area_cap": 46, "gkr": {"a": 8}},
+            "shard3": {"area_cap": 403, "gkr": {"a": 8}},
+            "shard5": {"area_cap": 339, "gkr": {"a": 8}},
+        }
+        self.assertIs(cc.manifest_entry_for(manifest, ("a",)), manifest["shard3"])
+
+    def test_area_only_named_entry_is_trusted(self) -> None:
+        manifest = {"shard2": {"area_cap": 11}}
+        self.assertIs(
+            cc.manifest_entry_for(manifest, ("a", "b"), name="shard2"),
+            manifest["shard2"],
+        )
+
+    def test_unknown_chip_set_matches_nothing(self) -> None:
+        self.assertIsNone(cc.manifest_entry_for({}, ("a", "b"), name="shard0"))
+        manifest = {"shard0": {"area_cap": 1, "gkr": {"z": 8}}}
+        self.assertIsNone(cc.manifest_entry_for(manifest, ("a", "b"), name="shard0"))
+
+
 if __name__ == "__main__":
     absltest.main()

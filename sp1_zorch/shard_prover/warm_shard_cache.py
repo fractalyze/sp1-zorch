@@ -34,14 +34,21 @@ Two steps:
            ~29 GiB execute; concurrency is capped by ``--mem_budget_gib``,
            one shard per worker process.
 
-Grouping policy (memory-aware, matches the single-process prove):
-  * Zerocheck area_cap is pinned to the chip-set group MAX only when the
-    group's area spread is tight (min/max > ``--group_area_ratio``); a wide
-    group would price the small shards' zerocheck buffer at the big shard's
-    area. One shared zerocheck compile per tight group (the #284-pole stage).
-  * GKR: one pinned GkrCapClass per chip-set group (heights = per-chip max,
-    slot_cap = group max) — the pyramid keys on slot_cap so the pin does not
-    inflate it, and first-layer inflation is transient.
+Grouping policy (class-keyed + quantized, zkvm-prover#176):
+  * The manifest is a per-PROGRAM artifact: ONE entry per chip set, keyed by
+    ``compile_classes.class_name`` (never per-block "shardN" position
+    names), each cap quantized with headroom
+    (``quantize_area``/``quantize_height``/``quantize_slot``) so distinct
+    blocks of one program land on the SAME cap and clamp under it. The old
+    ``--group_area_ratio`` per-block area clustering is gone — it minted
+    block-relative singleton classes that could never match cross-block.
+  * ``--in_manifest`` consumes a provided registry manifest (e.g. the
+    merged per-program artifact) for pinning + cover selection; analyze
+    still derives per-shard tight classes and jagged shapes to pick the
+    warm carriers.
+  * GKR: one pinned GkrCapClass per chip set (quantized per-chip max
+    heights, quantized slot max) — the pyramid keys on slot_cap, and
+    first-layer inflation from the height pin is transient.
 
 Proving against the cache:
   * The prove must run with the SAME ``XLA_FLAGS`` as the warm — compilation
@@ -77,7 +84,12 @@ from absl import app, flags
 
 from sp1_zorch.logup_gkr.circuit import GkrCapClass, build_gkr_chips
 from sp1_zorch.shard_prover.compile_classes import (
+    class_name,
     jagged_class,
+    manifest_entry_for,
+    quantize_area,
+    quantize_height,
+    quantize_slot,
     resolve_classes,
     tight_classes,
 )
@@ -100,9 +112,17 @@ _OUT_MANIFEST = flags.DEFINE_string(
 _GROUP_AREA_RATIO = flags.DEFINE_float(
     "group_area_ratio",
     0.4,
-    "Share one zerocheck compile across a chip set "
-    "only when its min/max area_cap exceeds this (else each shard keeps its "
-    "own area to avoid over-pricing small shards).",
+    "DEPRECATED, ignored: the manifest pins one quantized cap per chip set "
+    "(zkvm-prover#176); per-block area clustering minted block-relative "
+    "classes that could never match cross-block.",
+)
+_IN_MANIFEST = flags.DEFINE_string(
+    "in_manifest",
+    None,
+    "Consume this group manifest (the per-program class registry) for "
+    "pinning + warm-cover selection instead of the analyzed dump's own; "
+    "analyze still derives per-shard tight classes and jagged shapes for "
+    "carrier selection. The path is handed to the warm workers verbatim.",
 )
 _WARM = flags.DEFINE_bool(
     "warm",
@@ -231,33 +251,42 @@ def _analyze(dirs: list[Path]) -> tuple[dict, dict]:
 
 
 def _plan(classes: dict, groups: dict) -> dict:
-    """Assign each shard its group + cluster classes; count distinct compiles."""
-    ratio = _GROUP_AREA_RATIO.value
+    """The class-keyed quantized manifest + the compile plan.
+
+    One entry per chip SET, keyed by ``class_name`` — per-field tight maxima
+    over the members, quantized (mirrors ``zkvm_sp1.manifest.fold``). Chip
+    ORDER variants of one set fold together: identity is the set, matching
+    the read side. One zerocheck + one GKR compile family per class by
+    construction (the quantized cap is the shared pin).
+    """
+    by_set: dict[frozenset, list[str]] = defaultdict(list)
+    for order, shards in groups.items():
+        by_set[frozenset(order)].extend(shards)
     manifest: dict[str, Any] = {}
     plan = []
-    for order, shards in groups.items():
-        areas = [classes[s]["area_cap"] for s in shards]
-        tight = len(shards) > 1 and (min(areas) / max(areas)) > ratio
-        area_pin = max(areas) if tight else None
-        # GKR: one class per chip-set group. The pyramid keys on slot_cap (pin
-        # the group-max tight bound — heights don't inflate it), and the
-        # heights-keyed first-layer/open zones tolerate the per-chip-max pin
-        # (their inflation is transient) — so the whole group shares one
-        # compile set (GkrCapClass, sp1-zorch#290).
-        gmax = {n: max(classes[s]["gkr_heights"][n] for s in shards) for n in order}
-        slot_pin = max(classes[s]["gkr_slot_bound"] for s in shards)
-        zc_variants = 1 if tight else len({a for a in areas})
-        for s in shards:
-            manifest.setdefault(s, {})["gkr"] = gmax
-            manifest[s]["gkr_slot_cap"] = slot_pin
-            manifest[s]["area_cap"] = area_pin if tight else classes[s]["area_cap"]
+    for chips, shards in by_set.items():
+        entry = {
+            "area_cap": quantize_area(max(classes[s]["area_cap"] for s in shards)),
+            # GKR: one class per chip set. The pyramid keys on slot_cap, and
+            # the heights-keyed first-layer/open zones tolerate the
+            # quantized per-chip-max pin (their inflation is transient) — so
+            # the whole class shares one compile set (GkrCapClass, #290).
+            "gkr": {
+                n: quantize_height(max(classes[s]["gkr_heights"][n] for s in shards))
+                for n in sorted(chips)
+            },
+            "gkr_slot_cap": quantize_slot(
+                max(classes[s]["gkr_slot_bound"] for s in shards)
+            ),
+        }
+        manifest[class_name(chips)] = entry
         plan.append(
             {
-                "chips": len(order),
+                "class": class_name(chips),
+                "chips": len(chips),
                 "shards": sorted(shards, key=_snum),
-                "tight_zerocheck_group": tight,
-                "area_pin": area_pin,
-                "distinct_zerocheck_compiles": zc_variants,
+                "area_pin": entry["area_cap"],
+                "distinct_zerocheck_compiles": 1,
                 "distinct_gkr_compiles": 1,
             }
         )
@@ -289,8 +318,10 @@ _COVER_KINDS = ("zerocheck", "gkr", "chipset", "jagged")
 
 def compile_cover_keys(name: str, classes: dict, manifest: dict) -> dict:
     """Shard ``name``'s effective class-keyed compile keys (``_COVER_KINDS``)
-    under ``manifest`` — resolved by ``compile_classes.resolve_classes``, the
-    SAME field-by-field resolution the staged prove harness applies to its
+    under ``manifest`` — the entry via ``compile_classes.manifest_entry_for``
+    (class-keyed chip-set match; legacy name keys still honored) resolved by
+    ``compile_classes.resolve_classes``, the SAME match + field-by-field
+    resolution the staged prove harness applies to its
     ``--group_manifest_json``, so the cover fills exactly the classes a
     manifest-driven prove requests (a partial entry pins only what it names)."""
     c = classes[name]
@@ -301,7 +332,7 @@ def compile_cover_keys(name: str, classes: dict, manifest: dict) -> dict:
         GkrCapClass(
             tuple(int(c["gkr_heights"][n]) for n in order), int(c["gkr_slot_bound"])
         ),
-        manifest_entry=manifest.get(name),
+        manifest_entry=manifest_entry_for(manifest, order, name=name),
     )
     slot = gkr.slot_cap
     j = c["jagged"]
@@ -370,18 +401,23 @@ def _selection_banner(selected: Sequence[str], total: int) -> str:
 
 def main(argv: Sequence[str]) -> None:
     del argv
+    if _GROUP_AREA_RATIO.present:
+        print(
+            "--group_area_ratio is DEPRECATED and ignored: one quantized cap "
+            "per chip set (zkvm-prover#176)",
+            flush=True,
+        )
     dirs = _shard_dirs()
     print(f"=== analyzing {len(dirs)} shards ===", flush=True)
     classes, groups = _analyze(dirs)
     out = _plan(classes, groups)
-    print(f"\n=== {len(groups)} chip-set groups (compile boundary) ===")
+    print(f"\n=== {len(out['plan'])} chip-set classes (compile boundary) ===")
     tot_zc = tot_gkr = 0
     for g in sorted(out["plan"], key=lambda g: -len(g["shards"])):
         tot_zc += g["distinct_zerocheck_compiles"]
         tot_gkr += g["distinct_gkr_compiles"]
-        tag = "GROUP" if g["tight_zerocheck_group"] else "own"
         print(
-            f"  {tag:>5} {g['chips']:>2}ch {len(g['shards']):>2}sh "
+            f"  {g['class']} {g['chips']:>2}ch {len(g['shards']):>2}sh "
             f"{[_snum(s) for s in g['shards']]}: "
             f"zc_compiles={g['distinct_zerocheck_compiles']} "
             f"gkr_compiles={g['distinct_gkr_compiles']} area_pin={g['area_pin']}"
@@ -393,9 +429,20 @@ def main(argv: Sequence[str]) -> None:
     manifest_path = _OUT_MANIFEST.value
     if _WARM.value and not _CACHE_DIR.value:
         raise ValueError("--warm requires --cache_dir")
-    if _WARM.value and manifest_path is None:
+    manifest_used = out["manifest"]
+    if _IN_MANIFEST.value:
+        # Registry mode: pin + cover from the provided per-program manifest
+        # (the analyzed manifest still writes to --out_manifest when asked,
+        # for inspection); the workers get the registry path verbatim.
+        manifest_used = json.loads(Path(_IN_MANIFEST.value).read_text())
+        print(
+            f"pinning from --in_manifest ({len(manifest_used)} classes); "
+            "analyzed classes drive carrier selection only",
+            flush=True,
+        )
+    elif _WARM.value and manifest_path is None:
         # The warm needs the manifest on disk for the workers; default beside
-        # the cache so grouped-zerocheck compiles match the real prove.
+        # the cache so pinned compiles match the real prove.
         manifest_path = str(Path(_CACHE_DIR.value) / "group_manifest.json")
     if manifest_path:
         Path(manifest_path).parent.mkdir(parents=True, exist_ok=True)
@@ -403,14 +450,14 @@ def main(argv: Sequence[str]) -> None:
         print(f"wrote manifest -> {manifest_path}")
     if _WARM.value:
         selected = select_warm_shards(
-            classes, out["manifest"], per_class=_WARM_PER_CLASS.value
+            classes, manifest_used, per_class=_WARM_PER_CLASS.value
         )
         if _WARM_PER_CLASS.value:
             print(_selection_banner(selected, len(dirs)), flush=True)
         keep = set(selected)
         dirs = [d for d in dirs if d.name in keep]
         groups = {o: [s for s in ss if s in keep] for o, ss in groups.items()}
-        _warm(dirs, classes, groups, manifest_path)
+        _warm(dirs, classes, groups, _IN_MANIFEST.value or manifest_path)
 
 
 def _est_peak_gib(area_cap: int) -> float:
@@ -497,9 +544,9 @@ def _group_queue(classes: dict, groups: dict) -> list[list[str]]:
     costed = []
     for _, shards in groups.items():
         areas = [classes[s]["area_cap"] for s in shards]
-        tight = len(shards) > 1 and min(areas) / max(areas) > _GROUP_AREA_RATIO.value
-        zc_cost = max(areas) if tight else sum(set(areas))
-        costed.append((zc_cost + max(areas) + rider * len(shards), shards))
+        # One pinned zerocheck compile per class (the quantized cap), plus
+        # one group GKR at the max area.
+        costed.append((2 * max(areas) + rider * len(shards), shards))
     ordered = [shards for _, shards in sorted(costed, key=lambda t: -t[0])]
     for cost, shards in sorted(costed, key=lambda t: -t[0]):
         print(
