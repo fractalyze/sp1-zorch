@@ -364,6 +364,85 @@ py_test(
 )
 
 py_binary(
+    name = "warm_recursion_cache",
+    srcs = [
+        "warm_recursion.py",
+        "warm_recursion_cache.py",
+        "warm_recursion_worker.py",
+        "warm_worker.py",
+    ],
+    main = "warm_recursion_cache.py",
+    # Compile-only fill of the RECURSION machine classes from a per-program
+    # shape spec (no dump — the recursion circuits are block-independent):
+    #   bazel run //sp1_zorch/shard_prover:warm_recursion_cache -- \
+    #       --spec_json=recursion_shapes.json --compile_cache_dir=/path/to/cache
+    deps = [
+        ":compile_classes",
+        ":prove_shard",
+        ":replay",
+        ":shard_prover",
+        ":sp1_ffi",
+        # warm_recursion_worker reuses warm_worker's frx.jit intercept, which
+        # drives the staged harness import at patch time.
+        ":staged_prove_shard",
+        "//sp1_zorch:types",
+        "//sp1_zorch/logup_gkr",
+        "//sp1_zorch/poseidon2:koalabear16",
+        "//sp1_zorch/zerocheck",
+        "@zorch//zorch/commit:smcs",
+        "@zorch//zorch/pcs/jagged:region",
+        "@zorch//zorch/poly",
+        requirement("absl_py"),
+        requirement("frx"),
+        requirement("frx_cuda12_plugin"),
+        requirement("frx_cuda12_pjrt"),
+        requirement("hash_frx"),
+        requirement("zk_dtypes"),
+    ],
+)
+
+py_test(
+    name = "warm_recursion_test",
+    size = "large",
+    srcs = [
+        "warm_recursion.py",
+        "warm_recursion_cache.py",
+        "warm_recursion_test.py",
+        "warm_recursion_worker.py",
+        "warm_worker.py",
+    ],
+    # CPU-only: spec/builder/CLI units plus the subprocess key-identity pair
+    # (a really-executing tiny recursion chain vs the warm-driven one). The
+    # tool flags are required CLI flags the test never reads — satisfy the
+    # parser.
+    args = [
+        "--compile_cache_dir=unused",
+        "--spec_json=unused",
+    ],
+    main = "warm_recursion_test.py",
+    deps = [
+        ":compile_classes",
+        ":prove_shard",
+        ":replay",
+        ":shard_prover",
+        ":sp1_ffi",
+        ":staged_prove_shard",
+        "//sp1_zorch:types",
+        "//sp1_zorch/logup_gkr",
+        "//sp1_zorch/poseidon2:koalabear16",
+        "//sp1_zorch/zerocheck",
+        "@zorch//zorch/commit:smcs",
+        "@zorch//zorch/pcs/jagged:region",
+        "@zorch//zorch/poly",
+        requirement("absl_py"),
+        requirement("frx"),
+        requirement("hash_frx"),
+        requirement("numpy"),
+        requirement("zk_dtypes"),
+    ],
+)
+
+py_binary(
     name = "verify_shard_fixture",
     srcs = ["verify_shard_fixture.py"],
     # Fixture check over a local rsp GPU-trace capture (~1.5 GB/shard) — a
