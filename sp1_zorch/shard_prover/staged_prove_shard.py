@@ -91,6 +91,7 @@ from sp1_zorch.shard_prover.fixture_loader import (
 )
 from sp1_zorch.shard_prover.prove_shard import (
     ShardProver,
+    ZerocheckChunkSpec,
     bind_commitment,
 )
 from sp1_zorch.shard_prover.replay import (
@@ -204,6 +205,26 @@ _JAGGED_SCAN_CAP = flags.DEFINE_integer(
     "projection); a positive power of two pins the cap explicitly, shared by "
     "every shard so the chunk zones stay shard-invariant per (layout class, "
     "cap).",
+)
+_ZC_CHUNK_DEPTH = flags.DEFINE_integer(
+    "zc_chunk_depth",
+    0,
+    "Chunked zerocheck total-cap prefix depth d (TotalCapChunkClass, "
+    "opt-in): rounds 0..d-1 run as recompute-until-fit chunk zones over the "
+    "base-field arrival and the round-d fold state materializes once "
+    "(~area_cap/2**d elements), so no zone holds the round-0 arena. 0 keeps "
+    "the monolithic zerocheck body (default; its compile-cache entries and "
+    "AOT call keys are untouched). Byte-identical either way. Per-chip "
+    "height caps come from the resolved GKR class, so a depth > 0 needs "
+    "--gkr_class_json or --group_manifest_json (or accepts the shard's own "
+    "tight class = per-shard zone shapes).",
+)
+_ZC_CHUNK_CAP = flags.DEFINE_integer(
+    "zc_chunk_cap",
+    0,
+    "Arrival-gather elements per zerocheck chunk zone (bounds one zone's "
+    "working set; 0 = one window per chip per round). Read only when "
+    "--zc_chunk_depth > 0.",
 )
 _JAXPROF_DIR = flags.DEFINE_string(
     "jaxprof_dir",
@@ -504,6 +525,24 @@ def _prove_shard_dir(
     if jagged_cap is not None:
         print(f"JAGGED_SCAN_CAP {jagged_cap.scan_cap}", flush=True)
 
+    # Chunked zerocheck total-cap prefix (opt-in): per-chip height caps ride
+    # the resolved GKR class — the same class-union bounds the LogUp-GKR
+    # zones key on, so chunk zone shapes stay shard-invariant per class.
+    zc_chunk = None
+    if _ZC_CHUNK_DEPTH.value > 0:
+        zc_chunk = ZerocheckChunkSpec(
+            depth=_ZC_CHUNK_DEPTH.value,
+            chip_height_caps=tuple(
+                (n, int(h)) for n, h in zip(order, gkr_class.chip_heights)
+            ),
+            chunk_cap=_ZC_CHUNK_CAP.value,
+        )
+        print(
+            f"ZC_CHUNK depth={_ZC_CHUNK_DEPTH.value} "
+            f"chunk_cap={_ZC_CHUNK_CAP.value}",
+            flush=True,
+        )
+
     # The GKR witness is consumed only by LogUp-GKR; a trace-commit-only run
     # (--max_phase=1) slices that off, so don't require the gkr fixture.
     n = max(1, min(4, _MAX_PHASE.value))
@@ -531,6 +570,7 @@ def _prove_shard_dir(
         zerocheck_total_cap_class=tc_class,
         gkr_cap_class=gkr_class,
         jagged_cap_class=jagged_cap,
+        zerocheck_chunk_spec=zc_chunk,
     )
 
     # Parse the golden references up front: a missing/malformed fixture then

@@ -29,6 +29,46 @@ from zorch.sumcheck.prover import SUMCHECK_ROUND_MARKER, SUMCHECK_ROUND_MARKER_V
 _MARK_ZEROCHECK_ROUNDS = False
 
 
+def zerocheck_round_poly_from_raws(
+    y_raw: tuple[Array, Array, Array],
+    eq: Array,
+    interp: Array,
+    claim: Array,
+    last: Array,
+    eq_adj: Array,
+    padded_row_adj: Array,
+    nr_live: Array,
+    vgeq: VirtualGeq,
+) -> Array:
+    """The y_raw seam of the round assembly: padding correction + Gruen
+    degree-4 assembly on the PRE-REDUCED raw sums at t in {0, 2, 4}. The
+    chunked total-cap prefix merges per-chunk partial sums (exact field
+    addition, any grouping is bit-identical) and enters here; `_decomp`
+    delegates after its own reduce, so the two cannot drift.
+
+    A runtime-empty chip (nr_live == 0 — a cap-class chip the program never
+    exercised) has no live row: the last-live-row index (nr_live+1)//2 - 1 is
+    -1, which corrupts the padding correction and leaks a spurious term for a
+    constraint that is nonzero on an all-zero row (e.g. DivRem). Clamp the
+    index and vanish the reduce to the trivial claim identity — byte-identical
+    to the exact path's static `is_zero_chip` branch (its width-0 buffer
+    reaches _zero_chip_poly by another route), at no extra Gruen dot."""
+    ef = last.dtype
+    empty = nr_live == 0
+    threshold_half = fnp.maximum((nr_live + 1) // 2 - 1, 0)
+    msb_lagrange = eq_adj * eq[threshold_half]
+
+    def corr(y: Array, t_val: Array) -> Array:
+        eq_last = eq_factor(t_val, last)
+        vg = vgeq.fix_last_variable(t_val).eval_at(threshold_half)
+        val = eq_last * (y * eq_adj - padded_row_adj * vg * msb_lagrange)
+        return fnp.where(empty, fnp.zeros((), ef), val)
+
+    zero, two, four = fnp.zeros((), ef), fnp.array(2, ef), fnp.array(4, ef)
+    y0, y2, y4 = corr(y_raw[0], zero), corr(y_raw[1], two), corr(y_raw[2], four)
+    return round_coeffs_from_matrix(interp, y0, claim, (y2, y4))
+
+
 def _decomp(
     v0: Array,
     v2: Array,
@@ -47,32 +87,15 @@ def _decomp(
 ) -> Array:
     """Byte-exact fallback (the emitter replaces this) for a LIVE chip.
     Rebuilds VirtualGeq from its leaves; reproduces `_reduce_and_assemble`
-    exactly."""
-    ef = last.dtype
+    exactly: the eq-weighted reduce here, correction + assembly through the
+    shared `zerocheck_round_poly_from_raws` seam."""
     # VirtualGeq fields, in order: (threshold, geq_coefficient, eq_coefficient)
     # — see zorch/poly/geq.py; built in jagged.py as VirtualGeq(nr, one, zero).
     vgeq = VirtualGeq(vgeq_threshold, vgeq_geq_coeff, vgeq_eq_coeff)
     y_raw = (fnp.sum(v0 * eq), fnp.sum(v2 * eq), fnp.sum(v4 * eq))
-    # A runtime-empty chip (nr_live == 0 — a cap-class chip the program never
-    # exercised) has no live row: the last-live-row index (nr_live+1)//2 - 1 is
-    # -1, which corrupts the padding correction and leaks a spurious term for a
-    # constraint that is nonzero on an all-zero row (e.g. DivRem). Clamp the
-    # index and vanish the reduce to the trivial claim identity — byte-identical
-    # to the exact path's static `is_zero_chip` branch (its width-0 buffer
-    # reaches _zero_chip_poly by another route), at no extra Gruen dot.
-    empty = nr_live == 0
-    threshold_half = fnp.maximum((nr_live + 1) // 2 - 1, 0)
-    msb_lagrange = eq_adj * eq[threshold_half]
-
-    def corr(y: Array, t_val: Array) -> Array:
-        eq_last = eq_factor(t_val, last)
-        vg = vgeq.fix_last_variable(t_val).eval_at(threshold_half)
-        val = eq_last * (y * eq_adj - padded_row_adj * vg * msb_lagrange)
-        return fnp.where(empty, fnp.zeros((), ef), val)
-
-    zero, two, four = fnp.zeros((), ef), fnp.array(2, ef), fnp.array(4, ef)
-    y0, y2, y4 = corr(y_raw[0], zero), corr(y_raw[1], two), corr(y_raw[2], four)
-    return round_coeffs_from_matrix(interp, y0, claim, (y2, y4))
+    return zerocheck_round_poly_from_raws(
+        y_raw, eq, interp, claim, last, eq_adj, padded_row_adj, nr_live, vgeq
+    )
 
 
 def zerocheck_round_poly(

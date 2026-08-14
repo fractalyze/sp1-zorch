@@ -20,6 +20,7 @@ Stage / dump vocabulary: ``docs/architecture.md``.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from functools import partial
 from typing import TYPE_CHECKING, Any
 
@@ -47,6 +48,7 @@ from sp1_zorch.types import (
 from sp1_zorch.zerocheck.coeffs import gkr_powers, rlc_coeffs
 from sp1_zorch.zerocheck.jagged import (
     JaggedZerocheckSummand,
+    TotalCapChunkClass,
     TotalCapClass,
     pack_flat_arrival,
     prove_jagged_zerocheck,
@@ -291,6 +293,33 @@ class OpenedValuesRound:
         return carry, transcript.observe(flat), self._opened_values
 
 
+@dataclass(frozen=True)
+class ZerocheckChunkSpec:
+    """Name-keyed form of the opt-in chunked total-cap prefix knob
+    (``TotalCapChunkClass``): per-chip round-0 height caps by CHIP NAME (the
+    class union, e.g. the group manifest's per-chip GKR bounds), aligned to a
+    shard's chip order at prove time — the spec never assumes an order.
+    ``depth`` and ``chunk_cap`` pass through; a chip missing a cap fails
+    loud."""
+
+    depth: int
+    chip_height_caps: tuple[tuple[str, int], ...]
+    chunk_cap: int = 0
+
+    def chunk_class_for(self, chip_names: Sequence[str]) -> TotalCapChunkClass:
+        caps = dict(self.chip_height_caps)
+        missing = [n for n in chip_names if n not in caps]
+        if missing:
+            raise ValueError(
+                f"zerocheck chunk spec carries no height cap for {missing}"
+            )
+        return TotalCapChunkClass(
+            depth=self.depth,
+            chip_height_caps=tuple(int(caps[n]) for n in chip_names),
+            chunk_cap=self.chunk_cap,
+        )
+
+
 def prove_shard_zerocheck(
     chips: Mapping[str, Chip],
     main_region: JaggedRegion,
@@ -308,6 +337,7 @@ def prove_shard_zerocheck(
     main_widths: Sequence[int] | None = None,
     prep_widths: Sequence[int] | None = None,
     chip_names: Sequence[str] | None = None,
+    chunk_class: TotalCapChunkClass | None = None,
 ) -> tuple[Transcript, ZerocheckProof]:
     """Reduce every chip's constraint zero-sum and GKR opening claim to one
     point claim via the jagged sumcheck.
@@ -375,6 +405,7 @@ def prove_shard_zerocheck(
             total_cap_class=total_cap_class,
             flat_arrival=flat_arrival,
             num_cols=num_cols,
+            chunk_class=chunk_class,
         )
         # The opened-values split needs only per-chip widths — statics on the
         # flat path (no region object enters the jit body: a per-shard region
@@ -412,6 +443,8 @@ def prove_shard_zerocheck(
             opened_values=opened_values,
             msgs=msgs,
         )
+    if chunk_class is not None:
+        raise ValueError("chunk_class rides the flat_arrival total-cap path")
     if num_reals is None:
         num_reals = list(main_region.chip_heights)
         traces = chip_traces(chip_names, num_reals, main_region, prep_region)
@@ -528,10 +561,17 @@ class ZerocheckProver(
         *,
         max_log_row_count: int,
         total_cap_class: TotalCapClass | None = None,
+        chunk_spec: ZerocheckChunkSpec | None = None,
     ) -> None:
         self._chips = chips
         self._max_log_row_count = max_log_row_count
         self._total_cap_class = total_cap_class
+        # Opt-in chunked total-cap prefix (TotalCapChunkClass): when set, the
+        # stage runs as eager orchestration over chunk zones instead of the
+        # single `_jit_body_totalcap_traced` program, so no XLA arena holds
+        # the round-0 buffer. When unset (the default), the monolithic body —
+        # its jaxpr, compile-cache entries, and AOT call keys — is untouched.
+        self._chunk_spec = chunk_spec
 
     @staticmethod
     @partial(
@@ -634,6 +674,35 @@ class ZerocheckProver(
             if witness.prep_region is not None
             else {}
         )
+        if self._chunk_spec is not None:
+            # Chunked prefix (opt-in): EAGER stage orchestration — the chunk
+            # zones and the monolithic remainder are their own jit programs
+            # (`jagged._prove_total_cap_chunked`), so no single arena spans
+            # the round-0 buffer. Same ops, same transcript stream —
+            # byte-identical to the monolithic body below.
+            transcript, proof = prove_shard_zerocheck(
+                self._chips,
+                None,
+                None,
+                claim.public_values,
+                claim.gkr.eval_point,
+                claim.gkr.chip_openings,
+                transcript,
+                max_log_row_count=self._max_log_row_count,
+                num_reals=[fnp.asarray(h, fnp.int32) for h in heights_host],
+                total_cap_class=total_cap_class,
+                flat_arrival=flat,
+                num_cols=tuple(int(t.shape[0]) for t in traces),
+                main_widths=tuple(int(w) for w in witness.main_region.chip_widths),
+                prep_widths=tuple(prep_w.get(n, 0) for n in names),
+                chip_names=tuple(names),
+                chunk_class=self._chunk_spec.chunk_class_for(names),
+            )
+            return ProveResult(
+                TraceEvaluationClaim(proof.msgs.challenge, proof.opened_values),
+                proof,
+                transcript,
+            )
         transcript, fields = self._jit_body_totalcap_traced(
             flat,
             claim.public_values,
