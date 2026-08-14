@@ -33,10 +33,14 @@ from sp1_zorch.types import ChipEvaluation
 from sp1_zorch.zerocheck.coeffs import gkr_powers, rlc_coeffs
 from sp1_zorch.zerocheck.jagged import (
     JaggedZerocheckSummand,
+    TotalCapChunkClass,
+    TotalCapClass,
+    pack_flat_arrival,
     prove_jagged_zerocheck,
 )
 from sp1_zorch.zerocheck.prover import (
     OpenedValuesRound,
+    chip_traces,
     export_order_eval_fn,
     probe_num_constraints,
     prove_shard_zerocheck,
@@ -264,6 +268,88 @@ class ProveZerocheckTest(absltest.TestCase):
         _assert_bytes_equal(opened["alpha"].preprocessed, self.want_finals[0][3:5, 0])
         _assert_bytes_equal(opened["lookup"].main, self.want_finals[1][:1, 0])
         self.assertIsNone(opened["lookup"].preprocessed)
+
+
+class ChunkedStageByteIdentityTest(absltest.TestCase):
+    """The stage-level chunked total-cap path (ZerocheckProver's chunk_spec
+    seam, threaded here as ``chunk_class``) on the REAL duplex transcript:
+    every proof field and the advanced Fiat-Shamir stream must byte-match the
+    monolithic flat run — the stage's own sampling, probes, and opened-values
+    absorb all sit downstream of the chunked rounds."""
+
+    def test_chunked_flat_matches_monolithic_flat(self) -> None:
+        alpha_main = fnp.concatenate(
+            [fnp.ones((5, 1), dtype=F), _rand_bf(1, (5, 2))], axis=1
+        )
+        alpha_prep = _rand_bf(2, (3, 2))
+        lookup_main = _rand_bf(3, (3, 1))
+        main_region = JaggedRegion.from_chips(
+            [alpha_main, lookup_main],
+            log_stacking_height=4,
+            max_log_row_count=_MAX_LOG_ROW_COUNT,
+            chip_names=("alpha", "lookup"),
+        )
+        prep_region = JaggedRegion.from_chips(
+            [alpha_prep],
+            log_stacking_height=4,
+            max_log_row_count=_MAX_LOG_ROW_COUNT,
+            chip_names=("alpha",),
+        )
+        chips: dict[str, Any] = {"alpha": _WitnessChip(), "lookup": _LookupChip()}
+        chip_openings = {
+            "alpha": ChipEvaluation(
+                main=_rand_ef(4, (3,)), preprocessed=_rand_ef(5, (2,))
+            ),
+            "lookup": ChipEvaluation(main=_rand_ef(6, (1,)), preprocessed=None),
+        }
+        public_values = _rand_bf(7, (8,))
+        eval_point = _rand_ef(8, (5,))
+
+        names = list(main_region.chip_names)
+        heights = [int(h) for h in main_region.chip_heights]
+        traces = chip_traces(names, heights, main_region, prep_region)
+        cols = [int(t.shape[0]) for t in traces]
+        cap_class = TotalCapClass.from_heights(heights, cols)
+        flat = pack_flat_arrival(traces, heights, cap_class, _MAX_LOG_ROW_COUNT)
+
+        def run(chunk_class: TotalCapChunkClass | None):  # type: ignore[no-untyped-def]
+            return prove_shard_zerocheck(
+                chips,
+                None,
+                None,
+                public_values,
+                eval_point,
+                chip_openings,
+                cheap_transcript(F),
+                max_log_row_count=_MAX_LOG_ROW_COUNT,
+                num_reals=[fnp.asarray(h, fnp.int32) for h in heights],
+                total_cap_class=cap_class,
+                flat_arrival=flat,
+                num_cols=cols,
+                main_widths=[int(w) for w in main_region.chip_widths],
+                prep_widths=[2, 0],
+                chip_names=names,
+                chunk_class=chunk_class,
+            )
+
+        t_mono, p_mono = run(None)
+        # chunk_cap=5 splits alpha's rows into single-pair windows with a
+        # non-dividing tail relative to its cap.
+        t_chunk, p_chunk = run(
+            TotalCapChunkClass(depth=2, chip_height_caps=(8, 4), chunk_cap=5)
+        )
+        _assert_bytes_equal(p_chunk.msgs.round_poly, p_mono.msgs.round_poly)
+        _assert_bytes_equal(p_chunk.msgs.challenge, p_mono.msgs.challenge)
+        _assert_bytes_equal(p_chunk.claimed_sum, p_mono.claimed_sum)
+        for i, (a, b) in enumerate(zip(p_chunk.finals, p_mono.finals, strict=True)):
+            _assert_bytes_equal(a, b, f"finals[{i}]")
+        for n in names:
+            _assert_bytes_equal(
+                p_chunk.opened_values[n].main, p_mono.opened_values[n].main, n
+            )
+        _, got = sample_challenge(t_chunk, EF, 4)
+        _, want = sample_challenge(t_mono, EF, 4)
+        _assert_bytes_equal(got, want, "post-stage transcript sample")
 
 
 class EvalFnIdentityAndProbeMemoTest(absltest.TestCase):

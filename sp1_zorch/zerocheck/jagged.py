@@ -96,7 +96,10 @@ from zorch.sumcheck.gruen import (
 from zorch.sumcheck.prover import RoundMsg
 from zorch.transcript import Transcript, sample_challenge
 
-from sp1_zorch.zerocheck._round_composite import zerocheck_round_poly
+from sp1_zorch.zerocheck._round_composite import (
+    zerocheck_round_poly,
+    zerocheck_round_poly_from_raws,
+)
 from sp1_zorch.zerocheck.coeffs import gkr_powers
 
 if TYPE_CHECKING:
@@ -594,6 +597,266 @@ class TotalCapClass:
         return caps
 
 
+@dataclass(frozen=True)
+class TotalCapChunkClass:
+    """Opt-in chunked-prefix class for the total-cap round — the recompute-
+    until-fit shape of the jagged open's ``JaggedCapClass`` (sp1-zorch#334),
+    applied to the zerocheck round-0 arena. ``depth`` d runs rounds
+    ``0..d-1`` as an eager host loop over per-chip pair-row-window zones
+    (each zone recomputes its window's round-j fold state from the base-field
+    flat arrival and returns only three scalar partial sums), then
+    materializes the round-``d`` fold state ONCE (~``area_cap / 2**d``
+    elements, dynamic-update-slice lay-in — no concat) and runs the UNCHANGED
+    monolithic remainder from round ``d``. No zone ever holds the round-0
+    arena, so the stage's dominant allocation drops from ~``area_cap`` cells
+    to ~``area_cap / 2**d`` plus one chunk working set.
+
+    ``chip_height_caps`` are static per-chip round-0 height bounds in chip
+    order (the class union — e.g. the group manifest's per-chip GKR bounds);
+    chunk windows are static slices of them while a shard's real heights stay
+    traced inside each zone, so zones compile once per (chip set, cap, depth,
+    window shape). An under-bounding cap fails LOUD at dispatch (host-side,
+    the #351 clamped-DUS lesson) — it must never corrupt silently.
+
+    ``chunk_cap`` bounds one chunk-build zone's arrival-gather footprint in
+    ELEMENTS (a window of ``w`` pair rows at round ``j`` reads
+    ``num_cols * w * 2**(j+1)`` arrival cells); 0 = one window per chip per
+    round. Byte-identical to the monolithic path: cross-chunk recombination
+    is exact finite-field addition (any summation grouping is bit-identical),
+    and the recomputed fold reproduces ``_gather_halves``' per-level live
+    masks and evenpad-zero injection element for element.
+
+    ``TotalCapClass`` itself is untouched: the monolithic body, its compile
+    keys, and its AOT call keys are all unchanged when no chunk class is
+    passed.
+
+    GPU perf risk (the gate's concern; the totalcap zone sits on the hot
+    resident-prove path): the prefix pays fold recompute traffic of at most
+    ``2**d`` base-field arrival reads per element for rounds ``0..d-1``
+    (decaying 2x per round), plus per-round dispatch of one zone per (chip,
+    window) and constraint-composite instantiations at chunk window shapes —
+    new kernels vs the tuned monolithic ones, one compile per class. The
+    chunked zones also need warm-driver cover and a manifest knob field
+    before any default-ON flip, else seeded runs cold-compile them."""
+
+    depth: int
+    chip_height_caps: tuple[int, ...]
+    chunk_cap: int = 0
+
+    def __post_init__(self) -> None:
+        if self.depth < 1:
+            raise ValueError(f"depth must be >= 1, got {self.depth}")
+        if any(int(c) < 0 for c in self.chip_height_caps):
+            raise ValueError(
+                f"chip_height_caps must be >= 0, got {self.chip_height_caps}"
+            )
+        if self.chunk_cap < 0:
+            raise ValueError(f"chunk_cap must be >= 0, got {self.chunk_cap}")
+
+
+def _chunk_pair_rows(
+    chunk_cap: int, num_cols: int, fold_depth: int, pair_cap: int
+) -> int:
+    """Pair rows per chunk zone: ``chunk_cap`` bounds the zone's level-0
+    (arrival) gather footprint ``num_cols * rows * 2**(fold_depth+1)``
+    elements; 0 takes one window per chip per round."""
+    if chunk_cap <= 0:
+        return pair_cap
+    return max(1, min(pair_cap, chunk_cap // (num_cols << (fold_depth + 1))))
+
+
+def _chunk_build(
+    arr_flat: Array,
+    off: Array,
+    stride: Array,
+    h0: Array,
+    rs: Array,
+    base0: Array,
+    *,
+    fold_depth: int,
+    window_rows: int,
+    num_cols: int,
+) -> tuple[Array, Array]:
+    """One chip's round-``fold_depth`` fold-state halves over the pair-row
+    window starting at global pair row ``base0 / 2**(fold_depth+1)`` —
+    recomputed from the BASE-FIELD flat arrival by composing ``fold_depth``
+    exact fold levels (``p0 + r_l*(p1 - p0)`` per level). Each level applies
+    the SAME live mask ``row < ceil(h0 / 2**l)`` and reads exact field zeros
+    past it that ``_gather_halves`` bakes into the stored state, so the
+    window equals the stored buffer's slice byte for byte. Fold pairs never
+    cross the window boundary: ``base0`` is even at every level
+    (``2*r0 << fold_depth``), so pairs stay window-local.
+
+    ``off``/``stride`` address the chip's column segments in the arrival
+    (element ``off + col*stride + row``); reads are clipped and masked, so a
+    dead lane never touches another chip's segment. Returns the
+    ``[window_rows, num_cols]`` halves pair — base field at depth 0 (the
+    monolithic round 0 consumes the arrival's own strided slices in base;
+    the extension lift happens in the fold, exactly as the stored path)."""
+    zero_src = fnp.zeros((), arr_flat.dtype)
+    n = (2 * window_rows) << fold_depth
+    base = base0
+    g = base + fnp.arange(n, dtype=fnp.int32)
+    cols = fnp.arange(num_cols, dtype=fnp.int32)
+    idx = off + cols[None, :] * stride + g[:, None]
+    vals = fnp.where(
+        g[:, None] < h0,
+        fnp.take(arr_flat, fnp.clip(idx, 0, None), mode="clip"),
+        zero_src,
+    )
+    h = h0
+    for level in range(fold_depth):
+        h = (h + 1) // 2
+        n //= 2
+        base = base // 2
+        ev, od = vals[0::2], vals[1::2]
+        folded = ev + rs[level] * (od - ev)
+        gl = base + fnp.arange(n, dtype=fnp.int32)
+        vals = fnp.where(gl[:, None] < h, folded, fnp.zeros((), folded.dtype))
+    return vals[0::2], vals[1::2] - vals[0::2]
+
+
+# Module-level jit zones for the chunked prefix (the #334 eager-orchestration
+# pattern): each dispatch holds only its own window's temporaries, and the
+# compile keys on (eval_fn, fold_depth, window shape, chip column count) —
+# shard heights, challenges, and window starts ride as traced values, so
+# shards of one chunk class reuse every zone.
+@partial(frx.jit, static_argnames=("eval_fn", "fold_depth", "window_rows", "num_cols"))
+def _chunk_round_partials(
+    eval_fn: Callable[[Array, Array], Array] | None,
+    arr_flat: Array,
+    off: Array,
+    stride: Array,
+    h0: Array,
+    rs: Array,
+    alpha: Array,
+    live_local: Array,
+    eq_slice: Array,
+    gkr: Array,
+    public_values: Array,
+    base0: Array,
+    win_off: Array,
+    win_stride: Array,
+    *,
+    fold_depth: int,
+    window_rows: int,
+    num_cols: int,
+) -> tuple[Array, Array, Array]:
+    """One (chip, pair-row window) zone of a chunked prefix round: rebuild the
+    window's round-``fold_depth`` halves from the arrival, run the UNCHANGED
+    ``_round_constraint_eval_cached`` composite at the three t-points over the
+    window's column-major flat form, and reduce with the window's eq slice.
+    Only the three scalar partial sums cross the zone boundary; the caller
+    merges windows by field addition (exact, so any grouping is
+    bit-identical to the monolithic full-window reduce — dropped rows past
+    the class cap are exact masked zeros there)."""
+    p0, diff = _chunk_build(
+        arr_flat,
+        off,
+        stride,
+        h0,
+        rs,
+        base0,
+        fold_depth=fold_depth,
+        window_rows=window_rows,
+        num_cols=num_cols,
+    )
+    # Column-major flat: column c's segment at [c*window_rows, (c+1)*window_rows)
+    # — the composite's off/stride addressing over the window's own buffer.
+    p0_flat = p0.T.reshape(-1)
+    diff_flat = diff.T.reshape(-1)
+    t_coeffs = tuple(fnp.array(t, p0_flat.dtype) for t in (0, 2, 4))
+    constrained = eval_fn is not None
+    outs = []
+    for k in range(3):
+        # Round 0 drops the constraint at t=0 by zeroing alpha (the monolithic
+        # `is_round0` select, statically decided here — same values).
+        a = (
+            fnp.zeros_like(alpha)
+            if (fold_depth == 0 and k == 0 and constrained)
+            else alpha
+        )
+        v = _round_constraint_eval_cached(
+            eval_fn,
+            p0_flat,
+            a,
+            live_local,
+            win_off,
+            win_stride,
+            diff_flat,
+            t_coeffs[k],
+            gkr,
+            (public_values,) if constrained else (),
+            window_rows=window_rows,
+            num_cols=num_cols,
+        )
+        outs.append(fnp.sum(v * eq_slice))
+    return outs[0], outs[1], outs[2]
+
+
+@partial(frx.jit, static_argnames=("fold_depth", "window_rows", "num_cols"))
+def _chunk_state_window(
+    arr_flat: Array,
+    off: Array,
+    stride: Array,
+    h0: Array,
+    rs: Array,
+    base0: Array,
+    *,
+    fold_depth: int,
+    window_rows: int,
+    num_cols: int,
+) -> tuple[Array, Array]:
+    """One (chip, pair-row window) of the round-``depth`` state
+    materialization: the recomputed halves block, laid into the chip's block
+    planes by the caller (dynamic-update-slice, no concat)."""
+    return _chunk_build(
+        arr_flat,
+        off,
+        stride,
+        h0,
+        rs,
+        base0,
+        fold_depth=fold_depth,
+        window_rows=window_rows,
+        num_cols=num_cols,
+    )
+
+
+@partial(frx.jit, static_argnames=("num_cols", "block_half"))
+def _lay_in_chip_state(
+    p0_plane: Array,
+    diff_plane: Array,
+    block_p0: Array,
+    block_diff: Array,
+    seg_len: Array,
+    off: Array,
+    *,
+    num_cols: int,
+    block_half: int,
+) -> tuple[Array, Array]:
+    """Lay one chip's ``[block_half, num_cols]`` round-``depth`` halves block
+    into the flat jagged planes at its traced element offset: gather the
+    chip's packed column-segment order (column ``m // seg_len``, half row
+    ``m % seg_len``), mask past the chip's real packed area to exact zeros
+    (positions there either belong to a LATER chip — overwritten by its own
+    lay-in, chips run in flat order — or are the buffer's zero tail), and
+    dynamic-update-slice the static-size block in. The planes carry a pad
+    tail sized to the largest chip block so the update never clamps."""
+    m = fnp.arange(num_cols * block_half, dtype=fnp.int32)
+    sl = fnp.maximum(seg_len, 1)
+    col = fnp.minimum(m // sl, num_cols - 1)
+    rh = m % sl
+    live = m < num_cols * seg_len
+    ef_zero = fnp.zeros((), p0_plane.dtype)
+    seg_p0 = fnp.where(live, block_p0[rh, col], ef_zero)
+    seg_diff = fnp.where(live, block_diff[rh, col], ef_zero)
+    return (
+        lax.dynamic_update_slice(p0_plane, seg_p0, (off,)),
+        lax.dynamic_update_slice(diff_plane, seg_diff, (off,)),
+    )
+
+
 def pack_flat_arrival(
     traces: Sequence[Array],
     num_reals: Sequence[int],
@@ -667,6 +930,8 @@ def _prove_total_cap(
     num_vars: int,
     flat_arrival: Array | None = None,
     num_cols: Sequence[int] | None = None,
+    start_round: int = 0,
+    initial_carry: Any | None = None,
 ) -> tuple[list[Array], Transcript, RoundMsg]:
     """The total-cap round carry: ONE flat JAGGED-PACKED buffer
     (fractalyze/sp1-zorch#242), chip ``c`` occupying ``num_cols_c``
@@ -822,9 +1087,14 @@ def _prove_total_cap(
     # blocks (chip i's trace [cols_i, arrival_rows_i] flattens to cols_i
     # arrival-height segments; arrival offsets/strides are static). Rows past
     # a chip's live height read the arrival zero-pad or are masked to zero, so
-    # the packed buffer is live rows + exact field zeros.
-    heights = fnp.stack([fnp.asarray(nr, fnp.int32) for nr in num_reals])
-    if flat_arrival is not None:
+    # the packed buffer is live rows + exact field zeros. A caller-provided
+    # ``initial_carry`` (the chunked prefix's materialized round-``start_round``
+    # state) skips the pack and every round-0 initialization below.
+    if initial_carry is None:
+        heights = fnp.stack([fnp.asarray(nr, fnp.int32) for nr in num_reals])
+    if initial_carry is not None:
+        pass  # the carry below supplies the packed state
+    elif flat_arrival is not None:
         # The prologue already packed the class layout eagerly
         # (`pack_flat_arrival`, same cumsum offsets the traced heights derive),
         # so the initial halves are two strided slices. The base-field
@@ -866,9 +1136,10 @@ def _prove_total_cap(
             fetch=lambda src: fnp.take(arr_flat, src, mode="clip").astype(ef),
         )
 
-    vgeqs = [VirtualGeq(fnp.asarray(nr, fnp.int32), one, zero) for nr in num_reals]
-    chip_claims = fnp.stack(list(claims))
-    eq_adj = one
+    if initial_carry is None:
+        vgeqs = [VirtualGeq(fnp.asarray(nr, fnp.int32), one, zero) for nr in num_reals]
+        chip_claims = fnp.stack(list(claims))
+        eq_adj = one
 
     extra_ts = summand.extra_ts(ef)
     if len(extra_ts) != summand.degree - 2:
@@ -880,12 +1151,13 @@ def _prove_total_cap(
     interp_xs = frx.vmap(lambda z: interp_matrix(extra_ts, z))(last_xs)
     is_round0_xs = fnp.arange(num_vars) == 0
 
-    eq_buf = expand_eq_to_hypercube(zeta[: num_vars - 1], one)
-    # W == the round-0 half-width by construction (eq_widths, floored at 2 —
-    # the floor only engages on tiny fixtures, where the eq buffer is
-    # zero-extended to match).
-    if eq_buf.shape[0] < W:
-        eq_buf = _zero_extend(eq_buf, W)
+    if initial_carry is None:
+        eq_buf = expand_eq_to_hypercube(zeta[: num_vars - 1], one)
+        # W == the round-0 half-width by construction (eq_widths, floored at
+        # 2 — the floor only engages on tiny fixtures, where the eq buffer is
+        # zero-extended to match).
+        if eq_buf.shape[0] < W:
+            eq_buf = _zero_extend(eq_buf, W)
 
     def _jagged_window(
         flat: Array, off: Array, stride: Array, n_rows: int, n_cols: int
@@ -1051,9 +1323,29 @@ def _prove_total_cap(
     caps_r = cap_class.shrink_schedule(sum_cols, _SHRINK_ROUNDS, num_vars)
     wins_r = eq_widths(num_vars, _SHRINK_ROUNDS)
     unroll = min(_SHRINK_ROUNDS, num_vars)
-    carry = (p0h0, diffh0, vgeqs, chip_claims, eq_adj, heights, eq_buf, transcript)
+    if start_round > unroll:
+        raise ValueError(
+            f"start_round {start_round} exceeds the unrolled shrink prefix "
+            f"{unroll}; the chunked prefix depth is clamped to it"
+        )
+    if initial_carry is None:
+        carry = (
+            p0h0,
+            diffh0,
+            vgeqs,
+            chip_claims,
+            eq_adj,
+            heights,
+            eq_buf,
+            transcript,
+        )
+    else:
+        # The chunked prefix's materialized round-``start_round`` state:
+        # buffers at `shrink_schedule`'s round-``start_round`` cap, scalars
+        # and eq table already folded ``start_round`` times.
+        carry = initial_carry
     prefix_msgs = []
-    for rnd in range(unroll):
+    for rnd in range(start_round, unroll):
         step = make_round_step(wins_r[rnd], caps_r[rnd + 1], shrink_eq=True)
         carry, msg = step(carry, (last_xs[rnd], interp_xs[rnd], is_round0_xs[rnd]))
         prefix_msgs.append(msg)
@@ -1096,6 +1388,302 @@ def _prove_total_cap(
     return finals, transcript, msgs
 
 
+@partial(
+    frx.jit,
+    static_argnames=(
+        "eval_fns",
+        "static_nrs",
+        "num_cols_t",
+        "num_vars",
+        "start_round",
+        "cap_class",
+    ),
+)
+def _totalcap_tail(
+    alphas: tuple[Array, ...],
+    lambdas: Array,
+    beta: Array,
+    public_values: Array,
+    adjs: tuple[Array, ...],
+    zeta: Array,
+    carry: Any,
+    *,
+    eval_fns: tuple[Callable[[Array, Array], Array], ...],
+    static_nrs: tuple[int | None, ...],
+    num_cols_t: tuple[int, ...],
+    num_vars: int,
+    start_round: int,
+    cap_class: TotalCapClass,
+) -> tuple[list[Array], Transcript, RoundMsg]:
+    """The chunked path's remainder zone: the UNCHANGED monolithic round loop
+    + finals from round ``start_round``, entered on the materialized carry.
+    Compile keys on (chip set, class, depth) alone — shard heights,
+    challenges, and the state ride as traced values, so shards of one chunk
+    class share this executable."""
+    ef = zeta.dtype
+    summand = JaggedZerocheckSummand(
+        eval_fns=list(eval_fns),
+        alphas=list(alphas),
+        lambdas=lambdas,
+        beta=beta,
+        public_values=public_values,
+    )
+    return _prove_total_cap(
+        summand,
+        [],
+        list(static_nrs),
+        [],
+        cap_class,
+        zeta,
+        carry[-1],
+        [],
+        list(adjs),
+        ef,
+        _challenge_limbs(ef),
+        num_vars,
+        flat_arrival=None,
+        num_cols=list(num_cols_t),
+        start_round=start_round,
+        initial_carry=carry,
+    )
+
+
+def _prove_total_cap_chunked(
+    summand: JaggedZerocheckSummand,
+    static_nrs: Sequence[int | None],
+    num_reals: Sequence[int | Array],
+    cap_class: TotalCapClass,
+    chunk_class: TotalCapChunkClass,
+    zeta: Array,
+    transcript: Transcript,
+    claims: Sequence[Array],
+    adjs: Sequence[Array],
+    ef: Any,
+    ef_limbs: int,
+    num_vars: int,
+    flat_arrival: Array,
+    num_cols: Sequence[int],
+) -> tuple[list[Array], Transcript, RoundMsg]:
+    """The chunked total-cap prefix (`TotalCapChunkClass`): EAGER host
+    orchestration over per-(chip, pair-row window) zones for rounds
+    ``0..depth-1`` — the #334 recompute-until-fit pattern — so no XLA program
+    ever holds the round-0 arena.
+
+    Per chunked round: each live chip's raw sums at t in {0, 2, 4} are the
+    field sum of its window partials (`_chunk_round_partials`; windows cover
+    ``[0, min(ceil(cap/2**(j+1)), eq width))`` — rows between a shard's live
+    pairs and the class cap are exact masked zeros, and rows between the cap
+    and the machine window W contribute only exact zeros to the monolithic
+    sum, so skipping them drops nothing). The merged raws enter the SAME
+    correction + Gruen assembly (`zerocheck_round_poly_from_raws`, the
+    ``_decomp`` seam) and the SAME transcript observe/sample ops, so the
+    Fiat-Shamir stream is bit-identical. At round ``depth`` the fold state
+    materializes once via per-chip lay-in (`_lay_in_chip_state`, no concat)
+    and the UNCHANGED monolithic remainder (`_totalcap_tail`) runs from
+    there. Exact field arithmetic end to end — proof bytes match the
+    monolithic path."""
+    depth = min(chunk_class.depth, num_vars, _SHRINK_ROUNDS)
+    num_chips = len(num_cols)
+    cols_arr = [int(c) for c in num_cols]
+    sum_cols = sum(cols_arr)
+    caps = [int(c) for c in chunk_class.chip_height_caps]
+    one = fnp.ones((), ef)
+    zero = fnp.zeros((), ef)
+    W = eq_widths(num_vars, 0)[0]
+    buf_len = cap_class.area_cap + 2 * W
+    if flat_arrival.shape != (buf_len,):
+        raise ValueError(
+            f"flat_arrival must be the round-0 buffer [{buf_len}] "
+            f"(area_cap + 2*W), got {flat_arrival.shape}"
+        )
+    is_zero_chip = [nr == 0 for nr in static_nrs]
+
+    widest = max(cols_arr) if cols_arr else 0
+    gkr_all = gkr_powers(summand.beta, widest) if widest else fnp.zeros(0, ef)
+    chip_gkr = [gkr_all[: cols_arr[i]] for i in range(num_chips)]
+
+    heights0 = fnp.stack([fnp.asarray(nr, fnp.int32) for nr in num_reals])
+    # The arrival's per-chip element offsets / column strides — the same
+    # cols*evenpad(h) cumsum `pack_flat_arrival` packed to.
+    ev0 = heights0 + heights0 % 2
+    per_chip_area = fnp.asarray(cols_arr, fnp.int32) * ev0
+    arr_off = fnp.concatenate([fnp.zeros((1,), fnp.int32), fnp.cumsum(per_chip_area)])[
+        :num_chips
+    ]
+
+    vgeqs = [VirtualGeq(fnp.asarray(nr, fnp.int32), one, zero) for nr in num_reals]
+    chip_claims = fnp.stack(list(claims))
+    eq_adj = one
+
+    extra_ts = summand.extra_ts(ef)
+    if len(extra_ts) != summand.degree - 2:
+        raise ValueError(
+            f"a degree-{summand.degree} Gruen round materializes s(0) plus "
+            f"{summand.degree - 2} extra points, got {len(extra_ts)}"
+        )
+    last_xs = zeta[::-1]
+    interp_xs = frx.vmap(lambda z: interp_matrix(extra_ts, z))(last_xs)
+
+    eq_buf = expand_eq_to_hypercube(zeta[: num_vars - 1], one)
+    if eq_buf.shape[0] < W:
+        eq_buf = _zero_extend(eq_buf, W)
+
+    wins_r = eq_widths(num_vars, _SHRINK_ROUNDS)
+    caps_r = cap_class.shrink_schedule(sum_cols, _SHRINK_ROUNDS, num_vars)
+
+    heights = heights0
+    chal: list[Array] = []
+    prefix_msgs: list[RoundMsg] = []
+    for rnd in range(depth):
+        last, interp = last_xs[rnd], interp_xs[rnd]
+        w_in = wins_r[rnd]
+        rs = fnp.stack(chal) if chal else fnp.zeros((0,), ef)
+        polys_list = []
+        for i in range(num_chips):
+            if is_zero_chip[i]:
+                polys_list.append(_zero_chip_poly(interp, chip_claims[i], ef))
+                continue
+            live_pair = (heights[i] + 1) // 2
+            # Window coverage: the class cap's live-pair bound this round,
+            # clamped to the machine eq width (rows past either bound are
+            # exact zeros in the monolithic reduce).
+            pair_cap = min(max(-(-caps[i] // (1 << (rnd + 1))), 1), w_in)
+            win = _chunk_pair_rows(chunk_class.chunk_cap, cols_arr[i], rnd, pair_cap)
+            constrained = summand.alphas[i].shape[-1] > 0
+            ys: tuple[Array, Array, Array] = (zero, zero, zero)
+            for r0 in range(0, pair_cap, win):
+                w = min(win, pair_cap - r0)
+                part = _chunk_round_partials(
+                    summand.eval_fns[i] if constrained else None,
+                    flat_arrival,
+                    arr_off[i],
+                    ev0[i],
+                    heights0[i],
+                    rs,
+                    summand.alphas[i],
+                    fnp.clip(live_pair - r0, 0, w),
+                    eq_buf[r0 : r0 + w],
+                    chip_gkr[i],
+                    summand.public_values,
+                    fnp.asarray((2 * r0) << rnd, fnp.int32),
+                    # The window buffer's own addressing, passed as traced
+                    # values: a jit-internal constant would be sunk into the
+                    # bounded constraint_eval fusion, breaking the GPU
+                    # recognizer's start_offset operand contract.
+                    fnp.asarray(0, fnp.int32),
+                    fnp.asarray(w, fnp.int32),
+                    fold_depth=rnd,
+                    window_rows=w,
+                    num_cols=cols_arr[i],
+                )
+                ys = tuple(a + b for a, b in zip(ys, part))
+            polys_list.append(
+                zerocheck_round_poly_from_raws(
+                    ys,
+                    eq_buf[:w_in],
+                    interp,
+                    chip_claims[i],
+                    last,
+                    eq_adj,
+                    adjs[i],
+                    heights[i],
+                    vgeqs[i],
+                )
+            )
+        polys = fnp.stack(polys_list)
+        rlc = summand.combine_chips(polys)
+        transcript = transcript.observe(rlc)
+        transcript, r = sample_challenge(transcript, ef, ef_limbs)
+        prefix_msgs.append(RoundMsg(round_poly=rlc, challenge=r))
+        chal.append(r)
+        vgeqs = [vg.fix_last_variable(r) for vg in vgeqs]
+        chip_claims, eq_adj = fold_round_scalars(polys, r, eq_adj, last)
+        heights = (heights + 1) // 2
+        # The shrink-prefix eq fold — `make_round_step`'s shrink_eq=True rule.
+        if eq_buf.shape[0] >= 2:
+            contracted = contract_hypercube_step(eq_buf)
+            eq_buf = _zero_extend(contracted, max(contracted.shape[0], 2))
+
+    # Materialize the round-``depth`` fold state ONCE into the flat jagged
+    # planes at `shrink_schedule`'s round-``depth`` cap. Chips lay in flat
+    # order, so a chip block's static-size overhang past its real packed area
+    # (masked to exact zeros) is either overwritten by the next chip or lands
+    # in the zero tail; the pad tail keeps the update from clamping.
+    rs = fnp.stack(chal)
+    plane_half = caps_r[depth] // 2
+    ev_d = heights + heights % 2
+    seg_len = ev_d // 2
+    per_area_half = (fnp.asarray(cols_arr, fnp.int32) * ev_d) // 2
+    off_half = fnp.concatenate([fnp.zeros((1,), fnp.int32), fnp.cumsum(per_area_half)])[
+        :num_chips
+    ]
+    block_halves = [max(-(-caps[i] // (1 << (depth + 1))), 1) for i in range(num_chips)]
+    pad = max(
+        (
+            cols_arr[i] * block_halves[i]
+            for i in range(num_chips)
+            if not is_zero_chip[i]
+        ),
+        default=0,
+    )
+    p0_plane = fnp.zeros((plane_half + pad,), ef)
+    diff_plane = fnp.zeros((plane_half + pad,), ef)
+    for i in range(num_chips):
+        if is_zero_chip[i]:
+            continue
+        block_half = block_halves[i]
+        win = _chunk_pair_rows(chunk_class.chunk_cap, cols_arr[i], depth, block_half)
+        block_p0 = fnp.zeros((block_half, cols_arr[i]), ef)
+        block_diff = fnp.zeros((block_half, cols_arr[i]), ef)
+        for r0 in range(0, block_half, win):
+            w = min(win, block_half - r0)
+            bp0, bdiff = _chunk_state_window(
+                flat_arrival,
+                arr_off[i],
+                ev0[i],
+                heights0[i],
+                rs,
+                fnp.asarray((2 * r0) << depth, fnp.int32),
+                fold_depth=depth,
+                window_rows=w,
+                num_cols=cols_arr[i],
+            )
+            block_p0 = lax.dynamic_update_slice(block_p0, bp0, (r0, 0))
+            block_diff = lax.dynamic_update_slice(block_diff, bdiff, (r0, 0))
+        p0_plane, diff_plane = _lay_in_chip_state(
+            p0_plane,
+            diff_plane,
+            block_p0,
+            block_diff,
+            seg_len[i],
+            off_half[i],
+            num_cols=cols_arr[i],
+            block_half=block_half,
+        )
+    p0h = p0_plane[:plane_half]
+    diffh = diff_plane[:plane_half]
+
+    carry = (p0h, diffh, vgeqs, chip_claims, eq_adj, heights, eq_buf, transcript)
+    finals, transcript, tail_msgs = _totalcap_tail(
+        tuple(summand.alphas),
+        summand.lambdas,
+        summand.beta,
+        summand.public_values,
+        tuple(adjs),
+        zeta,
+        carry,
+        eval_fns=tuple(summand.eval_fns),
+        static_nrs=tuple(static_nrs),
+        num_cols_t=tuple(cols_arr),
+        num_vars=num_vars,
+        start_round=depth,
+        cap_class=cap_class,
+    )
+    msgs = frx.tree.map(lambda *ls: fnp.stack(ls), *prefix_msgs)
+    msgs = frx.tree.map(lambda a, b: fnp.concatenate([a, b]), msgs, tail_msgs)
+    return finals, transcript, msgs
+
+
 def prove_jagged_zerocheck(
     summand: JaggedZerocheckSummand,
     traces: Sequence[Array],
@@ -1107,6 +1695,7 @@ def prove_jagged_zerocheck(
     total_cap_class: TotalCapClass | None = None,
     flat_arrival: Array | None = None,
     num_cols: Sequence[int] | None = None,
+    chunk_class: TotalCapChunkClass | None = None,
 ) -> tuple[list[Array], Transcript, RoundMsg]:
     """Run the SP1-schedule jagged multi-chip zerocheck sumcheck.
 
@@ -1228,6 +1817,55 @@ def prove_jagged_zerocheck(
         )
         for i in range(num_chips)
     ]
+
+    if chunk_class is not None:
+        if flat_arrival is None or total_cap_class is None or num_cols is None:
+            raise ValueError(
+                "chunk_class rides the flat_arrival total-cap form: pass "
+                "flat_arrival + total_cap_class + num_cols"
+            )
+        if len(chunk_class.chip_height_caps) != num_chips:
+            raise ValueError(
+                f"chunk_class carries {len(chunk_class.chip_height_caps)} "
+                f"chip height caps for {num_chips} chips"
+            )
+        depth = min(chunk_class.depth, num_vars, _SHRINK_ROUNDS)
+        if depth > 0:
+            # Loud host-side cap admission (the #351 clamped-DUS lesson): an
+            # under-bounding cap must fail here, never corrupt silently. The
+            # chunked prefix is eager orchestration, so heights are concrete.
+            try:
+                heights_host = [int(nr) for nr in num_reals]
+            except Exception as exc:
+                raise ValueError(
+                    "the chunked total-cap path is eager orchestration: "
+                    "heights must be concrete, not tracers (do not call it "
+                    "under an enclosing jit)"
+                ) from exc
+            for i, (h, cap) in enumerate(
+                zip(heights_host, chunk_class.chip_height_caps, strict=True)
+            ):
+                if h > cap:
+                    raise ValueError(
+                        f"chunk_class does not bound chip {i}: height {h} > "
+                        f"cap {cap}"
+                    )
+            return _prove_total_cap_chunked(
+                summand,
+                static_nrs,
+                list(num_reals),
+                total_cap_class,
+                chunk_class,
+                zeta,
+                transcript,
+                list(claims),
+                adjs,
+                ef,
+                ef_limbs,
+                num_vars,
+                flat_arrival,
+                list(num_cols),
+            )
 
     return _prove_total_cap(
         summand,

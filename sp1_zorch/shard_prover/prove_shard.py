@@ -40,6 +40,7 @@ from sp1_zorch.types import (
 )
 from sp1_zorch.zerocheck.jagged import TotalCapClass
 from sp1_zorch.zerocheck.prover import (
+    ZerocheckChunkSpec,
     ZerocheckProver,
 )
 
@@ -138,6 +139,7 @@ class ShardProver(ProverStage[ShardClaim, ShardWitness, TrivialClaim, ShardProof
         zerocheck_total_cap_class: TotalCapClass | None = None,
         gkr_cap_class: GkrCapClass | None = None,
         jagged_cap_class: JaggedCapClass | None = None,
+        zerocheck_chunk_spec: ZerocheckChunkSpec | None = None,
     ) -> None:
         self.gkr = LogupGkrProver(
             gkr_chips,
@@ -151,6 +153,7 @@ class ShardProver(ProverStage[ShardClaim, ShardWitness, TrivialClaim, ShardProof
             chips,
             max_log_row_count=max_log_row_count,
             total_cap_class=zerocheck_total_cap_class,
+            chunk_spec=zerocheck_chunk_spec,
         )
         self.opening = JaggedPcsProver(
             smcs,
