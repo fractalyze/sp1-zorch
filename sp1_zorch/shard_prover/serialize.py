@@ -6,15 +6,22 @@ bincode's default (legacy) config: little-endian, fixed 8-byte ``u64`` length
 prefixes, no varint.
 
 KoalaBear's serde impl emits **canonical** u32, never the Montgomery raw form
-the device arrays carry — ``_field_bytes`` converts via
+the device arrays carry — ``_canonical_u32`` converts via
 ``lax.convert_element_type(..., uint32)``. Extension-field elements flatten to
 their base-field limbs before conversion.
+
+The wire interleaves those field bytes with host-computed length prefixes, but
+a proof's arrays are all read at once: every encoder here splits into a
+``*_arrays`` half naming what it reads and a ``*_bytes`` half assembling the
+result from already-pulled segments, so one ``_field_bytes_many`` serves a
+whole section. The prover holds the device across the encode, so the number of
+pulls — not their volume — is what the rest of the pipeline waits behind.
 """
 
 from __future__ import annotations
 
 import struct
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from typing import TYPE_CHECKING, Any
 
 import frx.numpy as fnp
@@ -25,6 +32,7 @@ from zk_dtypes import efinfo
 from sp1_zorch.types import ChipOpenedValues, MachineVerifyingKey
 
 if TYPE_CHECKING:
+    from zorch.logup_gkr.jagged_prover import JaggedLayerProof
     from zorch.pcs.jagged.open import Opening, StackedOpenProof
     from zorch.pcs.jagged.prover import JaggedEvalMsg
     from zorch.pcs.jagged.region import JaggedRegion
@@ -52,59 +60,152 @@ def _vec_prefix(length: int) -> bytes:
     return _u64(length)
 
 
-def _field_bytes(arr: Array) -> bytes:
-    """Canonical LE bytes for any base- or extension-field array (any shape)."""
+def _canonical_u32(arr: Array) -> Array:
+    """Flat canonical ``uint32`` for any base- or extension-field array."""
     a = fnp.atleast_1d(arr)
     if a.dtype.itemsize > 4:
         a = lax.bitcast_convert_type(a, efinfo(a.dtype).base_field_dtype)
-    return np.asarray(lax.convert_element_type(fnp.ravel(a), np.uint32)).tobytes()
+    return lax.convert_element_type(fnp.ravel(a), np.uint32)
 
 
-def _eval_poly_at(coeffs_row: Array, alpha: Array) -> Array:
-    """Evaluate a univariate polynomial (coefficient form) at alpha via Horner."""
-    result = fnp.zeros((), dtype=coeffs_row.dtype)
-    for i in range(int(coeffs_row.shape[0]) - 1, -1, -1):
-        result = result * alpha + coeffs_row[i]
+def _field_bytes(arr: Array) -> bytes:
+    """Canonical LE bytes for any base- or extension-field array (any shape)."""
+    return np.asarray(_canonical_u32(arr)).tobytes()
+
+
+def _field_bytes_many(arrays: Sequence[Array]) -> Iterator[bytes]:
+    """``_field_bytes`` for several arrays across ONE device-to-host pull.
+
+    Yields one segment per input, in order. Concatenating on device first
+    trades a few hundred synchronisation points for one. The cost is device
+    residency: the section's canonical parts and the joined buffer are live
+    together, ~2.7 MB for a core shard's evaluation proof, and the caller's
+    own array list holds ~1.2 MB more on top of that.
+    """
+    if not arrays:
+        return iter(())
+    parts = [_canonical_u32(a) for a in arrays]
+    joined = np.asarray(fnp.concatenate(parts)).tobytes()
+
+    def _split() -> Iterator[bytes]:
+        offset = 0
+        for part in parts:
+            end = offset + int(part.shape[0]) * 4
+            yield joined[offset:end]
+            offset = end
+
+    return _split()
+
+
+def _leading_len(arr: Array) -> int:
+    """The ``Vec``/``Point`` length the wire prefixes an array with."""
+    return int(fnp.atleast_1d(arr).shape[0])
+
+
+def _eval_poly_at(coeffs: Array, alpha: Array) -> Array:
+    """Evaluate univariate polynomials (coefficient form along the last axis)
+    at alpha via Horner.
+
+    Batched over any leading axes: a Horner step is a dispatch per coefficient,
+    so a layer chain whose polynomials share a degree evaluates in one sweep
+    rather than one sweep per layer.
+    """
+    result = fnp.zeros(alpha.shape, dtype=coeffs.dtype)
+    for i in range(int(coeffs.shape[-1]) - 1, -1, -1):
+        result = result * alpha + coeffs[..., i]
     return result
 
 
-def _encode_tensor(arr: Array, dimensions: list[int]) -> bytes:
+def _tensor_bytes(storage: bytes, count: int, dimensions: list[int]) -> bytes:
     """Encode ``Tensor<T>``: ``{storage: Vec<T>, dimensions: Vec<usize>}``."""
-    flat = fnp.ravel(arr)
-    n = int(flat.shape[0])
     return (
-        _vec_prefix(n)
-        + _field_bytes(flat)
+        _vec_prefix(count)
+        + storage
         + _vec_prefix(len(dimensions))
         + b"".join(_usize(d) for d in dimensions)
     )
 
 
-def _encode_point(arr: Array) -> bytes:
+def _encode_tensor(arr: Array, dimensions: list[int]) -> bytes:
+    return _tensor_bytes(_field_bytes(arr), int(arr.size), dimensions)
+
+
+def _point_bytes(values: bytes, count: int) -> bytes:
     """Encode ``Point<T> = {values: Buffer<T>}`` = ``Vec<T>``."""
-    flat = fnp.atleast_1d(arr)
-    return _vec_prefix(int(flat.shape[0])) + _field_bytes(flat)
+    return _vec_prefix(count) + values
+
+
+def _encode_point(arr: Array) -> bytes:
+    return _point_bytes(_field_bytes(arr), _leading_len(arr))
+
+
+def _partial_sumcheck_arrays(
+    round_polys: Array,
+    claimed_sum: Array,
+    point: Array,
+    final_eval: Array | None = None,
+) -> list[Array]:
+    """What a ``PartialSumcheckProof<EF>`` reads. The wire's eval is the last
+    round polynomial at ``point[0]`` — the final fold's value, with
+    ``point[0]`` the last challenge in SP1's insert-at-front point order. A
+    caller holding several sumchecks of one degree passes it in, having swept
+    them together."""
+    if final_eval is None:
+        final_eval = _eval_poly_at(round_polys[-1], point[0])
+    return [round_polys, claimed_sum, point, final_eval]
+
+
+def _partial_sumcheck_bytes(
+    round_polys: Array, point: Array, segments: Iterator[bytes]
+) -> bytes:
+    """Encode ``PartialSumcheckProof<EF>``: ``{univariate_polys: Vec<Vec<EF>>,
+    claimed_sum: EF, point_and_eval: (Point<EF>, EF)}``. ``round_polys`` is
+    rectangular, so its row-major bytes already carry every round's Vec back
+    to back — the rounds only need their length prefixes woven in."""
+    n_rounds = int(round_polys.shape[0])
+    n_coeffs = int(round_polys.shape[1])
+    polys, claimed_sum, point_bytes, final_eval = (next(segments) for _ in range(4))
+    stride = len(polys) // n_rounds
+    coeff_prefix = _vec_prefix(n_coeffs)
+
+    parts = [_vec_prefix(n_rounds)]
+    for r in range(n_rounds):
+        parts.append(coeff_prefix)
+        parts.append(polys[r * stride : (r + 1) * stride])
+
+    parts.append(claimed_sum)
+    parts.append(_point_bytes(point_bytes, _leading_len(point)))
+    parts.append(final_eval)
+    return b"".join(parts)
 
 
 def _encode_partial_sumcheck_proof(
     round_polys: Array, claimed_sum: Array, point: Array
 ) -> bytes:
-    """Encode ``PartialSumcheckProof<EF>``: ``{univariate_polys: Vec<Vec<EF>>,
-    claimed_sum: EF, point_and_eval: (Point<EF>, EF)}``. The wire's eval is
-    the last round polynomial at ``point[0]`` — the final fold's value, with
-    ``point[0]`` the last challenge in SP1's insert-at-front point order."""
-    n_rounds = int(round_polys.shape[0])
-    n_coeffs = int(round_polys.shape[1])
+    arrays = _partial_sumcheck_arrays(round_polys, claimed_sum, point)
+    return _partial_sumcheck_bytes(round_polys, point, _field_bytes_many(arrays))
 
-    parts = [_vec_prefix(n_rounds)]
-    for r in range(n_rounds):
-        parts.append(_vec_prefix(n_coeffs))
-        parts.append(_field_bytes(round_polys[r]))
 
-    parts.append(_field_bytes(claimed_sum))
-    parts.append(_encode_point(point))
-    parts.append(_field_bytes(_eval_poly_at(round_polys[-1], point[0])))
-    return b"".join(parts)
+def _gkr_final_evals(round_proofs: Sequence[JaggedLayerProof]) -> list[Array]:
+    """Each layer's wire eval, from one Horner sweep across the chain — the
+    jagged layers share a round-poly degree, so a mismatched chain raises in
+    ``stack`` rather than reaching the wire."""
+    if not round_proofs:
+        return []
+    evals = _eval_poly_at(
+        fnp.stack([rp.round_polys[-1] for rp in round_proofs]),
+        fnp.stack([rp.point[0] for rp in round_proofs]),
+    )
+    return [evals[i] for i in range(len(round_proofs))]
+
+
+def _gkr_point(proof: LogupGkrProof, max_log_row_count: int) -> Array:
+    # SP1's eval_point has exactly max_log_row_count dims after all GKR
+    # rounds. The prover-side point may overshoot — trim to the tail.
+    point = proof.eval_point
+    if point.shape[0] > max_log_row_count:
+        return point[-max_log_row_count:]
+    return point
 
 
 def _encode_logup_gkr_proof(proof: LogupGkrProof, max_log_row_count: int) -> bytes:
@@ -115,45 +216,66 @@ def _encode_logup_gkr_proof(proof: LogupGkrProof, max_log_row_count: int) -> byt
     per-layer ``point_and_eval`` reads each round proof's ``point``, retained
     by zorch at prove time.
     """
-    parts = []
+    output = proof.circuit_output
+    point = _gkr_point(proof, max_log_row_count)
+    names = sorted(proof.chip_openings)  # BTreeMap: ascending key order
 
-    n_num = int(fnp.atleast_1d(proof.circuit_output.numerator).shape[0])
-    parts.append(_encode_tensor(proof.circuit_output.numerator, [n_num, 1]))
-    n_den = int(fnp.atleast_1d(proof.circuit_output.denominator).shape[0])
-    parts.append(_encode_tensor(proof.circuit_output.denominator, [n_den, 1]))
+    arrays: list[Array] = [output.numerator, output.denominator]
+    for rp, final_eval in zip(
+        proof.round_proofs, _gkr_final_evals(proof.round_proofs), strict=True
+    ):
+        arrays += [rp.numerator_0, rp.numerator_1, rp.denominator_0, rp.denominator_1]
+        arrays += _partial_sumcheck_arrays(
+            rp.round_polys, rp.claim, rp.point, final_eval
+        )
+    arrays.append(point)
+    for name in names:
+        ce = proof.chip_openings[name]
+        arrays.append(ce.main)
+        if ce.preprocessed is not None:
+            arrays.append(ce.preprocessed)
+    arrays.append(proof.pow_witness)
+    seg = _field_bytes_many(arrays)
 
-    parts.append(_vec_prefix(len(proof.round_proofs)))
+    parts = [
+        _tensor_bytes(
+            next(seg), int(output.numerator.size), [_leading_len(output.numerator), 1]
+        ),
+        _tensor_bytes(
+            next(seg),
+            int(output.denominator.size),
+            [_leading_len(output.denominator), 1],
+        ),
+        _vec_prefix(len(proof.round_proofs)),
+    ]
     for rp in proof.round_proofs:
-        parts.append(_field_bytes(rp.numerator_0))
-        parts.append(_field_bytes(rp.numerator_1))
-        parts.append(_field_bytes(rp.denominator_0))
-        parts.append(_field_bytes(rp.denominator_1))
-        parts.append(_encode_partial_sumcheck_proof(rp.round_polys, rp.claim, rp.point))
+        parts += [next(seg), next(seg), next(seg), next(seg)]
+        parts.append(_partial_sumcheck_bytes(rp.round_polys, rp.point, seg))
 
-    # SP1's eval_point has exactly max_log_row_count dims after all GKR
-    # rounds. The prover-side point may overshoot — trim to the tail.
-    gkr_point = proof.eval_point
-    if gkr_point.shape[0] > max_log_row_count:
-        gkr_point = gkr_point[-max_log_row_count:]
-    parts.append(_encode_point(gkr_point))
+    parts.append(_point_bytes(next(seg), _leading_len(point)))
 
-    chip_map = proof.chip_openings
-    parts.append(_vec_prefix(len(chip_map)))
-    for name in sorted(chip_map):  # BTreeMap: ascending key order
+    parts.append(_vec_prefix(len(names)))
+    for name in names:
         name_bytes = name.encode("utf-8")
         parts.append(_vec_prefix(len(name_bytes)))
         parts.append(name_bytes)
-        ce = chip_map[name]
-        n_main = int(fnp.atleast_1d(ce.main).shape[0])
-        parts.append(_encode_tensor(ce.main, [n_main]))
+        ce = proof.chip_openings[name]
+        parts.append(
+            _tensor_bytes(next(seg), int(ce.main.size), [_leading_len(ce.main)])
+        )
         if ce.preprocessed is not None:
             parts.append(b"\x01")
-            n_prep = int(fnp.atleast_1d(ce.preprocessed).shape[0])
-            parts.append(_encode_tensor(ce.preprocessed, [n_prep]))
+            parts.append(
+                _tensor_bytes(
+                    next(seg),
+                    int(ce.preprocessed.size),
+                    [_leading_len(ce.preprocessed)],
+                )
+            )
         else:
             parts.append(b"\x00")
 
-    parts.append(_field_bytes(proof.pow_witness))
+    parts.append(next(seg))
     return b"".join(parts)
 
 
@@ -164,22 +286,28 @@ def _encode_digest(arr: Any) -> bytes:
     return struct.pack(f"<{len(arr)}I", *[int(x) for x in arr])[:32]
 
 
-def _encode_chip_opened_values(cov: ChipOpenedValues, max_log_row_count: int) -> bytes:
+def _chip_opened_values_arrays(cov: ChipOpenedValues) -> list[Array]:
+    if cov.preprocessed_evals is None:
+        return [cov.main_evals]
+    return [cov.preprocessed_evals, cov.main_evals]
+
+
+def _chip_opened_values_bytes(
+    cov: ChipOpenedValues, max_log_row_count: int, segments: Iterator[bytes]
+) -> bytes:
     """Encode ``ChipOpenedValues<F, EF>``. A chip without a preprocessed
     trace serializes an EMPTY ``Vec`` — unlike the GKR chip openings, whose
     missing prep is an ``Option`` tag byte."""
     parts = []
 
     if cov.preprocessed_evals is not None:
-        n = int(cov.preprocessed_evals.shape[0])
-        parts.append(_vec_prefix(n))
-        parts.append(_field_bytes(cov.preprocessed_evals))
+        parts.append(_vec_prefix(int(cov.preprocessed_evals.shape[0])))
+        parts.append(next(segments))
     else:
         parts.append(_vec_prefix(0))
 
-    n = int(cov.main_evals.shape[0])
-    parts.append(_vec_prefix(n))
-    parts.append(_field_bytes(cov.main_evals))
+    parts.append(_vec_prefix(int(cov.main_evals.shape[0])))
+    parts.append(next(segments))
 
     n_bits = max_log_row_count + 1
     degree_bits = [(cov.degree >> bit) & 1 for bit in range(n_bits - 1, -1, -1)]
@@ -187,6 +315,11 @@ def _encode_chip_opened_values(cov: ChipOpenedValues, max_log_row_count: int) ->
     parts.append(struct.pack(f"<{n_bits}I", *degree_bits))
 
     return b"".join(parts)
+
+
+def _encode_chip_opened_values(cov: ChipOpenedValues, max_log_row_count: int) -> bytes:
+    segments = _field_bytes_many(_chip_opened_values_arrays(cov))
+    return _chip_opened_values_bytes(cov, max_log_row_count, segments)
 
 
 def _encode_shard_opened_values(
@@ -197,39 +330,104 @@ def _encode_shard_opened_values(
     """Encode ``ShardOpenedValues<F, EF> = {chips: BTreeMap<String,
     ChipOpenedValues>}`` — ascending chip-name order."""
     sorted_pairs = sorted(zip(chip_names, chip_opened_values, strict=True))
+    arrays: list[Array] = []
+    for _, cov in sorted_pairs:
+        arrays += _chip_opened_values_arrays(cov)
+    seg = _field_bytes_many(arrays)
+
     parts = [_vec_prefix(len(sorted_pairs))]
     for name, cov in sorted_pairs:
         name_bytes = name.encode("utf-8")
         parts.append(_vec_prefix(len(name_bytes)))
         parts.append(name_bytes)
-        parts.append(_encode_chip_opened_values(cov, max_log_row_count))
+        parts.append(_chip_opened_values_bytes(cov, max_log_row_count, seg))
     return b"".join(parts)
 
 
-def _pack_batch_openings(opening: Opening, root_digest: Array) -> bytes:
-    """Encode ``MerkleTreeOpeningAndProof<GC>`` from one vmapped SMCS batch
-    opening: the opened rows as ``Tensor<F>`` with dimensions ``[num_queries,
-    width]``, then the proof — the **raw** Merkle root (the sibling paths
-    reconstruct it, not the separator-bound commitment the transcript
-    observes), depth, width, and the sibling digests as a ``Tensor`` with
-    dimensions ``[num_queries, depth]`` (query-major)."""
+def _batch_opening_arrays(opening: Opening, root_digest: Array) -> list[Array]:
+    """What one vmapped SMCS batch opening reads: the opened rows, the raw
+    Merkle root, and the sibling paths concatenated level-major."""
+    rows, paths = opening
+    arrays = [rows, root_digest]
+    if paths:
+        arrays.append(fnp.concatenate(paths, axis=0))
+    return arrays
+
+
+def _batch_opening_bytes(opening: Opening, segments: Iterator[bytes]) -> bytes:
+    """Encode ``MerkleTreeOpeningAndProof<GC>``: the opened rows as
+    ``Tensor<F>`` with dimensions ``[num_queries, width]``, then the proof —
+    the **raw** Merkle root (the sibling paths reconstruct it, not the
+    separator-bound commitment the transcript observes), depth, width, and the
+    sibling digests as a ``Tensor`` with dimensions ``[num_queries, depth]``
+    (query-major)."""
     rows, paths = opening
     num_queries, width = (int(s) for s in rows.shape)
     depth = len(paths)
 
-    parts = [_encode_tensor(rows, [num_queries, width])]
-
-    parts.append(_encode_digest(root_digest))
+    parts = [_tensor_bytes(next(segments), int(rows.size), [num_queries, width])]
+    parts.append(next(segments)[:32])
     parts.append(_usize(depth))
     parts.append(_usize(width))
     parts.append(_vec_prefix(num_queries * depth))
-    # ``paths`` is level-major, one (Q, digest) array per tree level; the
-    # wire wants every query's full path contiguously.
     if depth > 0:
-        parts.append(_field_bytes(fnp.stack(paths, axis=1)))
+        # `paths` arrives level-major, one (num_queries, digest) array per tree
+        # level, and the wire wants each query's full path contiguously. The
+        # transpose rides the pulled u32 rather than the device: a `stack`
+        # would cost one lay-in kernel per level, ~300 per shard proof.
+        level_major = np.frombuffer(next(segments), dtype=np.uint32)
+        paths_bytes = level_major.reshape(depth, num_queries, -1).transpose(1, 0, 2)
+        parts.append(paths_bytes.tobytes())
     parts.append(_vec_prefix(2))
     parts.append(_usize(num_queries))
     parts.append(_usize(depth))
+    return b"".join(parts)
+
+
+def _pack_batch_openings(opening: Opening, root_digest: Array) -> bytes:
+    segments = _field_bytes_many(_batch_opening_arrays(opening, root_digest))
+    return _batch_opening_bytes(opening, segments)
+
+
+def _basefold_arrays(
+    open_proof: StackedOpenProof, component_raw_roots: Sequence[Array]
+) -> list[Array]:
+    arrays: list[Array] = [open_proof.univariate_messages, open_proof.fri_commitments]
+    for opening, raw_root in zip(
+        open_proof.component_openings, component_raw_roots, strict=True
+    ):
+        arrays += _batch_opening_arrays(opening, raw_root)
+    for i, opening in enumerate(open_proof.query_openings):
+        arrays += _batch_opening_arrays(opening, open_proof.fri_raw_roots[i])
+    arrays.append(open_proof.final_poly)
+    arrays.append(open_proof.pow_witness)
+    return arrays
+
+
+def _basefold_bytes(
+    open_proof: StackedOpenProof,
+    segments: Iterator[bytes],
+) -> bytes:
+    """Encode ``BasefoldProof<GC>``."""
+    # Vec<(EF, EF)>: one pair-count prefix, then the (s(0), s(1)) pairs
+    # contiguous — exactly the (num_vars, 2) array's row-major bytes.
+    parts = [_vec_prefix(int(open_proof.univariate_messages.shape[0])), next(segments)]
+
+    # Vec<Digest>: each row is exactly [F; 8], so the stacked array's bytes
+    # are the digests back to back.
+    parts.append(_vec_prefix(int(open_proof.fri_commitments.shape[0])))
+    parts.append(next(segments))
+
+    parts.append(_vec_prefix(len(open_proof.component_openings)))
+    for opening in open_proof.component_openings:
+        parts.append(_batch_opening_bytes(opening, segments))
+
+    parts.append(_vec_prefix(len(open_proof.query_openings)))
+    for opening in open_proof.query_openings:
+        parts.append(_batch_opening_bytes(opening, segments))
+
+    parts.append(next(segments))
+    parts.append(next(segments))
     return b"".join(parts)
 
 
@@ -243,33 +441,8 @@ def _encode_basefold_proof(
     proof retains only the fold layers' raw roots (``fri_raw_roots``), so
     the commit stage supplies the component ones.
     """
-    parts = []
-
-    # Vec<(EF, EF)>: one pair-count prefix, then the (s(0), s(1)) pairs
-    # contiguous — exactly the (num_vars, 2) array's row-major bytes.
-    msgs = open_proof.univariate_messages
-    parts.append(_vec_prefix(int(msgs.shape[0])))
-    parts.append(_field_bytes(msgs))
-
-    # Vec<Digest>: each row is exactly [F; 8], so the stacked array's bytes
-    # are the digests back to back.
-    fri_commitments = open_proof.fri_commitments
-    parts.append(_vec_prefix(int(fri_commitments.shape[0])))
-    parts.append(_field_bytes(fri_commitments))
-
-    comp = open_proof.component_openings
-    parts.append(_vec_prefix(len(comp)))
-    for opening, raw_root in zip(comp, component_raw_roots, strict=True):
-        parts.append(_pack_batch_openings(opening, raw_root))
-
-    query = open_proof.query_openings
-    parts.append(_vec_prefix(len(query)))
-    for i, opening in enumerate(query):
-        parts.append(_pack_batch_openings(opening, open_proof.fri_raw_roots[i]))
-
-    parts.append(_field_bytes(open_proof.final_poly))
-    parts.append(_field_bytes(open_proof.pow_witness))
-    return b"".join(parts)
+    arrays = _basefold_arrays(open_proof, component_raw_roots)
+    return _basefold_bytes(open_proof, _field_bytes_many(arrays))
 
 
 def _encode_evaluation_proof(
@@ -292,27 +465,30 @@ def _encode_evaluation_proof(
     (round 0 is the preprocessed commit), so a raw root here fails that check.
     ``log_m`` is the outer sumcheck's round count, read off the proof.
     """
-    parts = [_encode_basefold_proof(open_proof, component_raw_roots)]
+    outer_polys = eval_msg.outer_sumcheck_polys
+    arrays = _basefold_arrays(open_proof, component_raw_roots)
+    arrays += list(open_proof.batch_evals)
+    arrays += _partial_sumcheck_arrays(
+        outer_polys, eval_msg.outer_sumcheck_claim, eval_msg.outer_sumcheck_point
+    )
+    arrays += _partial_sumcheck_arrays(
+        eval_msg.inner_sumcheck_polys, eval_msg.inner_claimed_sum, eval_msg.inner_point
+    )
+    arrays.append(eval_msg.dense_eval)
+    seg = _field_bytes_many(arrays)
+
+    parts = [_basefold_bytes(open_proof, seg)]
 
     parts.append(_vec_prefix(len(open_proof.batch_evals)))
     for evals in open_proof.batch_evals:
-        n_evals = int(fnp.atleast_1d(evals).shape[0])
-        parts.append(_encode_tensor(evals, [n_evals]))
+        parts.append(_tensor_bytes(next(seg), int(evals.size), [_leading_len(evals)]))
 
-    outer_polys = eval_msg.outer_sumcheck_polys
     parts.append(
-        _encode_partial_sumcheck_proof(
-            outer_polys,
-            eval_msg.outer_sumcheck_claim,
-            eval_msg.outer_sumcheck_point,
-        )
+        _partial_sumcheck_bytes(outer_polys, eval_msg.outer_sumcheck_point, seg)
     )
-
     parts.append(
-        _encode_partial_sumcheck_proof(
-            eval_msg.inner_sumcheck_polys,
-            eval_msg.inner_claimed_sum,
-            eval_msg.inner_point,
+        _partial_sumcheck_bytes(
+            eval_msg.inner_sumcheck_polys, eval_msg.inner_point, seg
         )
     )
 
@@ -327,7 +503,7 @@ def _encode_evaluation_proof(
     for commitment in component_commitments:
         parts.append(_encode_digest(commitment))
 
-    parts.append(_field_bytes(eval_msg.dense_eval))
+    parts.append(next(seg))
     parts.append(_usize(max_log_row_count))
     parts.append(_usize(int(outer_polys.shape[0])))
     return b"".join(parts)
@@ -340,15 +516,10 @@ def encode_vk(vk: MachineVerifyingKey) -> bytes:
     = x then y), preprocessed_commit, enable_untrusted_programs — NOT the
     transcript ``observe_into`` order, which leads with the commit.
     """
-    return b"".join(
-        [
-            _field_bytes(vk.pc_start),
-            _field_bytes(vk.cum_sum_x),
-            _field_bytes(vk.cum_sum_y),
-            _field_bytes(vk.preprocessed_commit),
-            struct.pack("<I", int(vk.enable_untrusted)),
-        ]
+    seg = _field_bytes_many(
+        [vk.pc_start, vk.cum_sum_x, vk.cum_sum_y, vk.preprocessed_commit]
     )
+    return b"".join([*seg, struct.pack("<I", int(vk.enable_untrusted))])
 
 
 def chip_opened_values(
@@ -394,21 +565,21 @@ def encode_shard_proof(
     gkr_proof = proof.gkr
     zerocheck_proof = proof.zerocheck
     jagged_proof = proof.jagged
-    parts = [_encode_point(claim.public_values)]
-
-    parts.append(_field_bytes(proof.commitment))
-
-    parts.append(_encode_logup_gkr_proof(gkr_proof, max_log_row_count))
 
     # The wire's zerocheck point is SP1's insert-at-front order — the
     # accumulated round challenges reversed, the same z_row order the
     # jagged-eval stage consumes.
+    zerocheck_point = zerocheck_proof.msgs.challenge[::-1]
+    zerocheck_arrays = _partial_sumcheck_arrays(
+        zerocheck_proof.msgs.round_poly, zerocheck_proof.claimed_sum, zerocheck_point
+    )
+    seg = _field_bytes_many([claim.public_values, proof.commitment, *zerocheck_arrays])
+
+    parts = [_point_bytes(next(seg), _leading_len(claim.public_values))]
+    parts.append(next(seg))
+    parts.append(_encode_logup_gkr_proof(gkr_proof, max_log_row_count))
     parts.append(
-        _encode_partial_sumcheck_proof(
-            zerocheck_proof.msgs.round_poly,
-            zerocheck_proof.claimed_sum,
-            zerocheck_proof.msgs.challenge[::-1],
-        )
+        _partial_sumcheck_bytes(zerocheck_proof.msgs.round_poly, zerocheck_point, seg)
     )
 
     parts.append(

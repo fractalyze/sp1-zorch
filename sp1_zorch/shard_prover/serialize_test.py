@@ -33,6 +33,7 @@ from sp1_zorch.shard_prover.serialize import (
     _encode_tensor,
     _eval_poly_at,
     _field_bytes,
+    _field_bytes_many,
     _pack_batch_openings,
     _u64,
     _usize,
@@ -99,6 +100,35 @@ class BincodePrimitivesTest(absltest.TestCase):
         coeffs = fnp.array([2, 3, 5], dtype=F)
         alpha = fnp.array(4, dtype=F)
         self.assertEqual(int(_eval_poly_at(coeffs, alpha)), 94)
+
+
+class BatchedGatherTest(absltest.TestCase):
+    """Each encoder reads its section's arrays in one pull and slices the
+    result, so a wrong segment length or stride still yields plausible bytes
+    of the right total size. These pin the batched routes against the
+    single-array ones they stand in for."""
+
+    def test_field_bytes_many_matches_per_array_field_bytes(self) -> None:
+        arrays = [
+            fnp.arange(3, dtype=F),
+            fnp.array([1, 2, 3, 4], dtype=F).view(EF),
+            fnp.arange(6, dtype=F).reshape(2, 3),
+            fnp.array(9, dtype=F),
+        ]
+        self.assertEqual(
+            list(_field_bytes_many(arrays)), [_field_bytes(a) for a in arrays]
+        )
+
+    def test_field_bytes_many_of_nothing_is_empty(self) -> None:
+        self.assertEqual(list(_field_bytes_many([])), [])
+
+    def test_eval_poly_at_batches_over_the_leading_axis(self) -> None:
+        coeffs = fnp.arange(1, 7, dtype=F).reshape(2, 3)
+        alphas = fnp.array([4, 5], dtype=F)
+        self.assertEqual(
+            [int(v) for v in _eval_poly_at(coeffs, alphas)],
+            [int(_eval_poly_at(coeffs[r], alphas[r])) for r in range(2)],
+        )
 
 
 class EncodeDigestTest(absltest.TestCase):
@@ -171,6 +201,24 @@ def _gkr_proof() -> LogupGkrProof:
     )
 
 
+def _gkr_layer(seed: int, n_vars: int) -> JaggedLayerProof:
+    """One layer with ``n_vars`` round polynomials of a shared degree — the
+    jagged chain's shape, where the round count grows per layer and the degree
+    does not."""
+    return JaggedLayerProof(
+        lam=fnp.array(seed, dtype=F),
+        claim=fnp.array(seed + 1, dtype=F),
+        round_polys=fnp.arange(seed + 2, seed + 2 + 3 * n_vars, dtype=F).reshape(
+            n_vars, 3
+        ),
+        point=fnp.arange(seed + 40, seed + 40 + n_vars, dtype=F),
+        numerator_0=fnp.array(seed + 60, dtype=F),
+        numerator_1=fnp.array(seed + 61, dtype=F),
+        denominator_0=fnp.array(seed + 62, dtype=F),
+        denominator_1=fnp.array(seed + 63, dtype=F),
+    )
+
+
 class EncodeLogupGkrProofTest(absltest.TestCase):
     def test_full_structure_golden(self) -> None:
         proof = _gkr_proof()
@@ -229,6 +277,63 @@ class EncodeLogupGkrProofTest(absltest.TestCase):
             _encode_logup_gkr_proof(proof, max_log_row_count=2),
             expected,
         )
+
+    def test_layer_chain_matches_the_per_layer_encoders(self) -> None:
+        # The chain reads every layer in one pull and sweeps every layer's
+        # final eval at once; each layer's block must still land where the
+        # per-layer encoders put it, across layers of differing round counts.
+        layers = [_gkr_layer(100 * i, n) for i, n in enumerate((1, 2, 3), 1)]
+        proof = LogupGkrProof(
+            pow_witness=fnp.array(15, dtype=F),
+            circuit_output=LogUpGkrOutput(
+                numerator=fnp.array([1, 2], dtype=F),
+                denominator=fnp.array([3, 4], dtype=F),
+            ),
+            round_proofs=layers,
+            eval_point=fnp.array([11, 12], dtype=F),
+            chip_openings={
+                "cpu": ChipEvaluation(
+                    main=fnp.array([13, 14], dtype=F), preprocessed=None
+                ),
+                "add": ChipEvaluation(
+                    main=fnp.array([20], dtype=F),
+                    preprocessed=fnp.array([21], dtype=F),
+                ),
+            },
+        )
+        per_layer = b""
+        for rp in layers:
+            per_layer += b"".join(
+                _field_bytes(a)
+                for a in (
+                    rp.numerator_0,
+                    rp.numerator_1,
+                    rp.denominator_0,
+                    rp.denominator_1,
+                )
+            )
+            per_layer += _encode_partial_sumcheck_proof(
+                rp.round_polys, rp.claim, rp.point
+            )
+        expected = (
+            _encode_tensor(proof.circuit_output.numerator, [2, 1])
+            + _encode_tensor(proof.circuit_output.denominator, [2, 1])
+            + _u64(3)
+            + per_layer
+            + _encode_point(proof.eval_point)
+            + _u64(2)
+            + _u64(3)
+            + b"add"
+            + _encode_tensor(fnp.array([20], dtype=F), [1])
+            + b"\x01"
+            + _encode_tensor(fnp.array([21], dtype=F), [1])
+            + _u64(3)
+            + b"cpu"
+            + _encode_tensor(fnp.array([13, 14], dtype=F), [2])
+            + b"\x00"
+            + _field_bytes(proof.pow_witness)
+        )
+        self.assertEqual(_encode_logup_gkr_proof(proof, max_log_row_count=2), expected)
 
     def test_eval_point_trims_to_max_log_row_count_tail(self) -> None:
         proof = _gkr_proof()
