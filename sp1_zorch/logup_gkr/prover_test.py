@@ -50,10 +50,12 @@ from sp1_zorch.logup_gkr.prover import (
     _open_chip_zone,
     absorb_chip_openings,
     extract_sp1_outputs,
+    flat_openings_absorb,
     num_beta_values,
     open_traces_capped,
     prove_logup_gkr,
     resolve_witness_and_grind,
+    select_openings,
 )
 from sp1_zorch.shard_prover.chip_loader import make_chip_stub
 from sp1_zorch.types import (
@@ -636,6 +638,47 @@ class ChipOpeningsRoundTest(absltest.TestCase):
         _, raw_next = raw.sample(1)
         self.assertTrue(bool(fnp.all(round_next == raw_next)))
         self.assertIs(msg, openings)
+
+    def test_absorb_bytes_golden(self) -> None:
+        # Absolute Fiat-Shamir golden, captured before flat_openings_absorb
+        # moved its eager path to host numpy: the flat message's raw
+        # Montgomery limbs and the post-absorb challenge stream on fixed
+        # inputs. The equivalence test above cannot catch a change that
+        # shifts prover AND verifier together (both share this builder);
+        # this pins the byte stream itself, so the numpy `.view` EF->BF
+        # reinterpretation is proven identical to the old device bitcast.
+        prep = fnp.arange(3, dtype=fnp.uint32).view(F).astype(EF)
+        openings = {
+            "A": ChipEvaluation(
+                main=fnp.arange(10, 12, dtype=fnp.uint32).view(F).astype(EF),
+                preprocessed=prep,
+            ),
+            "B": ChipEvaluation(
+                main=fnp.arange(20, 24, dtype=fnp.uint32).view(F).astype(EF),
+                preprocessed=None,
+            ),
+        }
+
+        flat = flat_openings_absorb(
+            select_openings(openings, ("A", "B")), empty_prep_absorbs_zero=False
+        )
+        self.assertEqual(
+            np.asarray(flat).view(np.uint32).tobytes().hex(),
+            "fcffff03faffff05000000000000000000000000000000000100000000000000"
+            "000000000000000002000000000000000000000000000000fcffff030a000000"
+            "0000000000000000000000000b000000000000000000000000000000f8ffff07"
+            "1400000000000000000000000000000015000000000000000000000000000000"
+            "1600000000000000000000000000000017000000000000000000000000000000",
+        )
+
+        _, transcript, _ = ChipOpeningsRound(openings, ("A", "B"))(
+            None, cheap_transcript(F)
+        )
+        _, challenge = transcript.sample(8)
+        self.assertEqual(
+            np.asarray(challenge).view(np.uint32).tobytes().hex(),
+            "176991221769912217699122ca7bb66d" "f249a31ef249a31ef249a31ec64d856b",
+        )
 
 
 class LiveGrindTest(absltest.TestCase):
