@@ -81,20 +81,24 @@ def _field_bytes_many(arrays: Sequence[Array]) -> Iterator[bytes]:
     residency: the section's canonical parts and the joined buffer are live
     together, ~2.7 MB for a core shard's evaluation proof, and the caller's
     own array list holds ~1.2 MB more on top of that.
+
+    The segments are cut eagerly rather than yielded lazily so that residency
+    ends when this returns. A generator that a caller consumes exactly N times
+    stops on its last ``yield`` instead of finishing, and its live frame would
+    pin every ``parts`` device array — up to six such frames per shard — until
+    the collector got to them.
     """
     if not arrays:
         return iter(())
     parts = [_canonical_u32(a) for a in arrays]
     joined = np.asarray(fnp.concatenate(parts)).tobytes()
-
-    def _split() -> Iterator[bytes]:
-        offset = 0
-        for part in parts:
-            end = offset + int(part.shape[0]) * 4
-            yield joined[offset:end]
-            offset = end
-
-    return _split()
+    segments: list[bytes] = []
+    offset = 0
+    for part in parts:
+        end = offset + int(part.shape[0]) * 4
+        segments.append(joined[offset:end])
+        offset = end
+    return iter(segments)
 
 
 def _leading_len(arr: Array) -> int:
