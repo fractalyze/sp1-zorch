@@ -174,6 +174,16 @@ _PEAK_OVERRIDES_JSON = flags.DEFINE_string(
     "at 400M area), so an override below the real transient can over-pack "
     "and kill worker chains; prefer conservative values.",
 )
+_DEFAULT_WORKER_MODULE = "sp1_zorch.shard_prover.warm_worker"
+_WORKER_MODULE = flags.DEFINE_string(
+    "worker_module",
+    _DEFAULT_WORKER_MODULE,
+    "The -m module every warm subprocess runs (pool launches and solo "
+    "retries), with warm_worker's argv contract: <shard_dirs> <manifest>. "
+    "An operator-supplied wrapper (e.g. a consumer's seed-time recorder) "
+    "can interpose extra interception and delegate to warm_worker; the "
+    "module is launched by name only, never imported here.",
+)
 
 
 def _shard_dirs() -> list[Path]:
@@ -508,8 +518,20 @@ def _group_queue(classes: dict, groups: dict) -> list[list[str]]:
     return ordered
 
 
+def _worker_argv(worker_module: str, shard: str, manifest_path: str) -> list[str]:
+    """The one warm-subprocess launch vector both launch sites (the pool and
+    the solo retry) build: ``python -m <worker_module> <shard_dirs>
+    <manifest>`` — warm_worker's positional argv contract, whatever module
+    ``--worker_module`` names."""
+    return [sys.executable, "-m", worker_module, shard, manifest_path or ""]
+
+
 def _solo_retry(
-    failed_shards: Sequence[str], gpus: Sequence, env: dict, manifest_path: str
+    failed_shards: Sequence[str],
+    gpus: Sequence,
+    env: dict,
+    manifest_path: str,
+    worker_module: str = _DEFAULT_WORKER_MODULE,
 ) -> int:
     """One SOLO retry per failed shard, after the worker pool drained. The
     dominant failure is a transient co-tenancy OOM — a mid-chain alloc
@@ -523,13 +545,7 @@ def _solo_retry(
         g = next(iter(gpus))
         wenv = env if g is None else dict(env, CUDA_VISIBLE_DEVICES=g)
         rc = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "sp1_zorch.shard_prover.warm_worker",
-                s,
-                manifest_path or "",
-            ],
+            _worker_argv(worker_module, s, manifest_path),
             env=wenv,
         ).returncode
         if rc == 0:
@@ -542,6 +558,7 @@ def _solo_retry(
 
 def _warm(dirs: list[Path], classes: dict, groups: dict, manifest_path: str) -> None:
     cache = _CACHE_DIR.value
+    worker_module = _WORKER_MODULE.value
     Path(cache).mkdir(parents=True, exist_ok=True)
     # One shard per worker process; per GPU, workers launch peak-aware —
     # only while the sum of running est peaks (+ the candidate's) fits the
@@ -622,13 +639,7 @@ def _warm(dirs: list[Path], classes: dict, groups: dict, manifest_path: str) -> 
                     queue.remove(s)
                     wenv = env if g is None else dict(env, CUDA_VISIBLE_DEVICES=g)
                     p = subprocess.Popen(
-                        [
-                            sys.executable,
-                            "-m",
-                            "sp1_zorch.shard_prover.warm_worker",
-                            s,
-                            manifest_path or "",
-                        ],
+                        _worker_argv(worker_module, s, manifest_path),
                         env=wenv,
                     )
                     running[p] = (s, peaks[s], g)
@@ -647,7 +658,7 @@ def _warm(dirs: list[Path], classes: dict, groups: dict, manifest_path: str) -> 
                     )
         if running:
             time.sleep(2)
-    recovered = _solo_retry(failed_shards, gpus, env, manifest_path)
+    recovered = _solo_retry(failed_shards, gpus, env, manifest_path, worker_module)
     ok += recovered
     fail -= recovered
     entries = sum(1 for _ in Path(cache).rglob("*") if _.is_file())

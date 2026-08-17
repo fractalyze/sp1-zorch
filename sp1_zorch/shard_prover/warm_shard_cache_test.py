@@ -6,11 +6,13 @@ pack zone is outside the contract (see ``_COVER_KINDS``)."""
 
 import json
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
 from unittest import mock
 
 from absl.testing import absltest
+from absl.testing import flagsaver
 from absl.testing import parameterized
 
 from sp1_zorch.shard_prover import warm_shard_cache as wsc
@@ -251,6 +253,73 @@ class SoloRetryTest(absltest.TestCase):
         with mock.patch.object(wsc.subprocess, "run") as run:
             self.assertEqual(wsc._solo_retry([], [None], {}, ""), 0)
         run.assert_not_called()
+
+    def test_worker_module_reaches_the_retry_argv(self) -> None:
+        calls = []
+        with mock.patch.object(
+            wsc.subprocess,
+            "run",
+            side_effect=lambda argv, env: calls.append(argv) or mock.Mock(returncode=0),
+        ):
+            wsc._solo_retry(
+                ["/d/shard22"], [None], {}, "/m.json", "my.seed.worker"
+            )
+        self.assertIn("my.seed.worker", calls[0])
+        self.assertNotIn(wsc._DEFAULT_WORKER_MODULE, calls[0])
+
+
+class WorkerModuleTest(absltest.TestCase):
+    """The one launch vector both sites build, and the flag that names its
+    module — an operator-supplied wrapper (a consumer's seed-time recorder)
+    interposes by name; the default stays warm_worker."""
+
+    def test_flag_default_is_warm_worker(self) -> None:
+        self.assertEqual(
+            wsc._WORKER_MODULE.default, "sp1_zorch.shard_prover.warm_worker"
+        )
+
+    def test_argv_keeps_warm_workers_positional_contract(self) -> None:
+        argv = wsc._worker_argv("zkvm_sp1.prover.seed_aot_worker", "/d/shard3", "/m")
+        self.assertEqual(
+            argv[1:], ["-m", "zkvm_sp1.prover.seed_aot_worker", "/d/shard3", "/m"]
+        )
+
+    def test_empty_manifest_stays_a_positional_empty_string(self) -> None:
+        argv = wsc._worker_argv(wsc._DEFAULT_WORKER_MODULE, "/d/shard3", "")
+        self.assertEqual(argv[-2:], ["/d/shard3", ""])
+
+    def test_pool_launch_uses_the_worker_module_flag(self) -> None:
+        """Drive ``_warm`` with one tiny shard and a stubbed Popen: the pool
+        launch site must spawn the flag-named module (the empty cache dir
+        then fails the run loudly, which is the warm's own contract)."""
+        launches = []
+
+        class _DoneProc:
+            def __init__(self, argv: list[str], env: dict | None = None):
+                launches.append(argv)
+                self.returncode = 0
+
+            def poll(self) -> int:
+                return 0
+
+        classes = {"shard0": _cls(("a",), 100)}
+        cache = self.create_tempdir().full_path
+        with flagsaver.flagsaver(
+            (wsc._CACHE_DIR, cache), (wsc._WORKER_MODULE, "my.seed.worker")
+        ):
+            with (
+                mock.patch.object(wsc.subprocess, "Popen", _DoneProc),
+                mock.patch.object(wsc, "_gpu_free_gib", return_value=None),
+                mock.patch.object(wsc.time, "sleep"),
+                self.assertRaises(SystemExit),  # 0 cache entries = warm FAILED
+            ):
+                wsc._warm(
+                    [Path("/d/shard0")], classes, {("a",): ["shard0"]}, "/m.json"
+                )
+        self.assertLen(launches, 1)
+        self.assertIn("my.seed.worker", launches[0])
+        self.assertIn("/d/shard0", launches[0])
+        self.assertIn("/m.json", launches[0])
 
 
 if __name__ == "__main__":
