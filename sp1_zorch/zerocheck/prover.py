@@ -22,7 +22,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Optional
 
 import frx
 import frx.numpy as fnp
@@ -105,11 +105,13 @@ def chip_traces(
 # the probe memo key below — a fresh closure per prove call would bust both
 # caches process-wide. Chips live for the process (the loader registry), so
 # identity-keying is sound; strong refs match that lifetime.
-_EVAL_FN_MEMO: dict[tuple[Chip, int, int], Callable[[Array, Array], Array]] = {}
+_EVAL_FN_MEMO: dict[
+    tuple[Chip, int, int, Optional[int]], Callable[[Array, Array], Array]
+] = {}
 
 
 def export_order_eval_fn(
-    chip: Chip, main_width: int, num_cols: int
+    chip: Chip, main_width: int, num_cols: int, block_idx: Optional[int] = None
 ) -> Callable[[Array, Array], Array]:
     """The chip's 2-ary ``eval_constraints`` accepting ``[main | prep]`` rows.
 
@@ -122,13 +124,31 @@ def export_order_eval_fn(
     the prover's summand and the verifier dual alike. A main-only chip
     (``num_cols == main_width``) needs no rotation; the closure carries only
     static widths, so it is legal under the jitted stage bodies.
+
+    ``block_idx`` selects one SP1 ``BlockAir`` block instead of the whole AIR
+    (``Chip.num_blocks`` > 1 only for KeccakPermute and the Weierstrass
+    add/double chips). Block ``b``'s constraint columns are the contiguous
+    slice of the whole chip's, in order, so the blocks' α-folded values sum to
+    the unsplit one bit for bit — see ``block_split_test.py``. Each block gets
+    its own memo entry, which is what gives it a STABLE identity for the
+    round-body jit-zone key.
     """
-    key = (chip, main_width, num_cols)
+    key = (chip, main_width, num_cols, block_idx)
     hit = _EVAL_FN_MEMO.get(key)
     if hit is not None:
         return hit
 
-    fn = chip.eval_constraints
+    fn: Callable[[Array, Array], Array]
+    if block_idx is None:
+        fn = chip.eval_constraints
+    else:
+        b = block_idx
+
+        def block_fn(rows: Array, public_values: Array) -> Array:
+            return chip.eval_constraints(rows, public_values, block_idx=b)
+
+        fn = block_fn
+
     if num_cols == main_width:
         _EVAL_FN_MEMO[key] = fn
         return fn
