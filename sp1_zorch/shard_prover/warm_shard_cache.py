@@ -298,7 +298,10 @@ def _snum(s: str) -> int:
 
 
 # The CLASS-KEYED compile-key kinds one warmed shard fills, mirroring the
-# prove chain: zerocheck rounds key on (chip set, TotalCapClass.area_cap); the
+# prove chain: zerocheck rounds key on (chip set, TotalCapClass.area_cap +
+# its per-chip window caps — two shards of one area but different resolved
+# per-chip bounds get different round-window shapes, so the caps belong in
+# the cover key or an uncovered rider cold-compiles the rounds); the
 # LogUp-GKR zones on (chip set, GkrCapClass heights + slot_cap); the
 # trace/open zones on the chip set; the class-keyed jagged zones (eval/open)
 # on the derived (L, n_d, K) class — keyed per chip set here, a conservative
@@ -337,7 +340,7 @@ def compile_cover_keys(name: str, classes: dict, manifest: dict) -> dict:
     slot = gkr.slot_cap
     j = c["jagged"]
     return {
-        "zerocheck": (order, int(tc.area_cap)),
+        "zerocheck": (order, int(tc.area_cap), tc.chip_height_caps),
         "gkr": (order, gkr.chip_heights, None if slot is None else int(slot)),
         "chipset": order,
         "jagged": (order, int(j["L"]), int(j["n_d"]), tuple(int(k) for k in j["K"])),

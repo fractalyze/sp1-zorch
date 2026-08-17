@@ -537,6 +537,63 @@ def eq_widths(num_vars: int, rounds: int) -> list[int]:
     return [max(2 ** max(num_vars - 1 - r, 0), 2) for r in range(rounds + 1)]
 
 
+def chip_eq_widths(cap: int, num_vars: int, rounds: int) -> list[int]:
+    """ONE chip's per-round window widths — `eq_widths` narrowed by that chip's
+    static round-0 height cap. Returns ``rounds + 1`` entries, like `eq_widths`.
+
+    Round ``r`` reduces a chip over its live PAIR count
+    ``ceil(num_real / 2**(r+1))``, and `constraint_eval`'s ``live_width`` mask
+    writes the field's exact zero at every row from there on (mask-last, so the
+    column term zeroes too). A window that still covers
+    ``ceil(cap / 2**(r+1)) >= ceil(num_real / 2**(r+1))`` therefore drops only
+    exact-zero terms from the eq-weighted reduce, and field zero-adds are exact
+    — byte-identical to the round-uniform width, which charges every chip the
+    whole machine half-width no matter how short it is.
+
+    ``cap`` is a CLASS bound (the group-manifest per-chip union), never a
+    shard's own height, so these widths — and the kernel shapes keyed on them —
+    stay shard-invariant. Clamped by `eq_widths` from above (it already bounds
+    every chip on a ``num_vars``-cube) and floored at 2 for the same XLA
+    constant-layout reason `eq_widths` is."""
+    return [
+        min(w, max(-(-cap // (1 << (r + 1))), 2))
+        for r, w in enumerate(eq_widths(num_vars, rounds))
+    ]
+
+
+def _grouped_chip_windows(
+    chip_caps: Sequence[int],
+    num_vars: int,
+    kernel_keys: Sequence[Any],
+) -> list[list[int]]:
+    """Each chip's per-round window schedule, widened so that chips sharing a
+    constraint-kernel key keep sharing one.
+
+    ``kernel_keys[i]`` is chip ``i``'s round-body kernel key minus the window —
+    ``(eval_fn, num_cols)``, matching `_round_constraint_eval_cached`'s statics
+    — or ``None`` for a statically empty chip (it emits no kernel, so it is
+    excluded from the grouping and takes its own schedule). Chips sharing a key
+    all take the MAX of their schedules, so narrowing never splits one compiled
+    kernel into two: the count of distinct keys is exactly what the
+    round-uniform window produced. Only two constraint-free chips of equal
+    width can collide — a constrained chip's ``eval_fn`` is its own object.
+
+    With no ``chip_caps`` every chip takes the round-uniform `eq_widths`
+    schedule, i.e. the pre-per-chip-window shapes, unchanged."""
+    if not chip_caps:
+        return [eq_widths(num_vars, _SHRINK_ROUNDS) for _ in kernel_keys]
+    per_chip = [chip_eq_widths(c, num_vars, _SHRINK_ROUNDS) for c in chip_caps]
+    group: dict[Any, list[int]] = {}
+    for key, wins in zip(kernel_keys, per_chip, strict=True):
+        if key is None:
+            continue
+        prev = group.get(key)
+        group[key] = wins if prev is None else [max(p, w) for p, w in zip(prev, wins)]
+    return [
+        per_chip[i] if key is None else group[key] for i, key in enumerate(kernel_keys)
+    ]
+
+
 @dataclass(frozen=True)
 class TotalCapClass:
     """The static shard-invariance class of the total-cap zerocheck round
@@ -560,9 +617,27 @@ class TotalCapClass:
     ``int32`` vector, and the segment offsets are their cumsum — so the round
     body's compile keys on this class plus the chip set alone. ``from_heights``
     builds the a-priori-tight class of ONE shard (the static per-shard-compile
-    fallback); a whole block passes a class bounding every shard it contains."""
+    fallback); a whole block passes a class bounding every shard it contains.
+
+    - ``chip_height_caps`` (optional) are static per-chip round-0 height bounds
+      in chip order — the CLASS union (the group manifest's per-chip GKR
+      bounds), the same values `TotalCapChunkClass` takes. When given, each
+      chip's round window narrows to its own live pairs (`chip_eq_widths`)
+      instead of the round-uniform machine half-width, which prices every chip
+      at the tallest possible chip in every round. Empty (the default) keeps
+      the uniform windows and every emitted shape unchanged. Class-derived, so
+      the narrowed shapes stay shard-invariant — a shard's OWN tight heights
+      here would fork the compile per shard, which is why `from_heights` leaves
+      it empty."""
 
     area_cap: int
+    chip_height_caps: tuple[int, ...] = ()
+
+    def __post_init__(self) -> None:
+        if any(int(c) < 0 for c in self.chip_height_caps):
+            raise ValueError(
+                f"chip_height_caps must be >= 0, got {self.chip_height_caps}"
+            )
 
     @classmethod
     def from_heights(
@@ -953,11 +1028,17 @@ def _prove_total_cap(
     The fold, the ``constraint_eval`` per-row summand, the geq zero-extension
     correction, and the Gruen assembly are unchanged from the per-chip driver —
     only the buffer layout/windowing differs. Each live chip's constraint reads
-    its ``[W, cols_c]`` window IN PLACE via ``constraint_eval``'s
+    a ``[w_c, cols_c]`` window IN PLACE via ``constraint_eval``'s
     ``start_offset``/``col_stride`` (column ``c`` at
     ``flat[off + c*stride + row]``), masking past its live pairs; the pack and
     the per-round fold re-pack are whole-buffer gathers driven by the traced
-    segment starts, so no per-chip slice/update materializes."""
+    segment starts, so no per-chip slice/update materializes.
+
+    ``w_c`` is the round-uniform machine width (`eq_widths`), or — when the
+    class carries ``chip_height_caps`` — that chip's own narrower window
+    (`chip_eq_widths`), which is what keeps a short chip from paying the
+    tallest possible chip's rows in every round. Only the reduce reads it; the
+    buffers stay at the class caps either way."""
     num_chips = len(num_cols) if num_cols is not None else len(traces)
     one = fnp.ones((), ef)
     zero = fnp.zeros((), ef)
@@ -985,6 +1066,12 @@ def _prove_total_cap(
     # MACHINE-derived (num_vars-only), not a class field.
     W = eq_widths(num_vars, 0)[0]
     area_cap = cap_class.area_cap
+    chip_caps = [int(c) for c in cap_class.chip_height_caps]
+    if chip_caps and len(chip_caps) != num_chips:
+        raise ValueError(
+            f"total_cap_class carries {len(chip_caps)} chip height caps for "
+            f"{num_chips} chips"
+        )
     row_block = 2 * W  # each chip's even-padded UNFOLDED arrival height
     if not traced:
         # Static heights can check the class bound; traced heights cannot (a
@@ -1000,6 +1087,17 @@ def _prove_total_cap(
                 f"total_cap_class {cap_class} does not bound this shard "
                 f"(needs area_cap >= {need.area_cap})"
             )
+        # Same rule for the per-chip window caps: a cap under a chip's real
+        # height would narrow its window past its live pairs and silently drop
+        # live rows from the reduce. Static heights can say so here; the traced
+        # path's gate is host-side at dispatch (`ZerocheckProver.prove`).
+        for i, cap in enumerate(chip_caps):
+            nr_i = int(static_nrs[i] or 0)
+            if nr_i > cap:
+                raise ValueError(
+                    f"total_cap_class does not bound chip {i}: height "
+                    f"{nr_i} > chip_height_caps[{i}] = {cap}"
+                )
     if traced and flat_arrival is None:
         for i, t in enumerate(traces):
             if t.shape[1] != row_block:
@@ -1174,12 +1272,19 @@ def _prove_total_cap(
         )
 
     def make_round_step(
-        w_in: int, cap_out: int, shrink_eq: bool
+        w_ins: Sequence[int], cap_out: int, shrink_eq: bool
     ) -> Callable[[Any, Any], tuple[Any, Any]]:
-        """One round at static window height ``w_in``, re-packing the fold into
-        a flat ``[cap_out]`` buffer. ``shrink_eq`` lets the eq table halve
-        (the unrolled shrink prefix); the scan tail keeps every carry shape
-        fixed instead (``cap_out`` = the input cap, eq zero-extended back)."""
+        """One round at static per-chip window heights ``w_ins``, re-packing
+        the fold into a flat ``[cap_out]`` buffer. ``shrink_eq`` lets the eq
+        table halve (the unrolled shrink prefix); the scan tail keeps every
+        carry shape fixed instead (``cap_out`` = the input cap, eq
+        zero-extended back).
+
+        ``w_ins[i]`` bounds chip ``i``'s live pairs THIS round (`chip_eq_widths`
+        off the class cap, or the round-uniform `eq_widths` entry when the
+        class carries no per-chip caps). Only the eq-weighted reduce reads it —
+        the fold below is a whole-buffer gather at ``cap_out``, so a narrower
+        window changes no carry shape and no buffer bound."""
 
         def fold_eq(buf: Array) -> Array:
             if buf.shape[0] < 2:
@@ -1202,7 +1307,6 @@ def _prove_total_cap(
             # there is no per-round slice/subtract either.
             folded_off = _area_offsets(heights) // 2
             half_stride = _evenpad(heights) // 2
-            eq_slice = eq_buf[:w_in]
             # The 3 sumcheck t-points are p0h + t*diffh for t in {0,2,4}. Pass p0h
             # (base) and diffh (delta) as the two shared flat halves + t as a RUNTIME
             # fold coefficient, so constraint_eval folds `base+t*delta` per live row
@@ -1251,7 +1355,7 @@ def _prove_total_cap(
                         t_coeffs[k],
                         chip_gkr[i],
                         (summand.public_values,) if constrained else (),
-                        window_rows=w_in,
+                        window_rows=w_ins[i],
                         num_cols=cols_arr[i],
                     )
                     for k in range(3)
@@ -1259,7 +1363,7 @@ def _prove_total_cap(
                 polys_list.append(
                     zerocheck_round_poly(
                         vals,
-                        eq_slice,
+                        eq_buf[: w_ins[i]],
                         interp,
                         chip_claims[i],
                         last,
@@ -1321,7 +1425,36 @@ def _prove_total_cap(
     # differ), still keyed on the class alone; kernel sharing across chips and
     # t-points within a round is untouched.
     caps_r = cap_class.shrink_schedule(sum_cols, _SHRINK_ROUNDS, num_vars)
-    wins_r = eq_widths(num_vars, _SHRINK_ROUNDS)
+    # Per-chip window schedule. Without class caps every chip takes the
+    # round-uniform `eq_widths` entry — the emitted shapes are then bit-for-bit
+    # what they were before per-chip windows existed. With caps, chip i's
+    # window is `chip_eq_widths(cap_i, ...)`: >= its live pairs every round, so
+    # only exact-zero terms leave the reduce. The tail SCAN body is one shape
+    # for all its rounds, so it takes each chip's round-``unroll`` entry — the
+    # largest of the tail, since live pairs only halve from there.
+    #
+    # KERNEL-COUNT NEUTRALITY. A round body's constraint kernel is keyed on
+    # `(eval_fn, window_rows, num_cols)` (`_round_constraint_eval_cached`), so
+    # narrowing per chip could SPLIT a kernel two chips share today — only
+    # possible between two constraint-free chips of equal width, since a
+    # constrained chip's eval_fn is its own object. Chips sharing that key take
+    # one window, the max over the group, so the count of distinct keys is
+    # exactly what it was; narrowing can only shrink a kernel, never add one.
+    chip_wins = _grouped_chip_windows(
+        chip_caps,
+        num_vars,
+        [
+            (
+                None  # a statically empty chip emits no constraint kernel
+                if is_zero_chip[i]
+                else (
+                    summand.eval_fns[i] if summand.alphas[i].shape[-1] > 0 else None,
+                    cols_arr[i],
+                )
+            )
+            for i in range(num_chips)
+        ],
+    )
     unroll = min(_SHRINK_ROUNDS, num_vars)
     if start_round > unroll:
         raise ValueError(
@@ -1346,13 +1479,17 @@ def _prove_total_cap(
         carry = initial_carry
     prefix_msgs = []
     for rnd in range(start_round, unroll):
-        step = make_round_step(wins_r[rnd], caps_r[rnd + 1], shrink_eq=True)
+        step = make_round_step(
+            [w[rnd] for w in chip_wins], caps_r[rnd + 1], shrink_eq=True
+        )
         carry, msg = step(carry, (last_xs[rnd], interp_xs[rnd], is_round0_xs[rnd]))
         prefix_msgs.append(msg)
     if prefix_msgs:
         msgs = frx.tree.map(lambda *ls: fnp.stack(ls), *prefix_msgs)
     if unroll < num_vars or not prefix_msgs:
-        step = make_round_step(wins_r[unroll], caps_r[unroll], shrink_eq=False)
+        step = make_round_step(
+            [w[unroll] for w in chip_wins], caps_r[unroll], shrink_eq=False
+        )
         carry, tail_msgs = lax.scan(
             step, carry, (last_xs[unroll:], interp_xs[unroll:], is_round0_xs[unroll:])
         )

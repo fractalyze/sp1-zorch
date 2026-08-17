@@ -76,6 +76,13 @@ class JaggedClassTest(absltest.TestCase):
         self.assertEqual(j["K"], [(1 << 6) >> 3])
 
 
+def _tc(area: int, gkr: GkrCapClass) -> TotalCapClass:
+    """The zerocheck class `resolve_classes` returns: the resolved area plus
+    the RESOLVED GKR class's per-chip heights, which double as the zerocheck's
+    per-chip round-window caps (both bound a chip's real height)."""
+    return TotalCapClass(area_cap=area, chip_height_caps=gkr.chip_heights)
+
+
 class ResolveClassesTest(absltest.TestCase):
     _ORDER = ("a", "b")
     _OWN_TC = TotalCapClass(area_cap=100)
@@ -86,7 +93,7 @@ class ResolveClassesTest(absltest.TestCase):
 
     def test_no_pins_returns_own(self) -> None:
         tc, gkr = self._resolve()
-        self.assertEqual(tc, self._OWN_TC)
+        self.assertEqual(tc, _tc(self._OWN_TC.area_cap, self._OWN_GKR))
         self.assertEqual(gkr, self._OWN_GKR)
 
     def test_flag_specs_override_own(self) -> None:
@@ -94,8 +101,22 @@ class ResolveClassesTest(absltest.TestCase):
             zc_spec={"area_cap": 400},
             gkr_spec={"chip_heights": {"a": 8, "b": 10}, "slot_cap": 36},
         )
-        self.assertEqual(tc, TotalCapClass(area_cap=400))
+        self.assertEqual(tc, _tc(400, gkr))
         self.assertEqual(gkr, GkrCapClass((8, 10), 36))
+
+    def test_zerocheck_window_caps_track_the_resolved_gkr_class(self) -> None:
+        # The zerocheck's per-chip round windows narrow off these caps, so
+        # they must follow the GKR class the SAME resolution picked — a stale
+        # pairing would either under-bound a chip's window (loud at prove
+        # dispatch) or leave a wider window than the class allows.
+        for kw in (
+            {},
+            {"gkr_spec": {"chip_heights": {"a": 8, "b": 10}, "slot_cap": 36}},
+            {"manifest_entry": {"area_cap": 500, "gkr": {"a": 12, "b": 14}}},
+        ):
+            with self.subTest(str(kw)):
+                tc, gkr = self._resolve(**kw)
+                self.assertEqual(tc.chip_height_caps, gkr.chip_heights)
 
     def test_gkr_spec_without_slot_cap_leaves_none(self) -> None:
         # None defers the pyramid capacity to the chips-derived total at
@@ -113,7 +134,7 @@ class ResolveClassesTest(absltest.TestCase):
                 "gkr_slot_cap": 52,
             },
         )
-        self.assertEqual(tc, TotalCapClass(area_cap=500))
+        self.assertEqual(tc, _tc(500, gkr))
         self.assertEqual(gkr, GkrCapClass((12, 14), 52))
 
     def test_partial_manifest_entry_pins_only_named_fields(self) -> None:
@@ -123,12 +144,12 @@ class ResolveClassesTest(absltest.TestCase):
             gkr_spec={"chip_heights": {"a": 8, "b": 10}, "slot_cap": 36},
             manifest_entry={"area_cap": 500},
         )
-        self.assertEqual(tc, TotalCapClass(area_cap=500))
+        self.assertEqual(tc, _tc(500, gkr))
         self.assertEqual(gkr, GkrCapClass((8, 10), 36))
 
     def test_partial_manifest_entry_falls_through_to_own(self) -> None:
         tc, gkr = self._resolve(manifest_entry={"gkr": {"a": 12, "b": 14}})
-        self.assertEqual(tc, self._OWN_TC)
+        self.assertEqual(tc, _tc(self._OWN_TC.area_cap, gkr))
         # An entry "gkr" without "gkr_slot_cap" defers the slot cap.
         self.assertEqual(gkr, GkrCapClass((12, 14), None))
 

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import replace
 from typing import Any
 
 from sp1_zorch.logup_gkr.circuit import GkrCapClass
@@ -125,7 +126,16 @@ def resolve_classes(
                     else None
                 ),
             )
-    return tc, gkr
+    # The zerocheck's per-chip round windows ride the GKR class's per-chip
+    # bounds (`jagged.chip_eq_widths`): both bound the same quantity — chip
+    # ``i``'s real height, ``main_region.chip_heights[i]``, which the zerocheck
+    # takes as its ``num_real`` — so the GKR union is already the class-stable
+    # window bound and no second manifest field is needed. Attaching it HERE,
+    # in the one resolver both the harness and ``warm_shard_cache`` call, is
+    # what keeps the classes a warm fills equal to the classes a prove
+    # requests. An under-bounding cap still fails loud at prove dispatch
+    # (`ZerocheckProver.prove`).
+    return replace(tc, chip_height_caps=gkr.chip_heights), gkr
 
 
 # --- class-keyed group manifest (zkvm-prover#176) ---------------------------

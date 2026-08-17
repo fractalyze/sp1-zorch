@@ -660,6 +660,23 @@ class ZerocheckProver(
         total_cap_class = self._total_cap_class or TotalCapClass.from_heights(
             heights_host, [int(t.shape[0]) for t in traces]
         )
+        # Loud host-side admission for the class's per-chip WINDOW caps (the
+        # #351 clamped-DUS lesson): heights are traced inside the body, so an
+        # under-bounding cap would narrow a chip's round window past its live
+        # pairs and silently drop live rows. Heights are concrete here.
+        caps = total_cap_class.chip_height_caps
+        if caps:
+            if len(caps) != len(heights_host):
+                raise ValueError(
+                    f"total_cap_class carries {len(caps)} chip height caps for "
+                    f"{len(heights_host)} chips"
+                )
+            for name, h, cap in zip(names, heights_host, caps, strict=True):
+                if h > cap:
+                    raise ValueError(
+                        f"total_cap_class does not bound chip {name}: height "
+                        f"{h} > chip height cap {cap}"
+                    )
         flat = pack_flat_arrival(
             traces, heights_host, total_cap_class, self._max_log_row_count
         )
