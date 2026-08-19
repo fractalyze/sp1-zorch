@@ -71,7 +71,10 @@ class JitPermutation:
         self._inner = inner
         self.width: int = inner.width
         self.dtype: Any = inner.dtype
-        self.has_dedicated_fusion: bool = inner.has_dedicated_fusion
+        # hash-frx#170 retired `has_dedicated_fusion`; `fusion_path.is_one_kernel`
+        # is its documented successor. The attribute keeps the old name because
+        # the pinned zorch's DuplexTranscript still reads it off its permutation.
+        self.has_dedicated_fusion: bool = inner.fusion_path.is_one_kernel
         self.fused_region_marker: tuple[str, int] = inner.fused_region_marker
         self._permute = frx.jit(inner.permute)
 
