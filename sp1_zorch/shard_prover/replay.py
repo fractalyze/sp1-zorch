@@ -22,6 +22,7 @@ import numpy as np
 from frx import Array
 from zk_dtypes import koalabear_mont as F
 from zk_dtypes import koalabearx4_mont as EF
+from hash_frx.fusion import FusionPath
 from hash_frx.poseidon2.poseidon2 import Poseidon2
 from zorch.pcs.jagged.region import JaggedRegion
 from zorch.transcript import DuplexState, DuplexTranscript, Transcript
@@ -71,10 +72,11 @@ class JitPermutation:
         self._inner = inner
         self.width: int = inner.width
         self.dtype: Any = inner.dtype
-        # hash-frx#170 retired `has_dedicated_fusion`; `fusion_path.is_one_kernel`
-        # is its documented successor. The attribute keeps the old name because
-        # the pinned zorch's DuplexTranscript still reads it off its permutation.
-        self.has_dedicated_fusion: bool = inner.fusion_path.is_one_kernel
+        # The pinned zorch's DuplexTranscript reads `fusion_path.is_one_kernel`
+        # off its permutation (hash-frx#170's successor to the retired
+        # `has_dedicated_fusion`), so the wrapper forwards the wrapped hash's
+        # own path.
+        self.fusion_path: FusionPath = inner.fusion_path
         self.fused_region_marker: tuple[str, int] = inner.fused_region_marker
         self._permute = frx.jit(inner.permute)
 
