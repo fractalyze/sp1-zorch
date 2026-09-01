@@ -266,8 +266,9 @@ phase's wall-clock — `[stage commit traces]`, `[stage logup gkr proof]`,
 SP1's own `debug_span!`s (no `RUST_LOG` tuning). The four span names map 1:1 to
 the table rows below. It has a **GPU** path and a **CPU** path.
 
-**GPU — use this (same hardware as sp1-zorch).** `no-exec-gpu-dump --gpu` (build
-`--features gpu`) loads the shard's SP1 GPU phase-dump (`<shard_dir>/gpu_traces/`
+**GPU — the same hardware as sp1-zorch, but only with the Arm C patch below.**
+`no-exec-gpu-dump --gpu` (build `--features gpu`) loads the shard's SP1 GPU
+phase-dump (`<shard_dir>/gpu_traces/`
 + `gpu_vk.txt` + `gpu_commitment.txt`, written by SP1's GPU prover under
 `SP1_DUMP_PHASES`) and runs SP1's GPU prover **ELF-free** — no executor, no
 ELF/stdin. It byte-matches the dump (`preprocessed_commit` vs `gpu_vk.txt`,
@@ -279,37 +280,183 @@ cargo run --release --features gpu -- \
   no-exec-gpu-dump <sp1_dumps>/rsp_21740136_sp1/shard17 --gpu
 ```
 
-shard17 (GPU, byte-matched): **commit 16.6 / logup-gkr 19.9 / zerocheck 156.9 /
-eval 41.1 ms; wall 234.8 ms** (the GPU NoExec path was added in
-riscv-witness#1971).
+**As it ships, this binary is ~4.6× too slow on zerocheck and must not be used
+for a comparison** — see
+[the next subsection](#the-dump-tools-zerocheck-defect-arm-c). Patched (Arm C),
+shard17 reads **commit 16.5 / logup-gkr 21.4 / zerocheck 38.1 / eval 41.6 ms;
+wall 117.8 ms** (the GPU NoExec path was added in riscv-witness#1971).
 
 **CPU — reference / parity only.** Without `--gpu` (or via `NoExec` / `Prove` with
 an ELF + stdin) the tool uses `CpuShardProver`: useful as the injection-validity
 / byte-match reference, but **not** the same hardware as sp1-zorch's GPU
 `staged_prove_shard`. Keep CPU phase times out of the GPU-vs-GPU table below.
 
+#### The dump tool's zerocheck defect (Arm C)
+
+**The shipped `sp1-shard-test` links a different compilation of SP1's zerocheck
+kernel than SP1's own in-pipeline prover, and that compilation is ~4.6× slower.**
+Every SP1 column this doc published before 2026-08-17 measured the handicap, so
+every ratio derived from one is retracted. The mechanism, at source level:
+
+| | in-pipeline `node` (sp1 `56e843e`) | replay `sp1-shard-test` (fork `6a4345f`) |
+|---|---|---|
+| `expr_f` storage | `K expr_f[MEMORY_SIZE]` — per-thread local | `workspace + global_tid * MEMORY_SIZE` — global, thread-major |
+| kernel args | 23 | 24 (the extra `workspace`) |
+| `cuobjdump -res-usage` | `STACK:16384` | `STACK:0`, mangled suffix `PSD_` |
+
+The change is fork commit `f7daabef5` — **fork-only, not an ancestor of
+`56e843e`** — and its motive was launch-time memory, not speed: the per-thread
+array compiled to 4 KB (ext-256) / 16 KB (ext-1024) of stack, and with BFC
+holding 90 %+ of a 32 GB card the driver had no room for it at
+`cudaLaunchKernel`, surfacing as `cudaErrorMemoryAllocation` (rc=2). Striping
+the workspace thread-major fixed the launch and cost the coalescing: adjacent
+lanes now sit `MEMORY_SIZE` apart, so one warp access becomes 32 transactions
+instead of 1–4.
+
+**Arm C** is the same fork rev `6a4345f`, same toolchain, same 24-argument
+signature, with only `expr_f` put back in local storage — the shipped binary
+minus the handicap. Measured over the whole block, all 25 shards:
+
+| block total | Arm A (as shipped) | Arm C | ratio |
+|---|---|---|---|
+| zerocheck | 15.253 s | 3.325 s | **4.59×** |
+| four-stage chain | 20.607 s | 8.680 s | 2.37× |
+
+Per shard the zerocheck ratio spans **3.72×–6.39×**: the handicap scales with
+the shard, so no single shard's factor generalizes — quote the block total.
+
+Three controls hold the attribution:
+
+- **Only zerocheck moved.** Over the same 50 runs the other three stages are
+  flat to the third digit — commit traces **0.999×**, LogUp-GKR **1.000×**,
+  prove evaluation claims **1.000×**. That is what a zerocheck-kernel-only
+  change looks like.
+- **Arm C is semantics-preserving.** The byte-match gates
+  (`preprocessed_commit` vs `gpu_vk.txt`, `main_commitment` vs
+  `gpu_commitment.txt`) passed **2/2 on all 50 runs**.
+- **The rebuild is faithful.** On three shards additionally timed
+  `A0,A,C,C,A,A0` in one window, `A0` — the exact binary the retracted figures
+  were measured with — and `A`, that source rebuilt today, agree within 1.5% on
+  every stage.
+
+**And Arm C reproduces the real thing, which is what licenses the rule below.**
+A replacement baseline is only worth having if it lands where the thing it
+replaces lands. Arm C's standalone totals sit beside SP1's own in-pipeline
+`debug_span!` timings from a live `--mode compressed` run of the same block — a
+path that never touches this tool:
+
+| block total | Arm C standalone | SP1 in-pipeline | delta |
+|---|---|---|---|
+| zerocheck | 3.325 s | 3.279 s | **1.4%** |
+| four-stage chain | 8.680 s | 9.019 s | 3.8% |
+
+> **Standing rule.** Any SP1 comparison — a doc table, an issue, a blog post, an
+> A/B gate on the prove chain — uses **Arm C or SP1's in-pipeline `debug_span!`
+> timings**. Never `no-exec-gpu-dump` as it ships today. A number from the
+> shipped tool is not a weak measurement, it is a wrong one.
+
+**The fix is identified and measured, not just diagnosed.** Arm D keeps the
+global workspace but indexes it **block-major**, so a warp's 32 lanes touch
+consecutive addresses instead of addresses `MEMORY_SIZE` apart. It preserves
+`STACK:0`, so the launch-time `cudaErrorMemoryAllocation` that motivated the
+striped layout still cannot occur. Timed `A,C,D,D,C,A` in one window — a
+different window from the runs above, hence the sub-1% drift in the shared A
+and C columns:
+
+| shard | A (shipped) | C (local array) | D (block-major) | A/D | D/C |
+|---|---|---|---|---|---|
+| shard0 | 535.4 ms | 112.2 ms | 115.8 ms | 4.62× | 1.03× |
+| shard14 | 921.4 ms | 212.2 ms | 223.4 ms | 4.12× | 1.05× |
+| shard17 | 150.8 ms | 38.0 ms | 41.7 ms | 3.62× | 1.10× |
+
+All 36 byte-match gates passed and the three untouched stages move 0.98–1.02×.
+Over the full block — 25 shards, arms rotating by shard index in one window,
+byte-match 2/2 on all 75 runs:
+
+| block total | A (shipped) | C (local array) | D (block-major) | A/D | D/C |
+|---|---|---|---|---|---|
+| commit traces | 1.963 s | 1.971 s | 1.971 s | 1.00× | 1.00× |
+| logup gkr proof | 1.663 s | 1.662 s | 1.664 s | 1.00× | 1.00× |
+| **zerocheck** | **15.250 s** | **3.325 s** | **3.437 s** | **4.44×** | **1.03×** |
+| prove evaluation claims | 1.728 s | 1.724 s | 1.716 s | 1.01× | 1.00× |
+| wall | 20.612 s | 8.690 s | 8.796 s | 2.34× | 1.01× |
+
+**Arm D is within 3% of the local array at block level** while keeping
+`STACK:0`, and the three untouched stages stay flat at 1.00–1.01×. Per-shard
+A/D spans 3.51×–5.95×. On shard22 D beats C outright (187.1 vs 191.8 ms),
+consistent with block-major also avoiding C's 16 KB stack pressure on occupancy.
+
+This sweep independently reproduces the A-vs-C one above — zerocheck A 15.250
+vs 15.253 s, C 3.325 s both times, 0.02% apart across separate windows.
+
+Because D lands within 3% of C, the global buffer itself is not a significant
+term: the handicap was the access pattern, nothing else. The fix is filed as
+**fractalyze/sp1#36**; when it lands the shipped tool becomes usable for
+comparison again and Arm C retires.
+
+**A second, unrelated defect in the retracted shard14 row: it does not
+reproduce.** That row was a single `no-exec-gpu-dump` invocation at host load
+29–38, and the same binary on the same dump now reads its stages very
+differently:
+
+| stage | published 2026-08-12 | re-run 2026-08-17 | published ÷ re-run |
+|---|---|---|---|
+| commit traces | 91.3 ms | 88.1 ms | 1.04× |
+| logup gkr proof | 63.2 ms | 46.1 ms | 1.37× |
+| zerocheck | 947.5 ms | 922.9 ms | 1.03× |
+| **jagged eval** | **240.2 ms** | **82.4 ms** | **2.92×** |
+| wall | 1342.6 ms | 1135.9 ms | 1.18× |
+
+commit and zerocheck reproduce within 4%; **jagged eval does not reproduce at
+all** — 240.2 ms published against 82.4 ms, a 2.9× gap in the same binary on the
+same input. The kernel defect cannot explain it (it is zerocheck-only, and
+zerocheck reproduced); a single load-29–38 invocation can. The shard17 row, by
+contrast, reproduces almost exactly across the same gap (16.6/19.9/156.9/41.1
+published vs 16.9/22.5/153.5/42.5, wall 234.8 vs 234.1) — which is what a sound
+single sample looks like, and why shard14's spread was the warning sign it was.
+
 ### Per-phase comparison (shard17)
 
-| Phase | SP1 GPU | sp1-zorch GPU | spread | ratio | golden |
-|---|---|---|---|---|---|
-| trace commit | 16.6 ms | 18.4 ms | 18.3–18.4 | 1.11× | byte-match |
-| LogUp-GKR | 19.9 ms | **18.4 ms** | 18.1–18.7 | **0.92×** | byte-match |
-| zerocheck | 156.9 ms | **52.7 ms** | 52.3–52.8 | **0.34×** | byte-match |
-| jagged eval (PCS open) | 41.1 ms | **37.2 ms** | 37.1–37.3 | **0.91×** | byte-match |
-| full chain (phase sum) | 234.8 ms | **124.6 ms** | — | **0.53×** | byte-match |
+> **The two columns were not measured in the same session, so these ratios are
+> provisional.** The SP1 column is Arm C (2026-08-17); the sp1-zorch column is
+> from 2026-08-11. That is exactly what this section's own
+> [measurement rules](#per-phase-baseline-against-sp1) forbid — "never compare
+> two arms measured in separate sessions"; interleave them in one window, or the
+> load trend becomes the result. **The two rows near 1.0 could flip sign** on a
+> re-measure: session drift on this box runs ~10–15%, and LogUp-GKR and jagged
+> eval both sit inside that band. Re-measure the sp1-zorch column beside Arm C
+> before quoting any row.
 
-The sp1-zorch column was captured on `main` 23d2fff (2026-08-11). The full-chain
-row is the sum of the four phase medians: since #330 the CLI's `chain run:`
-print times the whole checked round — per-phase golden loads, device→host
-readbacks and compares included (~5.2 s of I/O on shard17) — so that print is a
-harness metric, not a prover latency, and is not comparable to the SP1 column.
+| Phase | SP1 GPU (Arm C) | sp1-zorch GPU | spread | ratio | golden |
+|---|---|---|---|---|---|
+| trace commit | 16.5 ms | 18.4 ms | 18.3–18.4 | 1.12× | byte-match |
+| LogUp-GKR | 21.4 ms | **18.4 ms** | 18.1–18.7 | **0.86×** | byte-match |
+| zerocheck | 38.1 ms | 52.7 ms | 52.3–52.8 | 1.38× | byte-match |
+| jagged eval (PCS open) | 41.6 ms | **37.2 ms** | 37.1–37.3 | **0.89×** | byte-match |
+| full chain (phase sum) | 117.6 ms | 124.6 ms | — | 1.06× | byte-match |
+
+`ratio` is sp1-zorch ÷ SP1; **bold** marks the rows where sp1-zorch is faster.
+`spread` is the sp1-zorch min–max, as before.
+
+**The SP1 column is Arm C, not `no-exec-gpu-dump` as it ships.** The figures
+this table used to carry (zerocheck 156.9 ms, chain 234.8 ms, ratios 0.34× /
+0.53×) measured a de-coalesced zerocheck kernel and are **retracted** — see
+[the defect subsection](#the-dump-tools-zerocheck-defect-arm-c).
+
+The sp1-zorch column was captured on `main` 23d2fff (2026-08-11). Both
+full-chain rows are the sum of the four phase medians. On the sp1-zorch side,
+since #330 the CLI's `chain run:` print times the whole checked round —
+per-phase golden loads, device→host readbacks and compares included (~5.2 s of
+I/O on shard17) — so that print is a harness metric, not a prover latency, and
+is not comparable to the SP1 column. On the SP1 side the phase sum (117.6 ms)
+and the tool's own measured wall (117.8 ms) agree to 0.2 ms.
 
 **A `--max_phase` run reads a phase faster than the full chain does.** Truncated
 runs are fine for A/B iteration, where both arms are truncated equally; they are
 not comparable against the SP1 column, which is always full-chain.
 
-The SP1 column is the SP1 GPU NoExec run. The sp1-zorch column is the median
-of the six converged warm passes — passes 3–5 of two separate `--runs=5`
+The sp1-zorch column is the median of the six converged warm passes — passes
+3–5 of two separate `--runs=5`
 invocations — with the observed min–max beside it, on an RTX 5090, published
 `frx` wheels (no locally built plugin), shard-invariant class routes on GKR,
 zerocheck and the jagged open. Every phase byte-matches on every pass. Add
@@ -328,22 +475,36 @@ worth its own table because every phase is an order of magnitude heavier and
 the allocator constraint changes. Same premise as shard17: same dump, same
 RTX 5090, every sp1-zorch phase byte-checks against the dump as it finishes.
 
-| Phase | SP1 GPU | sp1-zorch GPU | spread | ratio | golden |
-|---|---|---|---|---|---|
-| trace commit | 91.3 ms | 155.8 ms | 105.3–334.5 | 1.71× | byte-match |
-| LogUp-GKR | 63.2 ms | **41.0 ms** | 34.9–53.9 | **0.65×** | byte-match |
-| zerocheck | 947.5 ms | **693.8 ms** | 661.7–705.2 | **0.73×** | byte-match |
-| jagged eval (PCS open) | 240.2 ms | **220.1 ms** | 209.2–240.8 | **0.92×** | byte-match |
-| full chain (phase sum) | 1342.6 ms | **1110.7 ms** | — | **0.83×** | byte-match |
+> **Weaker sampling than the shard17 table, and cross-session on top of it.**
+> The SP1 column is Arm C (2026-08-17); the sp1-zorch column is one `--runs=5`
+> invocation on the #336/#337 tree (2026-08-12) at host load 29–38. Two arms,
+> two sessions — the thing this section's
+> [measurement rules](#per-phase-baseline-against-sp1) say not to do. Treat
+> every row as a first measurement and re-measure both arms in one idle window
+> before quoting any of them.
 
-Captured on the #336/#337 tree (2026-08-12), default monolithic jagged scan
-(no `--jagged_scan_cap`). The sp1-zorch column is the median of passes 3–5 of
-**one** `--runs=5` invocation; the SP1 column is a single `no-exec-gpu-dump
---gpu` invocation. Both arms ran in the same session window at host load
-29–38 — comparable to each other, but weaker sampling than the shard17 table,
-and the load-sensitive rows show it (trace commit's 105–335 ms spread is load,
-not the prover). Treat the per-phase ratios as first measurements; re-measure
-on an idle box before quoting any single row.
+| Phase | SP1 GPU (Arm C) | sp1-zorch GPU | spread | ratio | golden |
+|---|---|---|---|---|---|
+| trace commit | 86.7 ms | 155.8 ms | 105.3–334.5 | 1.80× | byte-match |
+| LogUp-GKR | 42.7 ms | **41.0 ms** | 34.9–53.9 | **0.96×** | byte-match |
+| zerocheck | 212.0 ms | 693.8 ms | 661.7–705.2 | 3.27× | byte-match |
+| jagged eval (PCS open) | 80.0 ms | 220.1 ms | 209.2–240.8 | 2.75× | byte-match |
+| full chain (phase sum) | 421.4 ms | 1110.7 ms | — | 2.64× | byte-match |
+
+`ratio` is sp1-zorch ÷ SP1; **bold** marks the one row where sp1-zorch is
+faster. The sp1-zorch column was captured with the default monolithic jagged
+scan (no `--jagged_scan_cap`), and its load-sensitive rows still show their
+sampling — trace commit's 105–335 ms spread is load, not the prover.
+
+The retracted SP1 column for this shard was zerocheck 947.5 / eval 240.2 /
+chain 1342.6 ms, giving 0.73× / 0.92× / 0.83×. Two separate defects fed it —
+the zerocheck kernel handicap, and a single invocation whose jagged eval does
+not reproduce; both are in
+[the defect subsection](#the-dump-tools-zerocheck-defect-arm-c).
+
+The 2.64× full-chain ratio is consistent with the independent in-pipeline
+measurement of the same block — ours 23.15 s vs SP1's spans 9.02 s = 2.57×
+over all 25 shards — which never touches the dump tool.
 
 Two shard14-specific gotchas:
 
